@@ -1,0 +1,26 @@
+package experiment:spike;
+
+/// Synchronous export probe: the shape the mosh engine needs
+/// (bytes in/out, batch-of-datagrams out, stateful resource).
+interface probes {
+  add: func(a: s32, b: s32) -> s32;
+  echo-bytes: func(data: list<u8>) -> list<u8>;
+  /// Exercises Go stdlib crypto (sha256) through the toolchain.
+  hash-hex: func(data: list<u8>) -> string;
+  /// Shape of the engine's tick() -> outbound datagrams.
+  tick-batch: func(n: u32) -> list<list<u8>>;
+}
+
+interface counters {
+  /// Exported resource probe: the engine wants a session resource.
+  resource counter {
+    constructor(start: u32);
+    increment: func() -> u32;
+    value: func() -> u32;
+  }
+}
+
+world sync-probe {
+  export probes;
+  export counters;
+}

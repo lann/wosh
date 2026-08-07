@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>experiment-mosh: PRF + JSPI capability probe</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 1rem auto; padding: 0 1rem; }
+  button { font-size: 1.1rem; padding: .6rem 1.2rem; margin: .3rem .3rem .3rem 0; }
+  #log div { padding: .15rem 0; border-bottom: 1px solid #eee; }
+  .ok::before { content: "PASS "; color: #0a0; font-weight: bold; }
+  .fail::before { content: "FAIL "; color: #c00; font-weight: bold; }
+  .info::before { content: "-- "; color: #888; }
+  pre { background: #f6f6f6; padding: .5rem; overflow-x: auto; font-size: .8rem; }
+</style>
+
+<h1>PRF + JSPI probe</h1>
+<p>Decides experiment-mosh D4 (mosh-key-at-rest design). Run on each
+target browser/authenticator combination — especially Firefox mobile
+Nightly (with its JSPI flag enabled) against the authenticator you would
+actually use. Requires https (or localhost).</p>
+
+<button id="create">1. create() passkey with prf</button>
+<button id="get" disabled>2. get() with prf.eval</button>
+<button id="copy">copy report</button>
+
+<div id="log"></div>
+<pre id="report"></pre>
+
+<script type="module">
+  const report = {
+    ua: navigator.userAgent,
+    origin: location.origin,
+    when: new Date().toISOString(),
+    results: {},
+  };
+  const logEl = document.getElementById("log");
+  const log = (cls, msg) => {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = msg;
+    logEl.append(d);
+  };
+  const record = (key, ok, detail) => {
+    report.results[key] = { ok, detail };
+    log(ok ? "ok" : "fail", `${key}: ${detail}`);
+    document.getElementById("report").textContent = JSON.stringify(report, null, 2);
+  };
+  const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+  // --- static capability checks -------------------------------------
+  record("secure-context", window.isSecureContext === true, String(window.isSecureContext));
+  record("webauthn", !!(navigator.credentials && window.PublicKeyCredential), String(!!window.PublicKeyCredential));
+  record(
+    "jspi",
+    typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function",
+    `WebAssembly.Suspending=${typeof WebAssembly.Suspending}, promising=${typeof WebAssembly.promising}`,
+  );
+  if (window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable) {
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then((v) =>
+      record("platform-authenticator", v, String(v)),
+    );
+  }
+
+  // --- ceremony probes ------------------------------------------------
+  let credId = null;
+
+  document.getElementById("create").onclick = async () => {
+    try {
+      const cred = await navigator.credentials.create({
+        publicKey: {
+          rp: { name: "experiment-mosh prf probe" },
+          user: { id: rand(16), name: "prf-probe", displayName: "prf-probe" },
+          challenge: rand(32),
+          pubKeyCredParams: [
+            { type: "public-key", alg: -8 },
+            { type: "public-key", alg: -7 },
+            { type: "public-key", alg: -257 },
+          ],
+          authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+          extensions: { prf: {} },
+        },
+      });
+      credId = cred.rawId;
+      const ext = cred.getClientExtensionResults();
+      record("create", true, `credential created (${cred.id.slice(0, 12)}…)`);
+      record(
+        "prf-enabled-at-create",
+        ext.prf?.enabled === true,
+        `getClientExtensionResults().prf=${JSON.stringify(ext.prf)}`,
+      );
+      document.getElementById("get").disabled = false;
+    } catch (e) {
+      record("create", false, `${e.name}: ${e.message}`);
+    }
+  };
+
+  document.getElementById("get").onclick = async () => {
+    const salt = new Uint8Array(32).fill(7);
+    try {
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge: rand(32),
+          allowCredentials: [{ type: "public-key", id: credId }],
+          userVerification: "preferred",
+          extensions: { prf: { eval: { first: salt } } },
+        },
+      });
+      const ext = assertion.getClientExtensionResults();
+      const first = ext.prf?.results?.first;
+      const len = first ? new Uint8Array(first).byteLength : 0;
+      record("get", true, "assertion completed");
+      record("prf-eval-at-get", len === 32, `prf.results.first: ${len} bytes`);
+      if (len === 32) {
+        // Determinism check: same salt must derive the same bytes.
+        const again = await navigator.credentials.get({
+          publicKey: {
+            challenge: rand(32),
+            allowCredentials: [{ type: "public-key", id: credId }],
+            userVerification: "preferred",
+            extensions: { prf: { eval: { first: salt } } },
+          },
+        });
+        const b1 = new Uint8Array(first);
+        const b2 = new Uint8Array(again.getClientExtensionResults().prf.results.first);
+        record("prf-deterministic", b1.every((v, i) => v === b2[i]), "same salt, same output");
+      }
+    } catch (e) {
+      record("get", false, `${e.name}: ${e.message}`);
+    }
+  };
+
+  document.getElementById("copy").onclick = () =>
+    navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+</script>
+</html>

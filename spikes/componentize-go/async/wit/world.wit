@@ -1,0 +1,32 @@
+package experiment:spike;
+
+/// Async abstraction probe: does componentize-go's runtime map blocking
+/// goroutine code onto the component-model async ABI, on both hosts?
+interface async-probes {
+  /// Async export; plain blocking time.Sleep inside. Returns measured
+  /// elapsed ms.
+  sleep-echo: async func(ms: u64) -> u64;
+  /// Spawns count goroutines each sleeping ms, joins them, returns
+  /// elapsed ms. Concurrency holds if elapsed is near ms, not count*ms.
+  concurrent-sleeps: async func(count: u32, ms: u64) -> u64;
+  /// Goroutines + channels, pure compute, behind a SYNC export: the Go
+  /// scheduler inside one export call with no host yields.
+  chan-pipeline: func(stages: u32, items: u32) -> u64;
+  /// SYNC export calling time.Sleep: does it trap, busy-wait, or work?
+  sleep-in-sync: func(ms: u64) -> u64;
+  /// chan-pipeline behind an async lift, no timers: async lift alone.
+  spin-pipeline: async func(stages: u32, items: u32) -> u64;
+  /// Blocking-style Go call of the async wasi:clocks@0.3 wait-for import.
+  wait-for-echo: async func(ms: u64) -> u64;
+  /// count goroutines each parked on the async import concurrently;
+  /// returns elapsed ms (near ms if concurrent, count*ms if serialized).
+  concurrent-wait-fors: async func(count: u32, ms: u64) -> u64;
+  /// SYNC export calling the async import: the suspension shape a sync
+  /// engine export would need for one-off async host calls.
+  wait-for-in-sync: func(ms: u64) -> u64;
+}
+
+world async-probe {
+  include wasi:cli/command@0.3.0;
+  export async-probes;
+}
