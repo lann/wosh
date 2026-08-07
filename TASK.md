@@ -1,8 +1,9 @@
 # Task state
 
-Point-in-time working state for resuming this effort. The design record
-and findings live in README.md; this file says where work stopped and
-what comes next. Update it at the end of each session.
+Point-in-time working state for resuming this effort. The full plan is
+`PLAN.md`; the design record and findings live in `README.md`; this
+file says where work stopped and what comes next. Update it at the end
+of each session.
 
 ## Status: M0 complete, D4 + D5 gates resolved, M1 next
 

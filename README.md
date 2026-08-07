@@ -6,9 +6,10 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M0 (feasibility spikes).** Local-only experiment: no CI, no
-stability, delete-at-will. If it earns a public repository it gets a new
-name.
+**Status: M0 complete (gates resolved).** Local-only experiment: no CI,
+no stability, delete-at-will. If it earns a public repository it gets a
+new name. The full plan lives in [`PLAN.md`](PLAN.md); resumable
+session state in [`TASK.md`](TASK.md).
 
 ## Architecture
 
