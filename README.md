@@ -64,11 +64,13 @@ ssh/mosh layer is the strong security boundary.
 - **D3** Upstream-first: the two polymorph-iroh gaps (QUIC datagram WIT
   surface, stable/injectable endpoint identity) are issues+PRs against
   polymorph-iroh, per its conventions (both fall under its issue #3).
-- **D4** Mosh key at rest is gated on the M0 PRF probe (Firefox mobile
-  Nightly, Play Services authenticator path). Pass ⇒ PRF-wrapped key,
-  ciphertext escrowed on the proxy. Fail ⇒ plaintext localStorage.
-  Storage schema uses a tagged variant either way; `mosh-server` binds
-  loopback either way.
+- **D4** *(resolved 2026-08-07, finding 6)* Mosh key at rest: the M0
+  PRF probe **passed** on Firefox mobile Nightly ⇒ PRF-wrapped key,
+  ciphertext escrowed on the proxy; the proxy never sees the plaintext
+  key. Storage schema stays a tagged variant (`plain` arm kept for
+  emergencies); `mosh-server` binds loopback regardless. Open
+  sub-policy for M6: runtime authenticator without `prf` ⇒ refuse
+  persistence (lean) vs plaintext-with-warning.
 - **D5** Engine is big-Go (mosh-go) via componentize-go, sync sans-I/O
   exports. If the componentize-go spike fails the gate: stop and
   discuss — no automatic TinyGo fallback.
@@ -165,3 +167,16 @@ polymorph-iroh/.deps), headless Chromium 151.
    JS tick are independent of every broken or blocked path above (jco
    async-lower, jco scheduler, Go timer integration). Nothing in the
    engine's planned surface touches them.
+
+6. **PRF gate PASSED on Firefox mobile Nightly (D4 → PRF arm).**
+   https://lann.github.io/prf-probe/ on Firefox mobile Nightly (JSPI
+   flag enabled), private window: create-with-prf, 32-byte prf eval at
+   get, and the same-salt determinism re-check all pass; JSPI present.
+   Two caveats recorded: (a) a password-manager extension wrapping
+   `navigator.credentials` broke the first run with a Chrome-only
+   `tabs.update` TypeError before WebAuthn ran — the probe now calls
+   the `CredentialsContainer.prototype` methods, reports
+   `webauthn-unwrapped`, and flags non-WebAuthn errors as extension
+   interference; the real client must anticipate wrapped WebAuthn in
+   the field. (b) Results hold for the `lann.github.io` origin; rerun
+   if the client ships from a different origin.

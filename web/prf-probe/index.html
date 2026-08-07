@@ -50,6 +50,30 @@ actually use. Requires https (or localhost).</p>
   // --- static capability checks -------------------------------------
   record("secure-context", window.isSecureContext === true, String(window.isSecureContext));
   record("webauthn", !!(navigator.credentials && window.PublicKeyCredential), String(!!window.PublicKeyCredential));
+
+  // Password-manager extensions commonly wrap navigator.credentials.*
+  // and can fail inside themselves with non-WebAuthn errors (e.g.
+  // Chrome-only tabs.update calls). Detect wrapping, and call through
+  // the prototype to bypass own-property wrappers where possible.
+  const protoCreate = CredentialsContainer.prototype.create;
+  const protoGet = CredentialsContainer.prototype.get;
+  const isNative = (fn) => /\[native code\]/.test(String(fn));
+  record(
+    "webauthn-unwrapped",
+    isNative(navigator.credentials.create) && isNative(protoCreate),
+    `credentials.create=${isNative(navigator.credentials.create) ? "native" : "WRAPPED (extension?)"}, prototype.create=${isNative(protoCreate) ? "native" : "WRAPPED (extension?)"}`,
+  );
+  const doCreate = (opts) => protoCreate.call(navigator.credentials, opts);
+  const doGet = (opts) => protoGet.call(navigator.credentials, opts);
+  const extensionHint = (e) => {
+    if (!(e instanceof DOMException)) {
+      log(
+        "info",
+        "Non-WebAuthn error: likely a browser extension intercepting WebAuthn. Retry in a private window / with extensions (password managers) disabled.",
+      );
+    }
+  };
+
   record(
     "jspi",
     typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function",
@@ -66,7 +90,7 @@ actually use. Requires https (or localhost).</p>
 
   document.getElementById("create").onclick = async () => {
     try {
-      const cred = await navigator.credentials.create({
+      const cred = await doCreate({
         publicKey: {
           rp: { name: "experiment-mosh prf probe" },
           user: { id: rand(16), name: "prf-probe", displayName: "prf-probe" },
@@ -91,13 +115,14 @@ actually use. Requires https (or localhost).</p>
       document.getElementById("get").disabled = false;
     } catch (e) {
       record("create", false, `${e.name}: ${e.message}`);
+      extensionHint(e);
     }
   };
 
   document.getElementById("get").onclick = async () => {
     const salt = new Uint8Array(32).fill(7);
     try {
-      const assertion = await navigator.credentials.get({
+      const assertion = await doGet({
         publicKey: {
           challenge: rand(32),
           allowCredentials: [{ type: "public-key", id: credId }],
@@ -112,7 +137,7 @@ actually use. Requires https (or localhost).</p>
       record("prf-eval-at-get", len === 32, `prf.results.first: ${len} bytes`);
       if (len === 32) {
         // Determinism check: same salt must derive the same bytes.
-        const again = await navigator.credentials.get({
+        const again = await doGet({
           publicKey: {
             challenge: rand(32),
             allowCredentials: [{ type: "public-key", id: credId }],
@@ -126,6 +151,7 @@ actually use. Requires https (or localhost).</p>
       }
     } catch (e) {
       record("get", false, `${e.name}: ${e.message}`);
+      extensionHint(e);
     }
   };
 

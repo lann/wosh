@@ -24,6 +24,15 @@ Decision rule: `prf-enabled-at-create`, `prf-eval-at-get`, and
 takes the PRF-wrap + proxy-escrow arm. Any relied-upon combination FAILs
 ⇒ plaintext-localStorage arm.
 
+Known interference: password-manager extensions wrap
+`navigator.credentials.*` and can fail inside themselves with
+non-WebAuthn errors (seen: `tabs.update` "highlighted" TypeError — a
+Chrome-only extension API, on Firefox). The page calls the
+`CredentialsContainer.prototype` methods to bypass own-property
+wrappers and reports `webauthn-unwrapped`; if a run still fails with a
+non-WebAuthn error, retry in a private window or with extensions
+disabled — that result says nothing about the platform.
+
 Local trial run (not a substitute — origin and authenticator differ):
 
     python3 -m http.server -d web/prf-probe 8000   # http://localhost:8000
