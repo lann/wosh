@@ -1,13 +1,16 @@
-//! M4 gate: the composed client core connects through the real proxy
-//! binary (thin shell + proxy-core component) to a stock mosh-server
-//! the proxy spawned — full control channel (hello/pairing token/TOFU
-//! --yes, new-session, key delivery) and the datagram tunnel with
-//! sub-framing exercised by a bulk phase whose server datagrams
-//! exceed the 1162 B ceiling.
+//! M7 gate: the composed client core dials the proxy over iroh, opens
+//! the ssh-forwarding stream, speaks ssh (x/crypto/ssh in wasm)
+//! through it to an in-process sshd stand-in, runs `mosh-server` via
+//! ssh exec, and then runs mosh over the connection's datagram
+//! tunnel. The proxy never sees the mosh key.
 //!
-//!   relay (child) ← proxy (child: shell + proxy-core + endpoint)
-//!                     ↑ iroh QUIC (control stream + framed datagrams)
+//!   relay (child) ← proxy (child: deprivileged, --ssh-target stand-in)
+//!                     ↑ iroh QUIC (control stream + ssh-forward stream + tunnel)
 //!   composed-client.wasm under wasmtime (this process)
+//!                     ↕ ssh (exec mosh-server)
+//!   in-process sshd stand-in (this process, russh)
+
+mod standin;
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -36,9 +39,15 @@ mod bindings {
     });
 }
 
-const RELAY_PORT: u16 = 3347;
+// 3345/3347/3348/3349 are taken by sibling harnesses (M3/M4/M5/M6).
+const RELAY_PORT: u16 = 3350;
 const TOKEN: &str = "t3st-pairing";
 const HARD_TIMEOUT: Duration = Duration::from_secs(120);
+
+// Synthetic test credentials for the in-process sshd stand-in only —
+// never used against a real host.
+const TEST_USER: &str = "testuser";
+const TEST_PASSWORD: &str = "testpass";
 
 struct Ctx {
     wasi: WasiCtx,
@@ -93,7 +102,7 @@ fn manifest_path(rel: &str) -> String {
 }
 
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m4");
+    let dir = std::env::temp_dir().join("experiment-mosh-m7");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(
@@ -130,8 +139,12 @@ struct ProxyProc {
     lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-async fn start_proxy() -> Result<ProxyProc> {
-    let state = std::env::temp_dir().join(format!("experiment-mosh-m4-state-{}", std::process::id()));
+/// Start the proxy pointed at the sshd stand-in, deliberately without
+/// `--personal` — this gate proves the deprivileged posture (M7: the
+/// proxy refuses to spawn sessions itself; the client must go through
+/// inner ssh instead).
+async fn start_proxy(standin_port: u16) -> Result<ProxyProc> {
+    let state = std::env::temp_dir().join(format!("experiment-mosh-m7-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state);
     let bin = manifest_path("../../proxy/target/release/experiment-mosh-proxy");
     let mut child = tokio::process::Command::new(&bin)
@@ -142,15 +155,12 @@ async fn start_proxy() -> Result<ProxyProc> {
             TOKEN,
             "--no-qr",
             "--yes",
-            // M4 exercises proxy-spawned sessions (D2 interim), which
-            // are opt-in since M7's deprivileged default.
-            "--personal",
             "--state-dir",
             state.to_str().unwrap(),
             "--component",
             &manifest_path("../../proxy/composed-proxy.wasm"),
-            "--shell",
-            "bash --noprofile --norc -i",
+            "--ssh-target",
+            &format!("127.0.0.1:{standin_port}"),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -236,6 +246,22 @@ fn strip_ansi(bytes: &[u8]) -> String {
     out
 }
 
+/// Kills every stand-in-reported spawned pid (mosh-server daemonizes;
+/// nothing else in the harness reaps it) even on failure paths.
+struct PidReaper(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
+
+impl Drop for PidReaper {
+    fn drop(&mut self) {
+        let pids = self.0.lock().unwrap();
+        for pid in pids.iter() {
+            println!("[ssh-e2e] reaping spawned pid {pid}");
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = env_logger::try_init();
@@ -245,14 +271,21 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    let log = |m: &str| println!("[proxy-e2e] {m}");
+    let log = |m: &str| println!("[ssh-e2e] {m}");
+
+    let sshd = standin::start().await.context("starting sshd stand-in")?;
+    let _reaper = PidReaper(sshd.spawned_pids.clone());
+    log(&format!(
+        "sshd stand-in on 127.0.0.1:{} fp={}",
+        sshd.port, sshd.host_key_fp
+    ));
 
     let _relay = start_relay().await?;
     log(&format!("relay on http://127.0.0.1:{RELAY_PORT}"));
-    let mut proxy = start_proxy().await?;
+    let mut proxy = start_proxy(sshd.port).await?;
     log(&format!(
-        "proxy up: id={} direct={}",
-        proxy.endpoint_id_hex, proxy.direct
+        "proxy up (deprivileged, --ssh-target 127.0.0.1:{}): id={} direct={}",
+        sshd.port, proxy.endpoint_id_hex, proxy.direct
     ));
 
     // --- the composed client under wasmtime --------------------------------
@@ -289,31 +322,18 @@ async fn run() -> Result<()> {
     let relay_url = format!("http://127.0.0.1:{RELAY_PORT}");
     let peer_hex = proxy.endpoint_id_hex.clone();
     let direct = proxy.direct.clone();
+    let standin_fp = sshd.host_key_fp.clone();
+    let password_attempts = sshd.password_attempts.clone();
 
     let result: Result<()> = store
         .run_concurrent(async move |accessor| {
             let guest = client.experiment_mosh_client_client().client_session();
 
-            // Negative path: wrong pairing token ⇒ refused without
-            // ceremony (the proxy stays up).
+            // --- Phase 1: NewSession refused without --personal ------------
+            // Even the CORRECT pairing token must be rejected: this gate
+            // proves the deprivileged proxy posture (it never spawns
+            // sessions itself in this mode).
             let refused = guest
-                .call_connect_proxy(
-                    accessor,
-                    relay_url.clone(),
-                    peer_hex.clone(),
-                    Some(direct.clone()),
-                    "wrong-token".into(),
-                    80,
-                    24,
-                )
-                .await?;
-            if refused.is_ok() {
-                bail!("wrong pairing token was accepted");
-            }
-            println!("[proxy-e2e] wrong token refused OK ({})", refused.unwrap_err());
-
-            // Real session.
-            let session = guest
                 .call_connect_proxy(
                     accessor,
                     relay_url.clone(),
@@ -323,12 +343,114 @@ async fn run() -> Result<()> {
                     80,
                     24,
                 )
-                .await?
-                .map_err(|e| anyhow!("connect-proxy: {e}"))?;
-            println!("[proxy-e2e] connect-proxy OK (control channel + key delivery)");
+                .await?;
+            let Err(msg) = refused else {
+                bail!("connect-proxy succeeded despite no --personal");
+            };
+            if !msg.to_lowercase().contains("personal") {
+                bail!("connect-proxy refusal didn't mention 'personal': {msg}");
+            }
+            println!("[ssh-e2e] phase 1: NewSession refused without --personal OK ({msg})");
 
-            let max = guest.call_max_datagram_size(accessor, session).await?;
-            println!("[proxy-e2e] max-datagram-size: {max:?}");
+            // --- Phase 2: wrong expected-host-key fails before auth --------
+            let attempts_before = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            let bogus_fp = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            let refused = guest
+                .call_connect_ssh(
+                    accessor,
+                    relay_url.clone(),
+                    peer_hex.clone(),
+                    Some(direct.clone()),
+                    TOKEN.into(),
+                    TEST_USER.into(),
+                    TEST_PASSWORD.into(),
+                    Some(bogus_fp.into()),
+                    None,
+                    80,
+                    24,
+                )
+                .await?;
+            let Err(msg) = refused else {
+                bail!("connect-ssh succeeded despite a bogus expected-host-key");
+            };
+            if !msg.to_lowercase().contains("host key mismatch") {
+                bail!("host-key refusal didn't mention 'host key mismatch': {msg}");
+            }
+            let attempts_after = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            if attempts_after != attempts_before {
+                bail!(
+                    "password was sent to an unapproved host key (attempts {attempts_before} -> {attempts_after})"
+                );
+            }
+            println!(
+                "[ssh-e2e] phase 2: wrong expected-host-key failed before auth OK ({msg}); password_attempts unchanged ({attempts_after})"
+            );
+
+            // --- Phase 3: wrong password fails legibly ----------------------
+            let attempts_before = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            let refused = guest
+                .call_connect_ssh(
+                    accessor,
+                    relay_url.clone(),
+                    peer_hex.clone(),
+                    Some(direct.clone()),
+                    TOKEN.into(),
+                    TEST_USER.into(),
+                    "wrongpass".into(),
+                    Some(standin_fp.clone()),
+                    None,
+                    80,
+                    24,
+                )
+                .await?;
+            let Err(msg) = refused else {
+                bail!("connect-ssh succeeded with the wrong password");
+            };
+            if !msg.to_lowercase().contains("auth") {
+                bail!("wrong-password refusal didn't mention 'auth': {msg}");
+            }
+            let attempts_after = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            if attempts_after <= attempts_before {
+                bail!(
+                    "wrong-password attempt wasn't counted (attempts {attempts_before} -> {attempts_after})"
+                );
+            }
+            println!(
+                "[ssh-e2e] phase 3: wrong password failed legibly OK ({msg}); password_attempts {attempts_before} -> {attempts_after}"
+            );
+
+            // --- Phase 4: positive path --------------------------------------
+            let session = guest
+                .call_connect_ssh(
+                    accessor,
+                    relay_url.clone(),
+                    peer_hex.clone(),
+                    Some(direct.clone()),
+                    TOKEN.into(),
+                    TEST_USER.into(),
+                    TEST_PASSWORD.into(),
+                    None, // TOFU first contact
+                    Some(
+                        "mosh-server new -i 127.0.0.1 -c 256 -- bash --noprofile --norc -i"
+                            .into(),
+                    ),
+                    80,
+                    24,
+                )
+                .await?
+                .map_err(|e| anyhow!("connect-ssh (positive): {e}"))?;
+            println!("[ssh-e2e] phase 4: connect-ssh OK (inner ssh + mosh-server + tunnel)");
+
+            let observed_fp = guest
+                .call_ssh_host_key(accessor, session)
+                .await?
+                .context("ssh-host-key returned none after connect-ssh")?;
+            if observed_fp != standin_fp {
+                bail!(
+                    "ssh-host-key mismatch: engine reported {observed_fp}, stand-in computed {standin_fp}"
+                );
+            }
+            println!("[ssh-e2e] ssh-host-key matches stand-in fingerprint: {observed_fp}");
 
             let mut visible = String::new();
             let wait_for = async |visible: &mut String, needle: &str, label: &str| -> Result<()> {
@@ -346,45 +468,24 @@ async fn run() -> Result<()> {
             };
 
             wait_for(&mut visible, "$", "shell prompt").await?;
-            println!("[proxy-e2e] prompt OK");
+            println!("[ssh-e2e] prompt OK");
 
             guest
-                .call_feed_keys(accessor, session, b"echo m0sh_$(printf prox)_ok\r".to_vec())
+                .call_feed_keys(accessor, session, b"echo m0sh_$(printf ssh)_ok\r".to_vec())
                 .await?;
-            wait_for(&mut visible, "m0sh_prox_ok", "echo marker").await?;
-            println!("[proxy-e2e] echo round-trip OK");
+            wait_for(&mut visible, "m0sh_ssh_ok", "echo marker").await?;
+            println!("[ssh-e2e] echo round-trip OK");
 
             guest.call_resize(accessor, session, 100, 30).await?;
             guest
                 .call_feed_keys(accessor, session, b"stty size\r".to_vec())
                 .await?;
             wait_for(&mut visible, "30 100", "stty size after resize").await?;
-            println!("[proxy-e2e] resize OK");
-
-            // Bulk: an incompressible full-screen paint forces the
-            // stock server over 1162 B — mosh zlib-compresses its
-            // diffs, so compressible output (`seq`) can stay under the
-            // ceiling and leave sub-framing untested. 220×50 of base64
-            // noise ≈ 11 KB raw ≈ 8 KB compressed ⇒ several full-size
-            // (~1252 B) fragments regardless of how the server slices
-            // its frames. Without proxy-side sub-framing this phase
-            // stalls (send-datagram rejects oversized datagrams).
-            guest.call_resize(accessor, session, 220, 50).await?;
-            guest
-                .call_feed_keys(
-                    accessor,
-                    session,
-                    b"b=$(head -c 8192 /dev/urandom | base64 -w0); \
-                      printf '%s\\n' \"$b\"; echo BULK_$(printf DO)NE\r"
-                        .to_vec(),
-                )
-                .await?;
-            wait_for(&mut visible, "BULK_DONE", "bulk done marker").await?;
-            println!("[proxy-e2e] bulk over sub-framed tunnel OK");
+            println!("[ssh-e2e] resize OK");
 
             let stats = guest.call_stats(accessor, session).await?;
             println!(
-                "[proxy-e2e] stats: sent={} acked={} recv={} rto={}ms",
+                "[ssh-e2e] stats: sent={} acked={} recv={} rto={}ms",
                 stats.sent_num, stats.acked_num, stats.recv_num, stats.rto_ms
             );
             if stats.sent_num < 1 || stats.acked_num < 1 || stats.recv_num < 1 {
@@ -397,29 +498,7 @@ async fn run() -> Result<()> {
         .await?;
     result?;
 
-    // The proxy logs a per-connection summary with the fragmented
-    // count once the session closes; require ≥ 1.
-    let mut fragmented: Option<u64> = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        for line in proxy.lines.lock().unwrap().iter() {
-            if let Some(ix) = line.find("fragmented=") {
-                let tail = &line[ix + "fragmented=".len()..];
-                let n: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-                fragmented = n.parse().ok();
-            }
-        }
-        if fragmented.is_some() {
-            break;
-        }
-    }
-    let fragmented = fragmented.context("proxy never logged a session summary")?;
-    println!("[proxy-e2e] proxy fragmented {fragmented} oversized server datagrams");
-    if fragmented < 1 {
-        bail!("bulk phase produced no oversized datagrams — sub-framing untested");
-    }
-
     proxy.child.kill().await.ok();
-    println!("proxy E2E (M4 gate): OK");
+    println!("ssh E2E (M7 gate): OK");
     Ok(())
 }

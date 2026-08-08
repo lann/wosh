@@ -23,6 +23,19 @@ interface client {
     /// in hand.
     dial: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, key: string, cols: u16, rows: u16) -> result<client-session, string>;
 
+    /// Inner-ssh flow (M7, workstream F): dial the proxy, hello, open
+    /// an ssh-forward stream to sshd on the proxy host's loopback,
+    /// authenticate (password v0; sent only after the host key is
+    /// approved), run `mosh-command` (default `mosh-server new -i
+    /// 127.0.0.1 -c 256`), parse `MOSH CONNECT <port> <key>` from its
+    /// output, route the connection's datagram tunnel to that port,
+    /// and start the engine. The proxy never sees the key (D2 end
+    /// state). Host-key policy: `expected-host-key` some(fp) must
+    /// match the server's base64 SHA-256 or the flow fails before
+    /// authentication; none accepts and reports (TOFU first contact —
+    /// read ssh-host-key and pin it).
+    connect-ssh: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, pairing-token: string, user: string, password: string, expected-host-key: option<string>, mosh-command: option<string>, cols: u16, rows: u16) -> result<client-session, string>;
+
     /// Queue keystrokes (prediction overlay surfaces via drain-output).
     feed-keys: async func(keys: list<u8>);
 
@@ -40,6 +53,11 @@ interface client {
 
     /// The proxy-assigned session id (none on the `dial` path).
     session-id: async func() -> option<u64>;
+
+    /// The ssh server's host key fingerprint (base64 SHA-256), on the
+    /// connect-ssh path once kex reached it. Pin it (embedder
+    /// storage) and pass it as expected-host-key next time.
+    ssh-host-key: async func() -> option<string>;
 
     /// The session's mosh key. For embedder-side persistence only
     /// (D4): wrap it (PRF arm) or store it (plain arm) together with
@@ -106,6 +124,7 @@ interface embed {
 /// The glue component's own world (what client-core builds against).
 world client-world {
   import experiment:mosh/engine;
+  import experiment:mosh/ssh;
   import polymorph:iroh/identity-generate@0.1.0;
   import polymorph:iroh/endpoint@0.1.0;
   import wasi:clocks/monotonic-clock@0.3.0;

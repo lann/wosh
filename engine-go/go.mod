@@ -6,6 +6,7 @@ require (
 	github.com/unixshells/mosh-go v0.5.3-0.20260405220648-8dca5c67ec8e
 	github.com/unixshells/vt-go v0.1.0
 	go.bytecodealliance.org/pkg v0.2.2
+	golang.org/x/crypto v0.49.0
 )
 
 require (

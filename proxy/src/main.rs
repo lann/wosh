@@ -63,13 +63,23 @@ struct Cli {
     shell: Option<String>,
     rp_id: String,
     rp_origin: String,
+    /// Personal mode (D2 interim, M7 opt-in): the proxy spawns
+    /// mosh-server itself and custodies session keys. Default OFF —
+    /// the deprivileged posture, where clients bring their own
+    /// mosh-server through the forwarded ssh stream.
+    personal: bool,
+    /// Where SSH_FORWARD streams connect (loopback enforced: a
+    /// forwarded ssh leg must never turn the proxy into an open
+    /// relay off-host).
+    ssh_target: std::net::SocketAddr,
 }
 
 fn usage() -> anyhow::Error {
     anyhow!(
         "usage: experiment-mosh-proxy --relay <url> [--state-dir <dir>] \
          [--qr-base <url>] [--component <composed-proxy.wasm>] \
-         [--token <pairing-token>] [--yes] [--no-qr] [--shell <cmd…>] \
+         [--token <pairing-token>] [--yes] [--no-qr] [--personal] \
+         [--shell <cmd…>] [--ssh-target <loopback-ip:port>] \
          [--rp-id <domain>] [--rp-origin <url>]"
     )
 }
@@ -85,6 +95,8 @@ fn parse_args() -> Result<Cli> {
     let mut shell = None;
     let mut rp_id = None;
     let mut rp_origin = None;
+    let mut personal = false;
+    let mut ssh_target = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(usage);
@@ -99,8 +111,19 @@ fn parse_args() -> Result<Cli> {
             "--shell" => shell = Some(value()?),
             "--rp-id" => rp_id = Some(value()?),
             "--rp-origin" => rp_origin = Some(value()?),
+            "--personal" => personal = true,
+            "--ssh-target" => ssh_target = Some(value()?),
             _ => return Err(usage()),
         }
+    }
+    let ssh_target: std::net::SocketAddr = ssh_target
+        .unwrap_or_else(|| "127.0.0.1:22".into())
+        .parse()
+        .context("--ssh-target must be an ip:port")?;
+    if !ssh_target.ip().is_loopback() {
+        return Err(anyhow!(
+            "--ssh-target must be a loopback address, got {ssh_target}"
+        ));
     }
     let state_dir = state_dir.unwrap_or_else(|| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -123,6 +146,8 @@ fn parse_args() -> Result<Cli> {
         // native harness and local development.
         rp_id: rp_id.unwrap_or_else(|| "localhost".into()),
         rp_origin: rp_origin.unwrap_or_else(|| "http://localhost".into()),
+        personal,
+        ssh_target,
     })
 }
 
@@ -245,6 +270,8 @@ struct Ctx {
     pairing_token: String,
     auto_accept: bool,
     shell: Option<String>,
+    /// Personal mode: proxy-spawned sessions allowed (D2 interim).
+    personal: bool,
     // --- the WebAuthn relying party + escrow store (M6) ---
     webauthn: Webauthn,
     reg_states: HashMap<u64, PasskeyRegistration>,
@@ -377,11 +404,19 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
     async fn new_session(
         accessor: &wasmtime::component::Accessor<Ctx, Self>,
     ) -> wasmtime::Result<Result<SessionInfo, String>> {
-        let (id, shell) = accessor.with(|mut a| {
+        let (personal, id, shell) = accessor.with(|mut a| {
             let ctx = a.get();
+            if !ctx.personal {
+                return (false, 0, None);
+            }
             ctx.next_session_id += 1;
-            (ctx.next_session_id, ctx.shell.clone())
+            (true, ctx.next_session_id, ctx.shell.clone())
         });
+        if !personal {
+            // Defense in depth: proxy-core already refuses NewSession
+            // outside personal mode without calling us.
+            return Ok(Err("personal mode disabled".into()));
+        }
         match MoshSession::spawn(id, shell.as_deref()) {
             Ok(s) => {
                 let info = SessionInfo {
@@ -394,6 +429,38 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
             }
             Err(e) => Ok(Err(format!("{e:#}"))),
         }
+    }
+
+    async fn register_forward(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+        udp_port: u16,
+    ) -> wasmtime::Result<Result<u64, String>> {
+        Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            if udp_port == 0 {
+                return Err("forward port 0 is not a session".into());
+            }
+            // One session entry per port: a forwarded session must
+            // not alias (and later reap or shadow) an existing one.
+            if ctx.sessions.iter().any(|s| s.port == udp_port) {
+                return Err(format!("udp:{udp_port} already belongs to a session"));
+            }
+            ctx.next_session_id += 1;
+            let id = ctx.next_session_id;
+            // No key (client-managed), no pid (nothing to reap):
+            // kill() no-ops on pid None and end_session's retain
+            // treats the entry like any other — passkey binding is
+            // keyed by session id and works unchanged.
+            ctx.sessions.push(MoshSession {
+                id,
+                port: udp_port,
+                key: String::new(),
+                pid: None,
+                persistent: false,
+            });
+            println!("session {id}: client-managed mosh-server on udp:{udp_port} (forwarded)");
+            Ok(id)
+        }))
     }
 
     async fn webauthn_step(
@@ -597,6 +664,7 @@ async fn main() -> Result<()> {
             pairing_token: token.clone(),
             auto_accept: cli.yes,
             shell: cli.shell.clone(),
+            personal: cli.personal,
             webauthn,
             reg_states: HashMap::new(),
             auth_states: HashMap::new(),
@@ -608,11 +676,13 @@ async fn main() -> Result<()> {
     let proxy = bindings::ComposedProxy::instantiate_async(&mut store, &component, &linker).await?;
 
     let relay = cli.relay.clone();
+    let ssh_target = cli.ssh_target.to_string();
+    let personal = cli.personal;
     store
         .run_concurrent(async move |accessor| -> Result<()> {
             let started = proxy
                 .experiment_mosh_proxy_proxy()
-                .call_start(accessor, relay.clone())
+                .call_start(accessor, relay.clone(), ssh_target.clone(), personal)
                 .await?
                 .map_err(|e| anyhow!("proxy start: {e}"))?;
 
@@ -635,7 +705,11 @@ async fn main() -> Result<()> {
                     Err(e) => println!("(no QR: {e})"),
                 }
             }
-            println!("ready; pairing token: {token}");
+            println!(
+                "ready; pairing token: {token} ({} mode; ssh-target {})",
+                if cli.personal { "personal" } else { "deprivileged" },
+                cli.ssh_target
+            );
 
             // Park until asked to stop; the store keeps driving the
             // component's accept/session tasks. SIGINT/SIGTERM reap

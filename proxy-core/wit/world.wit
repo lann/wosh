@@ -41,8 +41,18 @@ interface host {
   /// refused. `false` ⇒ the connection is closed without ceremony.
   authorize: async func(peer-id-hex: string, pairing-token: string) -> bool;
 
-  /// Spawn `mosh-server -i 127.0.0.1` for a new session.
+  /// Spawn `mosh-server -i 127.0.0.1` for a new session. Personal
+  /// mode only (D2 interim; M7 makes it opt-in): outside it the host
+  /// refuses — proxy-core also gates, this is defense in depth.
   new-session: async func() -> result<session-info, string>;
+
+  /// Record a client-managed session (M7 inner ssh): the client
+  /// started its own mosh-server on the proxy host's loopback through
+  /// the forwarded ssh stream and owns the key; the host only assigns
+  /// a session id and remembers the port, so passkey binding
+  /// (webauthn-step / make-persistent / reattach) works unchanged.
+  /// There is no proxy-side process to reap.
+  register-forward: async func(udp-port: u16) -> result<u64, string>;
 
   /// Run one ceremony step for `session-id` (see ceremony-kind).
   webauthn-step: async func(kind: ceremony-kind, session-id: u64, payload: list<u8>) -> result<list<u8>, string>;
@@ -58,7 +68,9 @@ interface host {
 
   /// The session's connection ended: reclaim the server process —
   /// unless the session is persistent, in which case it survives for
-  /// a future reattach.
+  /// a future reattach. Tolerant of unknown ports: forwarded sessions
+  /// (M7) have no proxy-side process, and a client-started
+  /// mosh-server is the user's own, exactly like stock mosh usage.
   end-session: func(udp-port: u16);
 
   log: func(message: string);
@@ -73,8 +85,12 @@ interface proxy {
 
   /// Bind the endpoint (home relay required) and start accepting.
   /// Returns once listening; connections are served on background
-  /// tasks for the instance's lifetime.
-  start: async func(relay-url: string) -> result<started, string>;
+  /// tasks for the instance's lifetime. `ssh-target` is the
+  /// `ip:port` that SSH_FORWARD streams connect to (the shell
+  /// enforces a loopback host); `personal` enables proxy-spawned
+  /// sessions (D2 interim mode) — without it `NewSession` is refused
+  /// and clients bring their own mosh-server over ssh (M7 posture).
+  start: async func(relay-url: string, ssh-target: string, personal: bool) -> result<started, string>;
 }
 
 /// What proxy-core builds against.

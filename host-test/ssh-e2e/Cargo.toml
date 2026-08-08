@@ -1,0 +1,23 @@
+[package]
+name = "ssh-e2e"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "M7 gate: composed client core -> inner ssh (x/crypto/ssh in wasm) through the proxy's ssh-forward stream to an sshd stand-in, then mosh over the datagram tunnel"
+
+[workspace]
+
+[dependencies]
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+wasmtime-webrtc-datachannels = { path = "../../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
+polymorph-webcrypto-wasmtime = { path = "../../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
+wasmtime-websocket = { path = "../../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util"] }
+anyhow = "1"
+env_logger = "0.11"
+russh = "0.62.5"
+sha2 = "0.11.0"
+base64 = "0.23.1"
+rand = "0.10"
+log = "0.4.33"

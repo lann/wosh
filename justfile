@@ -177,3 +177,17 @@ m5: m5-web
 # full browser↔proxy ceremony E2E stays A3-blocked.
 m6: compose-client compose-proxy proxy-build
     cd host-test/passkey-e2e && cargo run --release
+
+# --- M7 inner ssh (F) ---------------------------------------------------------
+
+# The M7 gate: DEPRIVILEGED proxy (no --personal — it spawns nothing
+# and never sees mosh keys) with --ssh-target pointing at a russh
+# sshd stand-in on loopback. The composed client dials over iroh,
+# opens an SSH_FORWARD stream, speaks real ssh (x/crypto/ssh in the
+# engine) through the tunnel, boots its own mosh-server via ssh exec,
+# routes the datagram tunnel to it (ForwardDatagrams), and passes the
+# M1 trio. Negatives: NewSession refused without --personal; wrong
+# password fails legibly; wrong expected host key fails BEFORE the
+# password is ever sent (stand-in observes zero auth attempts).
+m7: compose-client compose-proxy proxy-build
+    cd host-test/ssh-e2e && cargo run --release

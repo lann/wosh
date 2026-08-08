@@ -3,6 +3,8 @@ package export_experiment_spike_probes
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"runtime"
+	"time"
 )
 
 func Add(a, b int32) int32 { return a + b }
@@ -27,3 +29,50 @@ func TickBatch(n uint32) [][]uint8 {
 	}
 	return out
 }
+
+// --- M7 parked-goroutine probes (see wit) ----------------------------------
+
+var (
+	pokeC        chan uint32
+	parkedResult uint32
+	sleepDone    uint32
+)
+
+func gosched(rounds int) {
+	for i := 0; i < rounds; i++ {
+		runtime.Gosched()
+	}
+}
+
+func SpawnParked() {
+	parkedResult = 0
+	pokeC = make(chan uint32) // unbuffered: a real park + handoff
+	stage2 := make(chan uint32)
+	go func() {
+		v := <-pokeC    // parks across export calls until Poke
+		stage2 <- v + 1 // parks until the second goroutine receives
+	}()
+	go func() {
+		parkedResult = (<-stage2) * 2
+	}()
+}
+
+func Poke(value uint32) {
+	pokeC <- value // handoff: parks this export goroutine briefly
+	gosched(16)    // run the chain to quiescence
+}
+
+func ParkedResult() uint32 { return parkedResult }
+
+func SpawnSleeper(ms uint32) {
+	sleepDone = 0
+	go func() {
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		sleepDone = 1
+	}()
+	gosched(4) // let it reach the sleep
+}
+
+func Pump() { gosched(16) }
+
+func SleepResult() uint32 { return sleepDone }

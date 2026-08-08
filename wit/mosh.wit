@@ -64,6 +64,64 @@ interface engine {
   version: func() -> string;
 }
 
+/// The ssh client engine (M7, workstream F): the same sans-I/O
+/// discipline as `engine` — the host owns the forwarded byte stream
+/// and time. x/crypto/ssh runs on goroutines parked on an in-memory
+/// conn; every export returns promptly, and feed/pump run the internal
+/// scheduler (finding 22: parked goroutines resume across sync export
+/// calls, and Go-native timers fire once wall time passes and the
+/// scheduler is pumped — x/crypto/ssh's client path is timer-free
+/// anyway). v0 surface is the mosh bootstrap: handshake, one exec,
+/// output. Host-key policy v0: accept and report — the embedder pins
+/// fingerprints (TOFU in client storage).
+interface ssh {
+  variant ssh-status {
+    connecting,
+    /// Parked in the host-key callback: host-key-sha256 is now
+    /// available and the handshake will not proceed (password is
+    /// never sent to an unapproved host) until host-key-decision.
+    host-key-check,
+    ready,
+    failed(string),
+  }
+
+  resource ssh-session {
+    /// Start an ssh client handshake (password auth v0) over the
+    /// external byte stream. Never fails synchronously — watch
+    /// status.
+    connect: static func(user: string, password: string) -> ssh-session;
+
+    /// Bytes that arrived from the forwarded stream.
+    feed: func(data: list<u8>);
+
+    /// Bytes to write to the forwarded stream.
+    drain: func() -> list<u8>;
+
+    /// Run scheduler rounds without feeding bytes (handshake
+    /// progress, internal timers). Call on the tick cadence.
+    pump: func();
+
+    status: func() -> ssh-status;
+
+    /// base64 SHA-256 of the server host key (once kex reached it).
+    host-key-sha256: func() -> option<string>;
+
+    /// Resolve a host-key-check: accept continues the handshake
+    /// (authentication starts), reject fails it.
+    host-key-decision: func(accept: bool);
+
+    /// Run one command on the server (session channel + exec).
+    exec: func(command: string) -> result<_, string>;
+
+    /// Accumulated stdout+stderr of the exec'd command.
+    read-output: func() -> list<u8>;
+
+    /// The command's exit status, once it finished.
+    exit-status: func() -> option<s32>;
+  }
+}
+
 world engine-world {
   export engine;
+  export ssh;
 }

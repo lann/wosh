@@ -6,11 +6,12 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M6 complete (passkey persistence + fresh-process reattach,
-native gate green; browser ceremony E2E A3-blocked).** Local-only
-experiment: no CI, no stability, delete-at-will. If it earns a public
-repository it gets a new name. The full plan lives in
-[`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
+**Status: M7 complete (inner ssh; the proxy is deprivileged by
+default and never sees mosh keys — the D2 end state; browser legs
+A3-blocked).** Local-only experiment: no CI, no stability,
+delete-at-will. If it earns a public repository it gets a new name.
+The full plan lives in [`PLAN.md`](PLAN.md); resumable session state
+in [`TASK.md`](TASK.md).
 
 ## Architecture
 
@@ -52,7 +53,8 @@ ssh/mosh layer is the strong security boundary.
   control channel. Inner ssh (browser→sshd through a forwarded stream)
   becomes the default posture later; interim survives as a "personal
   mode". Rationale: with inner ssh the proxy drops out of the
-  authentication TCB and runs unprivileged.
+  authentication TCB and runs unprivileged. *(Realized in M7, finding
+  23: deprivileged is the default, `--personal` is the opt-in.)*
 - **D3** Upstream-first: the two polymorph-iroh gaps (QUIC datagram WIT
   surface, stable/injectable endpoint identity) are issues+PRs against
   polymorph-iroh, per its conventions (both fall under its issue #3).
@@ -148,14 +150,20 @@ ssh/mosh layer is the strong security boundary.
   `proxy-e2e/` — the M4 native gate (composed core ↔ real proxy ↔
   proxy-spawned mosh-server over iroh); `passkey-e2e/` — the M6 native
   gate (ceremonies, escrow, persistent detach, fresh-process reattach;
-  webauthn-authenticator-rs soft passkey as the user).
+  webauthn-authenticator-rs soft passkey as the user); `ssh-e2e/` —
+  the M7 native gate (deprivileged proxy, russh sshd stand-in,
+  inner-ssh flow with host-key/auth negatives).
 - `proxy-core/` — the D9 proxy-brain component (accept loop, control
   channel, TOFU via host import, sub-framed datagram pumps,
-  `wasi:sockets` UDP to mosh-server); fused into
+  `wasi:sockets` UDP to mosh-server, and the M7 SSH_FORWARD
+  stream↔TCP forwarder in `src/tcp.rs`); fused into
   `proxy/composed-proxy.wasm`.
 - `proxy/` — the native proxy shell: wasmtime + composed proxy-core,
-  four host imports (authorize/new-session/end-session/log),
-  connstring + QR bootstrap UX.
+  host imports (authorize/new-session/register-forward/end-session/
+  webauthn/escrow/log), connstring + QR bootstrap UX. Deprivileged by
+  default since M7 (`--personal` opts back into proxy-spawned
+  sessions; `--ssh-target` names the loopback sshd for forwarded
+  streams).
 - `web/` — the static client site: `index.html` + `app.mjs` (xterm.js
   + engine over the M2 dev bridge; idles honestly without one) +
   the M5 bootstrap modules — `boot.mjs` (panel: fragment/manual
@@ -178,7 +186,7 @@ ssh/mosh layer is the strong security boundary.
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **unblocked parts DONE** (findings 17–19; `just m5 m5-jco-probe m5-netem`); browser endpoint leg **blocked on A3** + new lann/jco#51 |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native gate) + web-tests phase 3; browser↔proxy ceremony E2E A3-blocked |
-| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | |
+| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7`; proxy deprivileged by default (`--personal` opts back in); browser ssh leg A3-blocked |
 
 ## Running
 
@@ -201,7 +209,9 @@ polymorph-iroh/.deps), headless Chromium 151. M1 adds: stock
 see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0. The D7 compose spike adds:
 wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
 0.59. M6 adds: webauthn-rs 0.5 (proxy RP), webauthn-authenticator-rs
-0.5.5 SoftPasskey + webauthn-rs-proto 0.5 (harness).
+0.5.5 SoftPasskey + webauthn-rs-proto 0.5 (harness). M7 adds:
+golang.org/x/crypto v0.49.0 (engine, unpatched) and russh 0.62.5
+(the ssh-e2e sshd stand-in).
 
 1. **componentize-go sync path: green everywhere (D5 gate PASSED).**
    Sync function exports and exported *resources* work under wasmtime
@@ -562,3 +572,90 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     client that dies without a detach-time write still cannot reuse a
     nonce. The full browser↔proxy ceremony E2E remains A3-blocked
     (lann/jco#51 fires at instantiation, before the scheduler).
+
+22. **The ssh engine can be pure sync sans-I/O: parked goroutines
+    survive across sync export calls, and Go-native timers work in
+    the sync world (M7 spike; finding 3a was async-world-specific).**
+    The M0 sync spike grew two probes, green under jco/node and
+    jco/Chromium: (a) a goroutine parked on an unbuffered channel
+    inside one sync export call resumes correctly during a *later*
+    export call once fed and pumped (`runtime.Gosched` rounds); (b) a
+    goroutine blocked in stock-Go `time.Sleep` fires once wall time
+    has passed and the scheduler is pumped — no trap, because the
+    sync world runs stock Go (the finding-3a timer trap is a
+    patched-Go/async-world artifact). Caveat: the spike's wasmtime
+    leg is WAVE single-invoke and cannot exercise cross-call
+    parking — the M7 gate itself is the wasmtime-side proof. Belt and
+    suspenders, audited anyway: x/crypto/ssh v0.49.0 contains ZERO
+    `time.After/Sleep/NewTimer/NewTicker/AfterFunc/Tick` in non-test
+    files (deadline use only in `tcpip.go`, port forwarding, unused);
+    the client path (NewClientConn/mux/session/exec) is timer-free.
+    Consequence: `wit/mosh.wit` grew a second engine interface `ssh`
+    (same component, same sans-I/O discipline as `engine`):
+    `connect(user, password)` never fails synchronously,
+    `feed`/`drain` shuttle the forwarded stream's bytes, `pump` runs
+    scheduler rounds on the tick cadence, and `status` surfaces
+    `connecting | host-key-check | ready | failed`. Inside,
+    x/crypto/ssh runs unmodified on goroutines over a `shuttleConn`
+    (an in-memory `net.Conn`: Read parks on a 1-buffered wake
+    channel — check-then-park is race-free under cooperative wasm
+    scheduling; Write appends to an outbox). The **host-key gate**
+    exploits x/crypto/ssh's guarantee that authentication runs
+    strictly after the HostKeyCallback: the callback goroutine parks
+    on a decision channel, status shows `host-key-check` with the
+    fingerprint readable, and the password is only ever sent after an
+    explicit `host-key-decision(true)`. x/crypto/ssh v0.49.0 rides
+    unpatched (nothing vendored); engine grows +3 MB to 8.06 MB.
+    The shape is browser-viable by construction (sync exports, stock
+    Go); the browser leg still waits on A3 — but via the endpoint's
+    jco scheduler blockage like everything else, no longer via the
+    finding-4 async-lower gap.
+
+23. **M7 gate PASSED (`just m7`): inner ssh end-to-end — the client
+    boots its own mosh-server through a forwarded ssh stream, the
+    proxy runs deprivileged and never sees the mosh key (the D2 end
+    state).** The gate runs the proxy WITHOUT `--personal` against a
+    russh-based sshd stand-in on loopback (`host-test/ssh-e2e`;
+    password auth, exec via `sh -c` with a UTF-8 locale, exit-status
+    forwarding, and a password-attempt counter). Flow: `connect-ssh`
+    dials the proxy, hellos, opens a bi stream whose first byte is
+    `stream_tag::SSH_FORWARD` (the control stream needs no tag: it is
+    the first one), and the proxy-core stream daemon forwards it to
+    `--ssh-target` over `wasi:sockets@0.3` TCP (p3 stream-shaped:
+    `send(stream<u8>)` and `receive()` are each called once; teardown
+    rides the FIN cascade, no import cancellation). x/crypto/ssh in
+    the engine handshakes through the tunnel (~2.8 KB → / ~3.4 KB ←
+    including exec), the client execs `mosh-server new -i 127.0.0.1
+    -c 256 …`, parses `MOSH CONNECT` from complete lines only, sends
+    `ForwardDatagrams{port}` — the host assigns a session id and
+    records the port (`register-forward`), the datagram pumps run
+    unchanged, and the M1 trio passes through the full path.
+    Negatives, in order: `connect-proxy` (NewSession) is refused in
+    deprivileged mode with a legible error; a wrong
+    `expected-host-key` fails BEFORE authentication with the stand-in
+    observing **zero** password attempts (the finding-22 host-key
+    gate, verified externally); a wrong password fails legibly (one
+    attempt observed). Fingerprint format pinned end-to-end: base64
+    (standard, padded) of SHA-256 over the host key's SSH wire blob.
+    Lessons: (a) sending a terminal control `Error` and then closing
+    the connection is a race — QUIC close discards in-flight stream
+    data, and the client sees "stream closed" instead of the reason;
+    the proxy now sends the refusal and waits for the *peer* to close
+    (`Control::fail`) before teardown. (b) The stream-accept daemon
+    must be listening while the proxy still waits for the
+    session-establishing control message (the ssh leg precedes
+    `ForwardDatagrams` by construction); completion follows the
+    no-cancel discipline — the session phase decides, `conn.close`
+    resolves the daemon's parked `accept-bi`, and the daemon drains
+    to its natural end. (c) Reattach to a forwarded session needs no
+    second ssh leg: the client-owned mosh-server is the user's own
+    process and survives detach; the host's session entry (id ↔
+    port, no pid, no key) makes passkey binding port-agnostic —
+    `make-persistent`/`reattach` work unchanged. ssh v0 gaps,
+    deliberate: password auth only, one exec per session, no
+    interactive stdin surface; host-key pinning is embedder-side
+    (`expected-host-key`/`ssh-host-key`). The browser ssh leg stays
+    A3-blocked with the rest of the composed client (finding 18);
+    `just m5-jco-probe` remains the unblock detector. Sizes:
+    proxy-core 496 KB, composed proxy 2.5 MB, composed client
+    10.5 MB.

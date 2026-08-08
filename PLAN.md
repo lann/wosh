@@ -272,7 +272,17 @@ imports is confirmed, but Go-*native* timers inside async exports trap
 needs auditing/shimming; on jco, `[async-lower]` imports are broken
 until the fork hardens (travels with A3). Directional last step:
 unextractable WebCrypto ssh key via a WIT-imported signer (needs an
-async export, per finding 3b).
+async export, per finding 3b). *(Built — M7, findings 22–23; native
+gate `just m7`. The M0 concerns dissolved: the ssh engine is pure
+sync sans-I/O — parked goroutines survive across sync exports, stock
+Go timers work in the sync world, and the x/crypto/ssh v0.49.0
+client path is timer-free anyway (audited, unpatched). Host-key gate
+parks the handshake before auth; `stream_tag::SSH_FORWARD` streams
+forward to sshd over `wasi:sockets@0.3` TCP; `ForwardDatagrams`
+routes the tunnel to the client-managed mosh-server; `--personal`
+(default off) is the D2 interim posture, refused otherwise. The
+WebCrypto-signer last step stays future work, A3-adjacent. Browser
+ssh leg rides the composed client's A3 blockage.)*
 
 ## Milestones
 
@@ -285,7 +295,7 @@ async export, per finding 3b).
 | M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | **DONE** — finding 16; wrong-token negative path; sub-framing measured live (6–7 oversized datagrams per bulk run) |
 | M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **unblocked parts DONE** (findings 17–19) — modules+panel gated, native netem matrix green to 10% loss; **composed-core-in-browser blocked on A3 + lann/jco#51**; two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | **DONE** — findings 20–21; `just m6`; state-number adoption + resize dance (fork patches 3–4); no-prf ⇒ refuse persistence; browser ceremony E2E A3-blocked |
-| M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |
+| M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | **DONE** — findings 22–23; `just m7`; sync sans-I/O ssh engine (no patched Go, x/crypto unpatched); host-key gate verified externally (zero auth attempts on mismatch); browser ssh leg A3-blocked |
 
 Every milestone appends findings to README.md (findings-first culture);
 gates that stop the plan stop it into discussion, not silent fallback
@@ -304,7 +314,10 @@ gates that stop the plan stop it into discussion, not silent fallback
 3. **ssh-in-component** → Go-native-timer trap and jco async-lower gap
    (findings 3–4); contingencies: shim timers via explicit
    `wait-for`-based helpers, russh sidecar component, or defer browser
-   ssh behind A3 while wasmtime-side lands.
+   ssh behind A3 while wasmtime-side lands. *(Resolved in M7 without
+   contingencies: the sync world runs stock Go — the timer trap was
+   async-world-only (finding 22) — and the browser leg was already
+   behind A3 for the composed client as a whole.)*
 4. **Moving targets**: Firefox Nightly flag, patched Go (upstreaming as
    golang/go#76775), jco fork — pin what's tested, record versions in
    findings (done for M0).

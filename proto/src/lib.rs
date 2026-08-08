@@ -44,6 +44,11 @@ pub enum Client {
     /// The authenticator's assertion for `AuthChallenge`
     /// (webauthn-rs `PublicKeyCredential` JSON).
     AuthFinish { assertion: Vec<u8> },
+    /// Route the connection's datagram tunnel to a client-managed
+    /// mosh-server on the proxy host's loopback (M7: the client
+    /// started it itself over the forwarded ssh stream and owns the
+    /// key; the proxy never sees it). Proxy answers `ForwardOk`.
+    ForwardDatagrams { port: u16 },
 }
 
 /// Proxy → client control messages.
@@ -68,8 +73,21 @@ pub enum Proxy {
     /// Assertion verified: the escrow blob comes back and the
     /// datagram tunnel now targets the persistent session.
     ReattachReady { session_id: u64, escrow: Vec<u8> },
+    /// The datagram tunnel now targets the client-managed loopback
+    /// port (M7). The session id exists for passkey binding, exactly
+    /// like a proxy-spawned session's.
+    ForwardOk { session_id: u64 },
     /// Terminal failure; the connection closes after this.
     Error { message: String },
+}
+
+/// First byte of every client-opened bidirectional stream AFTER the
+/// control stream, naming what the stream is for. (The control stream
+/// is unambiguous: it is the first one.)
+pub mod stream_tag {
+    /// Forward this stream to the ssh port on the proxy host's
+    /// loopback (M7 inner ssh).
+    pub const SSH_FORWARD: u8 = 0x01;
 }
 
 /// Encode one control message with the u32-LE length prefix.

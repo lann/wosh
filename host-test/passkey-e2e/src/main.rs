@@ -194,6 +194,9 @@ async fn start_proxy() -> Result<ProxyProc> {
             TOKEN,
             "--no-qr",
             "--yes",
+            // M6 uses proxy-spawned sessions (D2 interim), opt-in
+            // since M7's deprivileged default.
+            "--personal",
             "--state-dir",
             state.to_str().unwrap(),
             "--component",

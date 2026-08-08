@@ -56,7 +56,7 @@ impl UdpWire {
     }
 }
 
-fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
+pub fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
     match addr {
         SocketAddr::V4(v4) => IpSocketAddress::Ipv4(Ipv4SocketAddress {
             port: v4.port(),

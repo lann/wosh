@@ -10,7 +10,9 @@ import (
 	witTypes "go.bytecodealliance.org/pkg/wit/types"
 	"runtime"
 	"unsafe"
+	"wit_component/experiment_mosh_ssh"
 	"wit_component/export_experiment_mosh_engine"
+	"wit_component/export_experiment_mosh_ssh"
 )
 
 var staticPinner = runtime.Pinner{}
@@ -183,6 +185,199 @@ func wasm_export_experiment_mosh_engine_version() uintptr {
 //go:wasmexport cabi_post_experiment:mosh/engine#version
 func wasm_export_post_return_experiment_mosh_engine_version(result uintptr) {
 	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[static]ssh-session.connect
+func wasm_export_experiment_mosh_ssh_static_ssh_session_connect(arg0 uintptr, arg1 uint32, arg2 uintptr, arg3 uint32) int32 {
+
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg0)), arg1)
+	value0 := unsafe.String((*uint8)(unsafe.Pointer(arg2)), arg3)
+	witRuntime.Unpin()
+	result := export_experiment_mosh_ssh.SshSessionConnect(value, value0)
+	return (result).TakeHandle()
+
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.feed
+func wasm_export_experiment_mosh_ssh_method_ssh_session_feed(arg0 uintptr, arg1 uintptr, arg2 uint32) {
+
+	value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	(export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Feed(value)
+
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.drain
+func wasm_export_experiment_mosh_ssh_method_ssh_session_drain(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Drain()
+	data := unsafe.Pointer(unsafe.SliceData(result))
+	pinner.Pin(data)
+	*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uint32(len(result)))
+	*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = uint32(uintptr(uintptr(data)))
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_experiment:mosh/ssh#[method]ssh-session.drain
+func wasm_export_post_return_experiment_mosh_ssh_method_ssh_session_drain(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.pump
+func wasm_export_experiment_mosh_ssh_method_ssh_session_pump(arg0 uintptr) {
+
+	(export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Pump()
+
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.status
+func wasm_export_experiment_mosh_ssh_method_ssh_session_status(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Status()
+
+	switch result.Tag() {
+	case experiment_mosh_ssh.SshStatusConnecting:
+
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case experiment_mosh_ssh.SshStatusHostKeyCheck:
+
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+
+	case experiment_mosh_ssh.SshStatusReady:
+
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(2))
+
+	case experiment_mosh_ssh.SshStatusFailed:
+		payload := result.Failed()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(3))
+		utf8 := unsafe.Pointer(unsafe.StringData(payload))
+		pinner.Pin(utf8)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(utf8)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_experiment:mosh/ssh#[method]ssh-session.status
+func wasm_export_post_return_experiment_mosh_ssh_method_ssh_session_status(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.host-key-sha256
+func wasm_export_experiment_mosh_ssh_method_ssh_session_host_key_sha256(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).HostKeySha256()
+
+	switch result.Tag() {
+	case witTypes.OptionNone:
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.OptionSome:
+		payload := result.Some()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+		utf8 := unsafe.Pointer(unsafe.StringData(payload))
+		pinner.Pin(utf8)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(utf8)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_experiment:mosh/ssh#[method]ssh-session.host-key-sha256
+func wasm_export_post_return_experiment_mosh_ssh_method_ssh_session_host_key_sha256(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.host-key-decision
+func wasm_export_experiment_mosh_ssh_method_ssh_session_host_key_decision(arg0 uintptr, arg1 int32) {
+
+	(export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).HostKeyDecision((arg1 != 0))
+
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.exec
+func wasm_export_experiment_mosh_ssh_method_ssh_session_exec(arg0 uintptr, arg1 uintptr, arg2 uint32) uintptr {
+
+	pinner := &syncExportPinner
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Exec(value)
+
+	switch result.Tag() {
+	case witTypes.ResultOk:
+
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.ResultErr:
+		payload := result.Err()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+		utf8 := unsafe.Pointer(unsafe.StringData(payload))
+		pinner.Pin(utf8)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(utf8)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_experiment:mosh/ssh#[method]ssh-session.exec
+func wasm_export_post_return_experiment_mosh_ssh_method_ssh_session_exec(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.read-output
+func wasm_export_experiment_mosh_ssh_method_ssh_session_read_output(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).ReadOutput()
+	data := unsafe.Pointer(unsafe.SliceData(result))
+	pinner.Pin(data)
+	*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uint32(len(result)))
+	*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = uint32(uintptr(uintptr(data)))
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_experiment:mosh/ssh#[method]ssh-session.read-output
+func wasm_export_post_return_experiment_mosh_ssh_method_ssh_session_read_output(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.exit-status
+func wasm_export_experiment_mosh_ssh_method_ssh_session_exit_status(arg0 uintptr) uintptr {
+
+	result := (export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).ExitStatus()
+
+	switch result.Tag() {
+	case witTypes.OptionNone:
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.OptionSome:
+		payload := result.Some()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+		*(*int32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = payload
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
 }
 
 // Unused, but present to make the compiler happy

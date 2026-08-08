@@ -9,6 +9,25 @@ interface probes {
   hash-hex: func(data: list<u8>) -> string;
   /// Shape of the engine's tick() -> outbound datagrams.
   tick-batch: func(n: u32) -> list<list<u8>>;
+
+  /// M7 probes: the ssh engine parks x/crypto/ssh goroutines on
+  /// channels across sync export calls, resuming them by feeding
+  /// bytes and pumping the scheduler. spawn-parked starts a
+  /// two-goroutine chain parked on unbuffered channels; poke performs
+  /// the handoff and pumps; parked-result reads what the chain
+  /// computed (0 until it ran).
+  spawn-parked: func();
+  poke: func(value: u32);
+  parked-result: func() -> u32;
+
+  /// Timer probe: a goroutine parked on Go-native time.Sleep. pump
+  /// runs scheduler rounds; sleep-result reports whether the sleeper
+  /// finished (0 until it did). Tells us whether ssh-internal timers
+  /// merely need wall time + pumping, or freeze/trap (finding 3a was
+  /// about async exports; this is the sync-world answer).
+  spawn-sleeper: func(ms: u32);
+  pump: func();
+  sleep-result: func() -> u32;
 }
 
 interface counters {

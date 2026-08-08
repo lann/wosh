@@ -27,4 +27,23 @@ assert.equal(c2.increment(), 1);
 assert.equal(c.value(), 42); // instances independent
 if (c[Symbol.dispose]) c[Symbol.dispose]();
 
+// M7 probe: goroutines parked on channels survive across export calls
+// and resume when fed + scheduler-pumped (the ssh engine's shape).
+probes.spawnParked();
+assert.equal(probes.parkedResult(), 0, "chain must still be parked");
+probes.poke(20);
+assert.equal(probes.parkedResult(), 42, "chain must have run: (20+1)*2");
+
+// M7 probe: Go-native timer in a plain goroutine (sync world). The
+// interesting answer is whatever it is — record it, don't assume.
+probes.spawnSleeper(5);
+assert.equal(probes.sleepResult(), 0, "sleeper must not finish instantly");
+await new Promise((r) => setTimeout(r, 25));
+probes.pump();
+console.log(
+  `sync spike: parked-goroutine chain OK; sleeper after 25ms wall + pump: ${
+    probes.sleepResult() ? "FIRED" : "still parked"
+  }`,
+);
+
 console.log("sync spike node leg: OK");

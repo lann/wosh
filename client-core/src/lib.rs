@@ -32,6 +32,7 @@ use std::rc::Rc;
 use experiment_mosh_proto as proto;
 
 use bindings::experiment::mosh::engine::Session as EngineSession;
+use bindings::experiment::mosh::ssh::{SshSession, SshStatus};
 use bindings::exports::experiment::mosh_client::client::{
     ClientSession, Guest, GuestClientSession, GuestReattachFlow, ReattachFlow, SessionStats,
 };
@@ -113,6 +114,9 @@ struct Inner {
     framing: Option<RefCell<(u8, proto::Defragmenter)>>,
     session_id: Option<u64>,
     key: String,
+    /// The ssh server's host key fingerprint (connect-ssh path only):
+    /// base64 SHA-256, for embedder-side TOFU pinning.
+    ssh_host_key: Option<String>,
     alive: Cell<bool>,
 }
 
@@ -177,6 +181,113 @@ async fn control_hello(conn: &Connection, pairing_token: &str) -> Result<Control
     }
 }
 
+/// Find `MOSH CONNECT <port> <key>` among the *complete* lines of the
+/// exec output (a partial chunk could truncate the key — only lines
+/// terminated by `\n` are parsed).
+fn parse_mosh_connect(output: &[u8]) -> Option<(u16, String)> {
+    let text = String::from_utf8_lossy(output);
+    for line in text.split_inclusive('\n') {
+        if !line.ends_with('\n') {
+            break; // trailing partial line: wait for more output
+        }
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("MOSH") && parts.next() == Some("CONNECT") {
+            let port: u16 = parts.next()?.parse().ok()?;
+            let key = parts.next()?.to_string();
+            return Some((port, key));
+        }
+    }
+    None
+}
+
+/// Drive the sans-I/O ssh engine over the forwarded stream until the
+/// mosh bootstrap completes: handshake (with the host-key gate — the
+/// password is never sent to an unapproved host), exec the mosh-server
+/// command, and parse `MOSH CONNECT` from its output. Returns
+/// `(udp-port, mosh-key, host-fingerprint)`.
+///
+/// Loop order matters (no starvation, no read-deadlock): flush the
+/// engine's outbound bytes first — pumping and re-draining until quiet
+/// — then act on status (the host-key gate parks the handshake with
+/// nothing in flight, so it must be handled *before* awaiting a read),
+/// then park on the stream read and feed. Awaiting the read while quiet
+/// is safe mid-handshake: ssh is strict request-response.
+async fn drive_ssh(
+    send: &SendStream,
+    recv: &RecvStream,
+    user: &str,
+    password: &str,
+    expected_host_key: Option<&str>,
+    command: &str,
+) -> Result<(u16, String, String), String> {
+    let ssh = SshSession::connect(user, password);
+    let mut host_fp: Option<String> = None;
+    let mut exec_started = false;
+    let mut output: Vec<u8> = Vec::new();
+
+    loop {
+        // 1. Flush outbound: drain → write, pump, repeat until quiet.
+        let bytes = ssh.drain();
+        if !bytes.is_empty() {
+            send.write(bytes).await.map_err(err("ssh write"))?;
+            ssh.pump();
+            continue;
+        }
+
+        // 2. Status gate (before any read-await).
+        match ssh.status() {
+            SshStatus::Connecting => {}
+            SshStatus::HostKeyCheck => {
+                let fp = ssh
+                    .host_key_sha256()
+                    .ok_or("host-key-check without a fingerprint")?;
+                if let Some(expected) = expected_host_key {
+                    if expected != fp {
+                        ssh.host_key_decision(false);
+                        return Err(format!(
+                            "ssh host key mismatch: expected {expected}, server presented {fp} \
+                             — refusing before authentication"
+                        ));
+                    }
+                }
+                host_fp = Some(fp);
+                ssh.host_key_decision(true);
+                ssh.pump();
+                continue;
+            }
+            SshStatus::Ready => {
+                if !exec_started {
+                    ssh.exec(command)?;
+                    exec_started = true;
+                    ssh.pump();
+                    continue;
+                }
+                output.extend_from_slice(&ssh.read_output());
+                if let Some((port, key)) = parse_mosh_connect(&output) {
+                    let fp = host_fp.ok_or("ready without a host key")?;
+                    return Ok((port, key, fp));
+                }
+                if let Some(code) = ssh.exit_status() {
+                    return Err(format!(
+                        "'{command}' exited with status {code} without MOSH CONNECT: {}",
+                        String::from_utf8_lossy(&output).trim()
+                    ));
+                }
+            }
+            SshStatus::Failed(e) => return Err(format!("ssh: {e}")),
+        }
+
+        // 3. Feed inbound: park on the stream, then run the scheduler.
+        match recv.read(4096).await.map_err(err("ssh read"))? {
+            Some(bytes) => {
+                ssh.feed(&bytes);
+                ssh.pump();
+            }
+            None => return Err("ssh stream closed by proxy".into()),
+        }
+    }
+}
+
 impl ClientSessionRes {
     #[allow(clippy::too_many_arguments)]
     fn start(
@@ -189,6 +300,7 @@ impl ClientSessionRes {
         initial_seq: Option<u64>,
         cols: u16,
         rows: u16,
+        ssh_host_key: Option<String>,
     ) -> Result<ClientSession, String> {
         let session = EngineSession::connect(&key, cols, rows, initial_seq)?;
         let inner = Rc::new(Inner {
@@ -199,6 +311,7 @@ impl ClientSessionRes {
             framing: framed.then(|| RefCell::new((0u8, proto::Defragmenter::default()))),
             session_id,
             key,
+            ssh_host_key,
             alive: Cell::new(true),
         });
 
@@ -283,6 +396,7 @@ impl ClientSessionRes {
             None,
             cols,
             rows,
+            None,
         )
     }
 
@@ -326,6 +440,69 @@ impl GuestClientSession for ClientSessionRes {
             None,
             cols,
             rows,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_ssh(
+        relay_url: String,
+        peer_id_hex: String,
+        direct: Option<String>,
+        pairing_token: String,
+        user: String,
+        password: String,
+        expected_host_key: Option<String>,
+        mosh_command: Option<String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<ClientSession, String> {
+        let (endpoint, conn) = dial_connection(&relay_url, &peer_id_hex, direct).await?;
+        let control = control_hello(&conn, &pairing_token).await?;
+
+        // The forwarded ssh stream: tag byte first (the control stream
+        // needs no tag — it is the first stream; every later one names
+        // its purpose up front).
+        let (send, recv) = conn.open_bi().await.map_err(err("open-bi (ssh)"))?;
+        send.write(vec![proto::stream_tag::SSH_FORWARD])
+            .await
+            .map_err(err("ssh tag"))?;
+
+        let command = mosh_command
+            .unwrap_or_else(|| "mosh-server new -i 127.0.0.1 -c 256".to_string());
+        let (port, key, host_fp) = drive_ssh(
+            &send,
+            &recv,
+            &user,
+            &password,
+            expected_host_key.as_deref(),
+            &command,
+        )
+        .await?;
+        // mosh-server has detached; the ssh session and its stream are
+        // done. Dropping them closes the proxy's TCP leg to sshd.
+        drop(send);
+        drop(recv);
+
+        let session_id = match control
+            .request(&proto::Client::ForwardDatagrams { port })
+            .await?
+        {
+            proto::Proxy::ForwardOk { session_id } => session_id,
+            other => return Err(format!("unexpected control message: {other:?}")),
+        };
+
+        Self::start(
+            Some(endpoint),
+            conn,
+            Some(control),
+            true,
+            Some(session_id),
+            key,
+            None,
+            cols,
+            rows,
+            Some(host_fp),
         )
     }
 
@@ -351,6 +528,10 @@ impl GuestClientSession for ClientSessionRes {
 
     async fn session_id(&self) -> Option<u64> {
         self.inner.session_id
+    }
+
+    async fn ssh_host_key(&self) -> Option<String> {
+        self.inner.ssh_host_key.clone()
     }
 
     async fn session_key(&self) -> String {
@@ -483,6 +664,7 @@ impl GuestReattachFlow for ReattachFlowRes {
             Some(initial_seq),
             cols,
             rows,
+            None,
         )
     }
 }
