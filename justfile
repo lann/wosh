@@ -119,3 +119,24 @@ compose-client: engine-build client-core-build
 # datagrams to a stock mosh-server behind an upstream-iroh forwarder.
 m3: compose-client
     cd host-test/composed-e2e && cargo run --release -- ../../client-core/composed-client.wasm
+
+# --- M4 proxy (C/D9) --------------------------------------------------------
+
+# Build the proxy-core brain component.
+proxy-core-build:
+    cd proxy-core && cargo build --target wasm32-wasip2 --release
+
+# Fuse proxy-core + endpoint into the composed proxy artifact.
+compose-proxy: proxy-core-build
+    wac plug proxy-core/target/wasm32-wasip2/release/proxy_core.wasm --plug .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm -o proxy/composed-proxy.wasm
+
+# Build the native proxy shell binary.
+proxy-build:
+    cd proxy && cargo build --release
+
+# The M4 gate: composed client ↔ proxy (thin shell + composed
+# proxy-core) ↔ proxy-spawned stock mosh-server, over real iroh —
+# control channel, TOFU, negative pairing-token path, and >1162 B
+# server datagrams sub-framed through the tunnel.
+m4: compose-client compose-proxy proxy-build
+    cd host-test/proxy-e2e && cargo run --release

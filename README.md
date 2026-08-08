@@ -6,7 +6,7 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M1 complete (wire-compat gate passed).** Local-only
+**Status: M4 complete (native proxy E2E over iroh).** Local-only
 experiment: no CI, no stability, delete-at-will. If it earns a public
 repository it gets a new name. The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
@@ -28,11 +28,13 @@ ssh/mosh layer is the strong security boundary.
   independent of the jco async-scheduler defect (polymorph-iroh#10),
   and JS-orchestrating the components separately remains a cheap
   fallback (the engine surface is the same either way).
-- Control channel: one bi stream, ALPN `experiment-mosh/ctl/0`,
-  versioned CBOR. Pairing token in the QR/connection string; unknown
-  peers without a valid token are silently rejected; with one, both
-  sides display both endpoint pubkeys and the proxy operator accepts
-  manually (TOFU).
+- Control channel: the first client-opened bi stream on the
+  connection (ALPN `experiment-mosh/0`), length-prefixed CBOR, spoken
+  by the client-core glue and the proxy-core component through the
+  shared `proto/` crate (D8). Pairing token in the QR/connection
+  string; unknown peers without a valid token are silently rejected;
+  with one, both sides display both endpoint pubkeys and the proxy
+  operator accepts manually (TOFU).
 - Bootstrap QR encodes `https://<site>/#<connstring>`; the same string
   is scannable in-browser (qr-scanner) or typed manually.
 - v0 sessions: one attached session per connection. Detach without a
@@ -79,7 +81,32 @@ ssh/mosh layer is the strong security boundary.
   separately — kept permanently cheap because the engine surface is
   identical in both shapes. WebAuthn, UI, storage, bootstrap, and (for
   now) the control channel stay in JS; moving the control channel into
-  the glue is an open sub-question for M5.
+  the glue is an open sub-question for M5 (resolved: D8).
+- **D8** *(2026-08-08, M4; resolves D7's open sub-question)* The CBOR
+  control channel lives in the **client-core glue**, not the embedder:
+  the proxy (proxy-core) and the glue share message types and tunnel
+  framing through the `proto/` crate (ciborium both sides), JS/M5
+  stays thin, and the native E2E drives a session with one call
+  (`connect-proxy`). M6 WebAuthn ceremonies will surface as
+  driver-level exports rather than raw control frames. Consequences:
+  the connection ALPN is plain `experiment-mosh/0` — the plan's
+  separate `ctl` ALPN was a conflation (ALPN is per-connection); the
+  control channel is simply the first client-opened bi stream.
+- **D9** *(2026-08-08, M4)* The proxy brain is a **component**:
+  `proxy-core` (Rust wasm) owns the accept loop, control channel,
+  TOFU/authorization flow (policy decisions via a host import),
+  datagram pumps with tunnel sub-framing (finding 9), and the
+  mosh-server UDP leg over `wasi:sockets`; wac fuses it with the
+  polymorph-iroh endpoint into `composed-proxy.wasm`. The native
+  shell provides exactly four host imports — `authorize`,
+  `new-session` (spawn `mosh-server -i 127.0.0.1`), `end-session`,
+  `log` — plus bootstrap UX (connstring + QR). WHY: driving the
+  endpoint world's mixed sync/async exports host-side hits wasmtime
+  bindgen's accessor-vs-store-context wall (sync exports generate
+  store-context calls that cannot interleave with accessor calls in
+  one `run_concurrent`); guest-internal orchestration is the proven
+  pattern (endpoint demo, client-core). Bonus: both tunnel ends are
+  components, so the sub-framing code paths are symmetric.
 
 ## Layout
 
@@ -101,11 +128,22 @@ ssh/mosh layer is the strong security boundary.
 - `wit/` — the `experiment:mosh` engine world.
 - `engine-go/` — the mosh engine component (generated bindings
   committed; regenerate with `just engine-bindings` after WIT changes).
+- `proto/` — control-channel messages + datagram tunnel framing
+  shared by the client-core glue and proxy-core (D8; unit tests:
+  `cargo test --lib`).
 - `host-test/` — M1 conformance harness: jco-transpiled engine driven
   from node over loopback UDP against stock C `mosh-server` (gate) and
   mosh-go's server (`moshgo-server/`); `composed-e2e/` — the M3 native
-  gate (composed core under wasmtime vs upstream iroh + mosh-server).
-- `proxy/` — the native proxy (from M4).
+  gate (composed core under wasmtime vs upstream iroh + mosh-server);
+  `proxy-e2e/` — the M4 native gate (composed core ↔ real proxy ↔
+  proxy-spawned mosh-server over iroh).
+- `proxy-core/` — the D9 proxy-brain component (accept loop, control
+  channel, TOFU via host import, sub-framed datagram pumps,
+  `wasi:sockets` UDP to mosh-server); fused into
+  `proxy/composed-proxy.wasm`.
+- `proxy/` — the native proxy shell: wasmtime + composed proxy-core,
+  four host imports (authorize/new-session/end-session/log),
+  connstring + QR bootstrap UX.
 - `web/` — the static client site. M2 shape: `index.html` + `app.mjs`
   (xterm.js front end, engine pump) served by the bridge; grows into
   the real client (bootstrap, storage, composed core) from M5.
@@ -118,7 +156,7 @@ ssh/mosh layer is the strong security boundary.
 | M1 | engine WIT + Go impl; native harness vs C mosh-server over UDP | **DONE** — wire compat (findings 7–10); `just m1` |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | **DONE** — findings 12–13; `just m2` / `just web-serve` |
 | M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
-| M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | |
+| M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | blocked on polymorph-iroh#10 for the browser endpoint leg |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | |
 | M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | |
@@ -366,3 +404,31 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     interface outside the harness's bindgen view, consumed instead by
     M5's jco path; (c) `iroh-relay` needs `enable_metrics = false` to
     coexist with anything else on the machine.
+
+16. **M4 gate PASSED: full native E2E over real iroh — composed
+    client core (wasmtime) ↔ proxy (thin shell + composed proxy-core,
+    D9) ↔ proxy-spawned stock mosh-server.** `just m4`. One
+    `connect-proxy` call covers dial, control handshake (hello +
+    pairing token, TOFU auto-accept, new-session, key delivery — D8),
+    then prompt/echo/resize green through the framed tunnel; negative
+    path first: a wrong pairing token is refused without ceremony and
+    the proxy stays up. Sub-framing (finding 9) is now *measured*:
+    the incompressible bulk phase drove 6–7 oversized (>1162 B)
+    server datagrams per run through the 2-fragment tunnel, and the
+    detach-time proxy summary reports the count. Lessons: (a) mosh
+    zlib-compresses its diffs, so compressible bulk (`seq 1 500`)
+    produced `fragmented=0` — the gate paints 220×50 with base64
+    noise (~8 KB compressed diffs ⇒ several ~1252 B datagrams,
+    consistent with finding 9) and must keep doing so; (b) client
+    `detach` has to await `wait-closed` after `close`, or an embedder
+    that stops driving the store right after the call can leave
+    CONNECTION_CLOSE unsent and the peer discovers the close only via
+    idle timeout (this was the checkpoint-3 "summary never printed"
+    hang); (c) the proxy spawns the user's shell by default — the
+    first run failed because a starship prompt contains no `$` —
+    tests pin `--shell "bash --noprofile --norc -i"`. Sizes:
+    proxy-core 302 KB, composed proxy 2.3 MB, composed client 7.5 MB,
+    native shell 47 MB (embeds wasmtime). wasmtime-47 bindgen
+    conventions for the host imports (async WIT import ⇒
+    `HostWithStore` fn taking `&Accessor`, sync ⇒ `Access`; empty
+    `impl Host for &mut Ctx`) are recorded in proxy/src/main.rs.

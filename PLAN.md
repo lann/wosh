@@ -89,8 +89,8 @@ M0/M1's risk isolation intact:
   surface and the #28 datagram surface; owns the only async parts —
   the recv-datagram loop and a `wasi:clocks` `wait-for` tick; exports
   a compact driver interface (attach connection + key/size, feed-keys,
-  drain-output, stats). WebAuthn, UI, storage, bootstrap, and (at
-  least initially) the CBOR control channel stay in JS.
+  drain-output, stats). WebAuthn, UI, storage, and bootstrap stay in
+  JS; the CBOR control channel moved into the glue (D8, M4).
 - send needs no async anywhere: #28's `send-datagram` is sync by
   design, and sync-import-from-sync-export is legal.
 
@@ -105,11 +105,15 @@ Fallback if composed-async-under-jco stalls beyond A3: JS orchestrates
 the two components separately — the engine surface is unchanged, so
 the fallback stays permanently cheap.
 
-Control channel: one bi stream per connection, ALPN
-`experiment-mosh/ctl/0`, versioned CBOR (ciborium / cbor-x). Messages:
-hello (pairing token), TOFU state, session new/list/attach/detach,
-interim key delivery (M4, removed/demoted in M7), WebAuthn ceremonies
-(M6), ssh/datagram forward setup (M7/M3).
+Control channel (D8, resolved 2026-08-08): the first client-opened bi
+stream per connection (one ALPN for the whole connection,
+`experiment-mosh/0` — a separate `ctl` ALPN was a conflation),
+length-prefixed versioned CBOR, implemented in the client-core glue
+and proxy-core against the shared `proto/` crate (ciborium both
+sides). Messages: hello (pairing token), TOFU state, session
+new/list/attach/detach, interim key delivery (M4, removed/demoted in
+M7), WebAuthn ceremonies (M6, surfaced as driver-level exports),
+ssh/datagram forward setup (M7/M3).
 
 ## Security model
 
@@ -193,21 +197,25 @@ driver interface (`client` with `dial` for self-contained use;
 `embed.attach` for embedder-owned connections — split so native hosts
 can bindgen `client` without resolving fused-away endpoint types).
 wac-composes with the engine and endpoint. *(Built — M3, finding 15;
-native gate `just m3`.)* Open sub-question (decide by M5): move the
-CBOR control channel from JS into the glue — Rust shares ciborium
-shapes with the proxy — with WebAuthn ceremonies surfaced as
-driver-level events.
+native gate `just m3`.)* The M3-era sub-question is resolved: the
+CBOR control channel lives in the glue (D8, M4) — Rust shares
+ciborium shapes with proxy-core via `proto/` — with WebAuthn
+ceremonies to be surfaced as driver-level events (M6).
 
-**C — proxy**: Rust binary embedding wasmtime + the endpoint component
-(reuse polymorph-iroh host-wasmtime patterns; relay + UDP +
-WebRTC-direct all work natively). Terminal QR (unicode half-blocks) +
-connstring; TOFU store (`known_clients`) + accept prompts; session
-registry; per-session loopback UDP socket, QUIC-datagram↔UDP pump;
-detach semantics (kill vs persist per passkey binding). Forwarder must
-handle stock mosh-server datagrams up to ~1252 B (> the ~1162 B iroh
-ceiling, finding 9): tunnel-layer sub-framing of oversized datagrams,
-or a larger negotiated datagram size on non-UDP paths (#28 design
-input) — decide in M3/M4.
+**C — proxy**: a thin native Rust shell around the composed
+`proxy-core` component (D9) — proxy-core (wasm) owns the accept loop,
+control channel, TOFU flow, framed datagram pumps, and the
+mosh-server UDP leg over `wasi:sockets`, wac-fused with the endpoint
+component; the shell provides `authorize` (TOFU policy + prompt +
+`known_clients` persistence), `new-session` (spawn `mosh-server -i
+127.0.0.1`), `end-session`, `log`, plus terminal QR (unicode
+half-blocks) + connstring `1.<endpoint-id-hex>.<token>.<relay-url>`.
+Oversized stock-server datagrams (up to ~1252 B vs the 1162 B iroh
+ceiling, finding 9) are sub-framed at the tunnel layer (proto: 1-byte
+header, 2-fragment split) — measured live in the M4 gate (finding
+16). Detach semantics v0: connection close kills the session;
+passkey-gated persistence arrives in M6. *(Built — M4, finding 16;
+native gate `just m4`.)*
 
 **D — browser client**: static site, minimal tooling, committed jco
 output; bootstrap flows (fragment, qr-scanner, manual entry);
@@ -253,7 +261,7 @@ async export, per finding 3b).
 | M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
 | M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | **DONE** — finding 15; live datagram ceiling 1162 B; composed-async proven on wasmtime |
-| M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | composed core passes the M1 conformance suite over iroh |
+| M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | **DONE** — finding 16; wrong-token negative path; sub-framing measured live (6–7 oversized datagrams per bulk run) |
 | M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
 | M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |

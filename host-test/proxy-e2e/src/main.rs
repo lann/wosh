@@ -358,13 +358,25 @@ async fn run() -> Result<()> {
             wait_for(&mut visible, "30 100", "stty size after resize").await?;
             println!("[proxy-e2e] resize OK");
 
-            // Bulk: large screen diffs make the stock server emit
-            // >1162 B datagrams; without proxy-side sub-framing this
-            // phase stalls (send-datagram would reject them).
+            // Bulk: an incompressible full-screen paint forces the
+            // stock server over 1162 B — mosh zlib-compresses its
+            // diffs, so compressible output (`seq`) can stay under the
+            // ceiling and leave sub-framing untested. 220×50 of base64
+            // noise ≈ 11 KB raw ≈ 8 KB compressed ⇒ several full-size
+            // (~1252 B) fragments regardless of how the server slices
+            // its frames. Without proxy-side sub-framing this phase
+            // stalls (send-datagram rejects oversized datagrams).
+            guest.call_resize(accessor, session, 220, 50).await?;
             guest
-                .call_feed_keys(accessor, session, b"seq 1 500\r".to_vec())
+                .call_feed_keys(
+                    accessor,
+                    session,
+                    b"b=$(head -c 8192 /dev/urandom | base64 -w0); \
+                      printf '%s\\n' \"$b\"; echo BULK_$(printf DO)NE\r"
+                        .to_vec(),
+                )
                 .await?;
-            wait_for(&mut visible, "500", "seq bulk output").await?;
+            wait_for(&mut visible, "BULK_DONE", "bulk done marker").await?;
             println!("[proxy-e2e] bulk over sub-framed tunnel OK");
 
             let stats = guest.call_stats(accessor, session).await?;

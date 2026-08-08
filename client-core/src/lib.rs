@@ -291,8 +291,13 @@ impl GuestClientSession for ClientSessionRes {
         self.inner.alive.set(false);
         // Closing resolves the pending recv-datagram with an error,
         // which stops the recv pump; the tick pump exits on its next
-        // wakeup.
+        // wakeup. Awaiting wait-closed keeps this export call — and
+        // therefore the embedder's drive of the store — alive until
+        // the CONNECTION_CLOSE actually reaches the wire; without it
+        // a host that stops driving right after detach leaves the
+        // peer to find out via idle timeout.
         self.inner.conn.close(0, "detach");
+        self.inner.conn.wait_closed().await;
     }
 }
 
