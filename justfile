@@ -42,7 +42,26 @@ spike-async-browser: spike-async-build
     cd spikes/componentize-go/runner && npm run transpile-async && node run-async-browser.mjs
 
 # All spike legs, in gate order.
-spikes: spike-sync-wasmtime spike-sync-jco spike-sync-browser spike-async-wasmtime spike-async-jco spike-async-browser
+spikes: spike-sync-wasmtime spike-sync-jco spike-sync-browser spike-async-wasmtime spike-async-jco spike-async-browser spike-compose-wasmtime spike-compose-jco spike-compose-browser
+
+# --- composition spike (D7) ----------------------------------------------
+
+# Build the Rust adapter and wac-plug it with the engine component.
+spike-compose-build: engine-build
+    cd spikes/compose/adapter && cargo build --target wasm32-wasip2 --release
+    wac plug spikes/compose/adapter/target/wasm32-wasip2/release/compose_spike_adapter.wasm --plug engine-go/main.wasm -o spikes/compose/composed.wasm
+
+# Composed component under wasmtime (WAVE --invoke, exact answers).
+spike-compose-wasmtime: spike-compose-build
+    spikes/compose/run-wasmtime.sh
+
+# Composed component transpiled by the pinned jco fork, node leg.
+spike-compose-jco: spike-compose-build
+    cd spikes/componentize-go/runner && npm run transpile-compose && node run-compose-node.mjs
+
+# Same transpiled composition inside headless Chromium.
+spike-compose-browser: spike-compose-build
+    cd spikes/componentize-go/runner && npm run transpile-compose && node run-compose-browser.mjs
 
 # --- M1 engine + conformance -------------------------------------------
 

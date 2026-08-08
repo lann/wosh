@@ -34,11 +34,17 @@ fi
 say "componentize-go: $(componentize-go --version 2>/dev/null || echo present)"
 
 # --- required, expected preinstalled -------------------------------------
-for t in wasmtime wasm-tools wac node just; do
+for t in wasmtime wasm-tools wac node just cargo; do
   command -v "$t" >/dev/null 2>&1 || { echo "missing: $t (install per polymorph family setup)"; exit 1; }
 done
 say "wasmtime: $(wasmtime --version)"
 say "node: $(node --version) (need >=24 for JSPI)"
+
+# --- rust wasm target (composition spike, client-core glue) ---------------
+if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -q wasm32-wasip2; then
+  say "rustup target add wasm32-wasip2"
+  rustup target add wasm32-wasip2
+fi
 
 # --- jco fork (transpiler) -----------------------------------------------
 # The pinned lann/jco fork build is consumed from the polymorph-iroh

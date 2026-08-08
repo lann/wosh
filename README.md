@@ -13,33 +13,21 @@ repository it gets a new name. The full plan lives in
 
 ## Architecture
 
-```
-BROWSER (JSPI)                                   PROXY HOST (native Rust)
-┌──────────────────────────────┐                 ┌────────────────────────────────┐
-│ JS: xterm.js, QR scan,       │   iroh QUIC     │ terminal UI: QR + connstring,  │
-│ WebAuthn, storage, glue      │  (RPK TLS,      │ TOFU prompts                   │
-│ ┌──────────────────────────┐ │   both peers    │ webauthn RP · session registry │
-│ │ mosh engine (Go, sync    │ │   pinned)       │ ┌────────────────────────────┐ │
-│ │ sans-I/O exports)        │ │ ──────────────► │ │ wasmtime + polymorph-iroh  │ │
-│ ├──────────────────────────┤ │  relay / webrtc │ │ endpoint component         │ │
-│ │ polymorph-iroh endpoint  │ │  / udp          │ └────────────────────────────┘ │
-│ │ (jco, JSPI, async)       │ │                 │ forwarders:                    │
-│ └──────────────────────────┘ │                 │  QUIC dgram ↔ UDP 127.0.0.1    │
-└──────────────────────────────┘                 │  QUIC stream ↔ TCP :22 (ssh)   │
-                                                 │ spawns: mosh-server -i 127.0.0.1│
-                                                 └────────────────────────────────┘
-```
-
 Layering: mosh SSP (AES-OCB, end-to-end browser↔mosh-server) over QUIC
 datagrams on the iroh connection; ssh (end-to-end browser↔sshd) joins in
 workstream F. The iroh layer is network access control; the inner
 ssh/mosh layer is the strong security boundary.
 
-- The mosh engine wraps [mosh-go](https://github.com/unixshells/mosh-go)
-  `DialConnRaw` (no goroutines, no timers) behind fully synchronous WIT
-  exports; JS drives an ~8 ms tick. Sync exports keep the engine
-  independent of the jco async-scheduler defect
-  (polymorph-iroh#10).
+- The client's wasm pieces are wac-composed into one **client core**
+  (D7): the mosh engine (Go, componentize-go) stays a pure sync
+  sans-I/O `session` resource wrapping mosh-go `DialConnRaw` (no
+  goroutines, no timers); a small Rust glue component owns the async
+  parts (datagram recv loop, `wait-for` tick) and exports the driver
+  surface JS talks to; the polymorph-iroh endpoint completes the
+  composition. Sync-only engine exports keep every pre-M5 milestone
+  independent of the jco async-scheduler defect (polymorph-iroh#10),
+  and JS-orchestrating the components separately remains a cheap
+  fallback (the engine surface is the same either way).
 - Control channel: one bi stream, ALPN `experiment-mosh/ctl/0`,
   versioned CBOR. Pairing token in the QR/connection string; unknown
   peers without a valid token are silently rejected; with one, both
@@ -77,6 +65,21 @@ ssh/mosh layer is the strong security boundary.
   discuss — no automatic TinyGo fallback.
 - **D6** Firefox mobile Nightly with the JSPI opt-in flag is an
   accepted target configuration.
+- **D7** *(2026-08-07, revises the M0-era JS-orchestration ruling)*
+  The client's wasm components are **wac-composed** into a single
+  client-core component — advancing the component model is a standing
+  secondary goal of the polymorph project, and the composed core runs
+  headless under wasmtime for full-client conformance (M4). Shape:
+  engine unchanged (pure sync, zero non-wasi imports) + a small Rust
+  glue component holding the only async parts (recv loop, tick) +
+  the endpoint. Composition mechanics validated sync-only the same day
+  (finding 11); composed *async* under jco rides A3 exactly like the
+  endpoint's browser leg (no new blocker). Recorded fallback if
+  composed-async stalls: JS orchestrates engine and endpoint
+  separately — kept permanently cheap because the engine surface is
+  identical in both shapes. WebAuthn, UI, storage, bootstrap, and (for
+  now) the control channel stay in JS; moving the control channel into
+  the glue is an open sub-question for M5.
 
 ## Layout
 
@@ -85,6 +88,10 @@ ssh/mosh layer is the strong security boundary.
   patch ledger).
 - `spikes/componentize-go/` — M0 feasibility spikes (sync exports;
   async/goroutine abstraction probes).
+- `spikes/compose/` — D7 composition spike: sync Rust adapter
+  wac-plugged with the engine; wasmtime/node/browser legs
+  (`just spike-compose-wasmtime spike-compose-jco
+  spike-compose-browser`).
 - `web/prf-probe/` — M0 WebAuthn PRF capability probe page (deploy to
   the target gh-pages origin; run on Firefox mobile Nightly).
 - `wit/` — the `experiment:mosh` engine world.
@@ -127,7 +134,9 @@ golang/go#76775, arm64 build available), wasmtime 47.0.1, wasm-tools
 1.247.0, node 24.18.0, jco = lann/jco fork @ 30186b2 (via
 polymorph-iroh/.deps), headless Chromium 151. M1 adds: stock
 `mosh-server` 1.4.0 (Debian), mosh-go @ 8dca5c67ec8e (vendored fork,
-see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0.
+see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0. The D7 compose spike adds:
+wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
+0.59.
 
 1. **componentize-go sync path: green everywhere (D5 gate PASSED).**
    Sync function exports and exported *resources* work under wasmtime
@@ -239,3 +248,19 @@ see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0.
     the timestamp echo) and the engine's RTO was observed pinned at
     10 s afterwards — sluggish retransmit after bursts. Candidate
     fork patch if M2/M5 latency measurements show impact.
+
+11. **wac composition of the engine works everywhere the sync path
+    works (D7 mechanics gate).** A sync Rust adapter (wit-bindgen
+    0.59, `wasm32-wasip2` cargo target) importing
+    `experiment:mosh/engine`, `wac plug`-ged with the componentize-go
+    engine component: cross-component function calls, a static
+    returning `result<own<session>, string>`, resource
+    construct/methods/drop across the fused boundary, and
+    record/nested-list transfer are all correct under wasmtime (WAVE,
+    deterministic answers), jco/node, and jco/Chromium on the pinned
+    fork — no async anywhere by construction. The engine's exports are
+    consumed (not re-exported); both components' wasi baselines merge
+    upward and preview2-shim serves them unchanged. Composed *async*
+    (the client-core glue's recv/tick) remains unproven under jco and
+    rides A3 — deliberately not probed here to keep the signal clean.
+    `spikes/compose/`; ~56 KB adapter, composed artifact ~5.2 MB.

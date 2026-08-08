@@ -54,16 +54,16 @@ A mosh-compatible client and proxy that tunnel over iroh:
 BROWSER (JSPI)                                   PROXY HOST (native Rust)
 ┌──────────────────────────────┐                 ┌────────────────────────────────┐
 │ JS: xterm.js, QR scan,       │   iroh QUIC     │ terminal UI: QR + connstring,  │
-│ WebAuthn, storage, glue      │  (RPK TLS,      │ TOFU prompts                   │
+│ WebAuthn, storage, ctl chan  │  (RPK TLS,      │ TOFU prompts                   │
 │ ┌──────────────────────────┐ │   both peers    │ webauthn RP · session registry │
-│ │ mosh engine (Go, sync    │ │   pinned)       │ ┌────────────────────────────┐ │
-│ │ sans-I/O exports)        │ │ ──────────────► │ │ wasmtime + polymorph-iroh  │ │
-│ ├──────────────────────────┤ │  relay / webrtc │ │ endpoint component         │ │
-│ │ polymorph-iroh endpoint  │ │  / udp          │ └────────────────────────────┘ │
-│ │ (jco, JSPI, async)       │ │                 │ forwarders:                    │
-│ └──────────────────────────┘ │                 │  QUIC dgram ↔ UDP 127.0.0.1    │
-└──────────────────────────────┘                 │  QUIC stream ↔ TCP :22 (ssh)   │
-                                                 │ spawns: mosh-server -i 127.0.0.1│
+│ │ client core (wac-composed│ │   pinned)       │ ┌────────────────────────────┐ │
+│ │  mosh engine (Go, sync)  │ │ ──────────────► │ │ wasmtime + polymorph-iroh  │ │
+│ │  ⇄ glue (Rust: dgram     │ │  relay / webrtc │ │ endpoint component         │ │
+│ │  pump + tick, async)     │ │  / udp          │ └────────────────────────────┘ │
+│ │  ⇄ polymorph-iroh        │ │                 │ forwarders:                    │
+│ │  endpoint (JSPI, async)  │ │                 │  QUIC dgram ↔ UDP 127.0.0.1    │
+│ └──────────────────────────┘ │                 │  QUIC stream ↔ TCP :22 (ssh)   │
+└──────────────────────────────┘                 │ spawns: mosh-server -i 127.0.0.1│
                                                  └────────────────────────────────┘
 ```
 
@@ -74,13 +74,36 @@ Layering, steady state:
         over the iroh QUIC connection (RPK TLS, both peers pinned)
           over relay websocket / WebRTC data channel / UDP
 
-Composition ruling: JS orchestrates two separately-jco'd components
-(endpoint + engine) rather than `wac`-plugging them — WebAuthn and UI
-must live in JS anyway, and it keeps componentize-go's WIT surface
-minimal. The engine is **fully synchronous sans-I/O** (wraps mosh-go
-`DialConnRaw`: no goroutines, no timers; JS drives an ~8 ms tick),
-which keeps it independent of the jco async-scheduler defect family
-(polymorph-iroh#10) — validated by M0 findings 3–5.
+Composition ruling (D7, revised 2026-08-07): the client's wasm pieces
+are **wac-composed into one client-core component** rather than
+JS-orchestrated — advancing the component-model way of doing things is
+a standing secondary goal of the polymorph project, and the composed
+core buys a real capability: the *whole client core* runs headless
+under wasmtime for native conformance (M4). The decomposition keeps
+M0/M1's risk isolation intact:
+
+- **engine** (componentize-go, unchanged from M1): pure sync sans-I/O
+  `session` resource, zero non-wasi imports. Every existing harness
+  and the M2 browser smoke keep driving it directly.
+- **client-core glue** (Rust, small): imports the engine's session
+  surface and the #28 datagram surface; owns the only async parts —
+  the recv-datagram loop and a `wasi:clocks` `wait-for` tick; exports
+  a compact driver interface (attach connection + key/size, feed-keys,
+  drain-output, stats). WebAuthn, UI, storage, bootstrap, and (at
+  least initially) the CBOR control channel stay in JS.
+- send needs no async anywhere: #28's `send-datagram` is sync by
+  design, and sync-import-from-sync-export is legal.
+
+Composition mechanics are proven (finding 11): a sync Rust adapter
+wac-plugged with the engine passes cross-component statics, resource
+construct/method/drop, results, and nested-list transfer under
+wasmtime, jco/node, and jco/browser on the pinned fork. What remains
+unproven is composed *async* under jco — the glue's recv/tick imports
+ride exactly the A3 scheduler hardening that already gates the
+endpoint's browser leg (no new blocker, more surface on the same one).
+Fallback if composed-async-under-jco stalls beyond A3: JS orchestrates
+the two components separately — the engine surface is unchanged, so
+the fallback stays permanently cheap.
 
 Control channel: one bi stream per connection, ALPN
 `experiment-mosh/ctl/0`, versioned CBOR (ciborium / cbor-x). Messages:
@@ -156,6 +179,18 @@ cribbed from mosh-go `cmd/mosh-wasm/state.go`. mosh-go is a vendored
 fork at the pinned rev (`.deps/mosh-go`, MIT): wasm build-tag +
 fragment-size patches applied, ledger in its `DEPS.md`. *(Built — M1.)*
 
+**B2 — client-core glue (Rust)**: the composition seam of D7. Imports
+the engine's `session` interface and the #28 datagram surface; owns
+the recv-datagram loop and the `wait-for` tick; exports the client
+driver interface JS talks to (attach connection+key+size, feed-keys,
+resize, drain-output or output notification, stats, detach).
+wac-composes with the engine (mechanics proven, finding 11; sync
+adapter spike in `spikes/compose/`). Native-first: composed core under
+wasmtime is M4's E2E vehicle; the browser composed leg rides A3 (M5).
+Open sub-question (decide by M5): move the CBOR control channel from
+JS into the glue — Rust shares ciborium shapes with the proxy — with
+WebAuthn ceremonies surfaced as driver-level events.
+
 **C — proxy**: Rust binary embedding wasmtime + the endpoint component
 (reuse polymorph-iroh host-wasmtime patterns; relay + UDP +
 WebRTC-direct all work natively). Terminal QR (unicode half-blocks) +
@@ -171,8 +206,10 @@ input) — decide in M3/M4.
 output; bootstrap flows (fragment, qr-scanner, manual entry);
 localStorage schema `{v, proxies[], identityRef, sessions[{proxyId,
 key: {prf…}|{plain…}, …}]}` with explicit save offers and single-tap
-reconnect; engine⇄endpoint datagram pump (8 ms tick + rAF-coalesced
-xterm writes); measurements under netem (loss/latency vs prediction
+reconnect; consumes the composed client core (B2) — engine⇄endpoint
+plumbing lives inside the composition; JS keeps the tick-driving out
+only if the composed tick proves unreliable under JSPI. rAF-coalesced
+xterm writes; measurements under netem (loss/latency vs prediction
 feel) — the thesis findings.
 
 **E — passkeys**: webauthn-rs RP server in the proxy; ceremonies over
@@ -202,10 +239,10 @@ async export, per finding 3b).
 |---|---|---|
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues | **DONE** — D5 PASSED (findings 1–5); D4 → PRF arm (finding 6); #28/#29 filed |
 | M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
-| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | engine under jco in a real browser |
-| M3 | A1 datagram PR upstream, native legs green | upstream conformance |
-| M4 | proxy (QR, TOFU, interim sessions, forwarding) + native-driver E2E over iroh | |
-| M5 | A2 identity PR + browser client proper; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg |
+| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | engine under jco in a real browser; composition not required for this gate |
+| M3 | A1 datagram PR upstream, native legs green; client-core glue starts against it | upstream conformance |
+| M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh, driving the **wac-composed client core** (engine+glue+endpoint) under wasmtime | composed core passes the M1 conformance suite over iroh |
+| M5 | A2 identity PR + browser client proper; composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
 | M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |
 
@@ -232,6 +269,13 @@ gates that stop the plan stop it into discussion, not silent fallback
    findings (done for M0).
 5. **Extension interference with WebAuthn** in the field (finding 6) —
    client UX must detect and explain, as the probe now does.
+6. **Composed-async under jco is unproven** (D7): composition
+   mechanics are green sync-only (finding 11), but the glue's async
+   recv/tick imports inside a wac composition may surface jco defects
+   beyond the known A3 set once exercised (M5). Goal-aligned response:
+   minimal repro + upstream issue, as with #10/#11. Fallback stays
+   cheap by construction: the engine's sync surface is unchanged, so
+   JS two-component orchestration remains a drop-in.
 
 ## References
 

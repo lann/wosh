@@ -1,0 +1,35 @@
+package experiment:compose-spike;
+
+/// Probes for the wac-composition mechanics the client core will rely
+/// on: cross-component calls into the engine (statics, resource
+/// construct/methods/drop, results, records, nested lists) with the
+/// engine's exports consumed — not re-exported — by this adapter.
+/// Everything here is synchronous by construction; async glue is a
+/// separate question that rides the jco scheduler hardening (A3).
+interface driver {
+  record round-trip-report {
+    /// Datagrams produced by the first tick after feeding keys
+    /// (expect 2: connect-time association + the keystroke state).
+    datagrams: u32,
+    /// Wire size of the first datagram (sanity: non-trivial, small).
+    first-datagram-len: u32,
+    /// Engine transport sent-num after the tick (expect 1).
+    sent-num: u64,
+    /// Bytes drained from the display path (prediction-dependent;
+    /// reported, not asserted).
+    output-len: u32,
+  }
+
+  /// Call through to the engine's version probe.
+  version-via-engine: func() -> string;
+
+  /// Construct a session across the composed boundary, feed keys,
+  /// tick, drain, read stats, and drop the session. Errors pass
+  /// through from the engine (exercise with a bad key).
+  session-round-trip: func(key: string, cols: u16, rows: u16) -> result<round-trip-report, string>;
+}
+
+world adapter {
+  import experiment:mosh/engine;
+  export driver;
+}

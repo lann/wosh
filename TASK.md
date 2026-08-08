@@ -5,16 +5,24 @@ Point-in-time working state for resuming this effort. The full plan is
 file says where work stopped and what comes next. Update it at the end
 of each session.
 
-## Status: M1 complete (wire-compat gate passed), M2 next
+## Status: M1 complete (wire-compat gate passed), D7 composition ruling revised, M2 next
 
 - M0 at `4003320`..`59d9b8f` (spikes, PRF probe, plan). This session:
-  M1 — engine WIT + Go implementation + conformance harness.
+  M1 — engine WIT + Go implementation + conformance harness — then D7.
 - **M1 gate PASSED** (findings 7–10): `just m1` — wasmtime version
   smoke, then the jco-transpiled engine driven from node over loopback
   UDP against (a) stock C mosh-server 1.4.0 and (b) mosh-go's server.
   Echo, resize, 4 KB multi-fragment paste, server bulk, stats, size
   bound (ours ≤ 1138 B) all green on both legs.
-- mosh-go is now a **vendored fork** at `.deps/mosh-go` (rev
+- **D7 (revised)**: client wasm components will be **wac-composed**
+  into one client core (owner preference: advance the component
+  model). Engine stays pure sync; a Rust glue component will own async
+  recv/tick (B2 in PLAN); composed core becomes M4's native E2E
+  vehicle; browser composed leg rides A3 with JS orchestration as the
+  recorded fallback. **Finding 11**: composition mechanics (sync Rust
+  adapter + engine via `wac plug`) green under wasmtime, jco/node,
+  jco/browser — `spikes/compose/`, `just spike-compose-*`.
+- mosh-go is a **vendored fork** at `.deps/mosh-go` (rev
   8dca5c67ec8e + patches; ledger in its `DEPS.md`): wasm build tags on
   `server.go`, `maxFragmentPayload` 1300→1100. Engine additionally
   sends `Resize` as the first user state (C server sends nothing until
@@ -26,6 +34,11 @@ of each session.
 
 ## Pending / open
 
+- **D7 follow-through**: B2 client-core glue (Rust) starts once #28's
+  datagram surface exists (M3); composed async under jco is the
+  unproven half — expect to exercise it at M5, file jco issues if new
+  defects surface (PLAN risk 6). Control-channel-in-glue vs -in-JS:
+  decide by M5.
 - **Finding 9 (M3/M4 decision)**: stock C mosh-server emits datagrams
   up to 1252 B — over the ~1162 B iroh ceiling. M4 forwarder needs
   tunnel-layer sub-framing, or #28 grows path-dependent
@@ -52,6 +65,10 @@ of each session.
 ## Next: M2 — browser mosh (no iroh yet)
 
 Gate: the engine runs under jco in a real browser, driving xterm.js.
+Composition is deliberately not required for this gate (D7): the page
+drives the engine's sync surface directly, same as the conformance
+harness; the composed client core enters at M3/M4 (glue) and M5
+(browser).
 
 1. Throwaway ws↔UDP datagram bridge in node (each ws binary message =
    one datagram, no framing beyond that; spawn mosh-server like the
@@ -79,6 +96,8 @@ E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
   47.0.1, wasm-tools 1.247.0, wac 0.10.1, node 24.18.0, just 1.54.0.
 - M1 adds: stock mosh-server 1.4.0 at `/usr/bin/mosh-server` (setup.sh
   now checks); mosh-go vendored at `.deps/mosh-go`; vt-go v0.1.0.
+- D7 spike adds: Rust 1.96.0 + `wasm32-wasip2` target (setup.sh adds
+  the target if rustup is present), wit-bindgen 0.59, wac 0.10.1.
 - jco: lann/jco fork @ 30186b2, consumed from
   `../polymorph-iroh/.deps/jco/packages/jco-transpile` as a `file:` dep
   of `spikes/componentize-go/runner` and `host-test`.
@@ -92,7 +111,8 @@ E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
 ## Entry points
 
 - `just m1` — engine build + wasmtime smoke + both conformance legs.
-- `just spikes` — every M0 spike leg, gate order.
+- `just spikes` — every spike leg (M0 sync/async + D7 compose), gate
+  order.
 - `just engine-bindings` — regenerate bindings after `wit/mosh.wit`
   changes (rewrites go.mod deliberately; commit the result).
 - `scripts/setup.sh` — idempotent toolchain setup.
