@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn"] }
 hex = "0.4"
+experiment-mosh-proto = { path = "../proto" }
 
 [profile.release]
 lto = true

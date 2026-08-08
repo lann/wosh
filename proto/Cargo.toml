@@ -1,0 +1,12 @@
+[package]
+name = "experiment-mosh-proto"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Shared wire types between the proxy (native) and the client-core glue (wasm): control-channel CBOR messages and the datagram tunnel framing"
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"

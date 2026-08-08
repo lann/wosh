@@ -8,11 +8,19 @@ interface client {
   use experiment:mosh/engine.{session-stats};
 
   resource client-session {
-    /// The self-contained shape (native harness, proxy tooling): the
-    /// glue generates a throwaway identity, binds its own endpoint
-    /// (UDP direct enabled), dials `peer-id-hex`, and attaches.
-    /// `direct` is an `ip:port` dial hint; the relay is still required
-    /// by `endpoint.bind`.
+    /// Full proxy flow, self-contained (native harness, proxy
+    /// tooling): generate a throwaway identity, bind (UDP direct
+    /// enabled, `relay-url` as home relay), dial `peer-id-hex`
+    /// (`direct` is an `ip:port` hint), run the control channel
+    /// (hello with `pairing-token`, new-session), and start the mosh
+    /// engine with the delivered key. Datagrams use the proxy tunnel
+    /// framing (sub-framing for oversized server datagrams).
+    connect-proxy: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, pairing-token: string, cols: u16, rows: u16) -> result<client-session, string>;
+
+    /// Raw-datagram shape for harnesses and interop peers that pump
+    /// unframed mosh datagrams (the M3 gate): dial as above but skip
+    /// the control channel and tunnel framing; the mosh key is already
+    /// in hand.
     dial: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, key: string, cols: u16, rows: u16) -> result<client-session, string>;
 
     /// Queue keystrokes (prediction overlay surfaces via drain-output).
@@ -37,17 +45,18 @@ interface client {
 }
 
 /// The embedder-owned-endpoint shape (the browser client, M5): the
-/// embedder binds/dials, then hands the connection over; the glue owns
-/// it from here (close on detach). Split from `client` because this is
-/// the one function whose signature names endpoint types: hosts of the
-/// composed artifact can bind against `client` alone without resolving
-/// the fused-away endpoint import (the composed component has no
-/// polymorph:iroh imports for a host to unify `connection` against).
+/// embedder binds/dials — identity persistence, bootstrap, and path
+/// choice stay embedder policy — then hands the connection over; the
+/// glue runs the control channel and the session, and owns the
+/// connection from there (close on detach). Split from `client`
+/// because this is the one function whose signature names endpoint
+/// types: hosts of the composed artifact can bind against `client`
+/// alone without resolving the fused-away endpoint import.
 interface embed {
   use polymorph:iroh/endpoint@0.1.0.{connection};
   use client.{client-session};
 
-  attach: async func(conn: connection, key: string, cols: u16, rows: u16) -> result<client-session, string>;
+  attach-proxy: async func(conn: connection, pairing-token: string, cols: u16, rows: u16) -> result<client-session, string>;
 }
 
 /// The glue component's own world (what client-core builds against).
