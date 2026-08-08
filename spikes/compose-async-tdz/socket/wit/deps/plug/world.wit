@@ -1,0 +1,15 @@
+package tdz:plug;
+
+/// The minimal provider: an async factory returning an owned resource
+/// (the shape of polymorph-iroh's `endpoint.connect`).
+interface maker {
+  resource widget {
+    poke: func() -> u32;
+  }
+
+  make: async func() -> result<widget, string>;
+}
+
+world plug-world {
+  export maker;
+}

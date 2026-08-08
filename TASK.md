@@ -12,50 +12,44 @@ autonomously** (M4 → M7), with A3-blocked browser legs documented
 rather than waited on, and a summary of significant design decisions
 at the end. Deliver findings-first; commit per milestone.
 
-## Status: M4 DONE (committed with this file); next M5
+## Status: M5 DONE to its A3 boundary (committed with this file); next M6
 
 Commit history: M0 `4003320`..`59d9b8f`; M1 `fe86742`; D7 `1929ae2`;
-M2 `601f799`; upstream eval `fda916b`; M3 `a20c531`; M4 WIP
-checkpoints `4ededc6`, `e3215ba`, `0cc01a4`; M4 = the commit carrying
-this file version.
+M2 `601f799`; upstream eval `fda916b`; M3 `a20c531`; M4 checkpoints
+`4ededc6`, `e3215ba`, `0cc01a4`, M4 `308e304`; M5 = the commit
+carrying this file version.
 
-### How M4 closed (context for anyone picking up from the checkpoints)
+### How M5 closed
 
-- The checkpoint-3 teardown bug (proxy never printed the
-  per-connection summary after client detach) was the client's
-  `detach` not awaiting `wait-closed` after `conn.close`: the harness
-  stopped driving the store right after the export returned, so
-  CONNECTION_CLOSE never hit the wire and the proxy sat on a pending
-  `recv-datagram` until idle timeout. One-line fix in
-  `client-core::detach` (`conn.wait_closed().await`); the proxy-side
-  pump/join/wake-receiver teardown was correct as written. M3
-  regression re-run green after the fix.
-- Second (new) gate failure: `fragmented=0` — `seq 1 500` bulk is
-  zlib-friendly, so no server datagram exceeded 1162 B and the
-  sub-framing assertion had nothing to measure. The TASK/checkpoint-3
-  claim that bulk "cannot arrive without fragmentation" was a wrong
-  inference. The harness bulk phase now resizes to 220×50 and paints
-  base64 noise (~8 KB compressed diffs ⇒ 6–7 oversized ~1252 B
-  datagrams per run). Gate green: `just m4` (finding 16).
-- Docs landed: D8 (control-in-glue) + D9 (proxy-core component,
-  accessor-vs-store-context rationale) in the README decision log;
-  finding 16; milestone rows; PLAN workstream C + control-channel
-  section; justfile recipes `proxy-core-build`, `compose-proxy`,
-  `proxy-build`, `m4`.
-
-## Now: M5 — browser client (A3-gated browser leg)
-
-Unblocked parts to build: connection-string parse (fragment + manual
-entry), localStorage schema `{v, proxies[], identityRef, sessions[]}`,
-IndexedDB CryptoKey persistence module (structured-clone
-non-extractable keys; headless-testable without iroh), web/ UI wiring
-for proxy entries. The **browser endpoint leg stays blocked on A3**
-(polymorph-iroh#10 / lann/jco#11, re-verified finding 14) — record a
-finding + stop that leg; do NOT fake it over the ws bridge. netem
-measurements move to the native composed client (real mosh-over-iroh
-under loopback netem) as a partial substitute.
+- Unblocked parts all built + gated (`just m5`): `web/connstring.mjs`
+  / `storage.mjs` / `idb-keys.mjs` / `boot.mjs` + panel in
+  `index.html`; node + headless-Chromium tests
+  (`host-test/web-tests.mjs`). Ed25519 identity generated
+  non-extractable, persists through IndexedDB across reloads,
+  signs after retrieval (finding 17). The M2 bridge page stays green
+  (`just m2`); a bridgeless static serve idles honestly.
+- The A3-blocked leg was *probed*, not faked (`just m5-jco-probe`):
+  composed client under jco/JSPI throws at instantiation — composed
+  resource-class TDZ, a NEW defect class ahead of the known scheduler
+  defects. Minimal repro built (`spikes/compose-async-tdz/`: async
+  cross-component `own<resource>` return + the resource type
+  re-exported in an exported interface; wasmtime-correct), filed as
+  lann/jco#51 (finding 18). The probe classifies
+  UNBLOCKED/THROWS/HANGS on each run — it is the unblock detector.
+- Netem measurements ran natively over the M3 gate
+  (`just m5-netem`, needs passwordless sudo): conformance green
+  through delay 100 ms and 10% loss; per-phase timings recorded in
+  finding 19. mosh-go's RTO clamp pins at 10 s in every
+  non-baseline cell (finding 10b confirmed live) — candidate fork
+  patch ([250 ms,10 s] → C mosh's [50 ms,1 s]) if M6/M7 feel it.
+- jco-impl note: the webrtc shim needs `node-datachannel` for node
+  runs — `npm install` in
+  `.deps/polymorph-iroh/.deps/webrtc/jco-impl` (done here; setup.sh
+  does not cover it yet).
 
 ## Then: M6 — passkeys (buildable; full ceremony E2E A3-gated)
+
+*(This is now the NEXT milestone.)*
 
 - Proxy side: webauthn-rs RP over the control channel (new proto
   messages RegisterStart/Finish, AuthStart/Finish, MakePersistent,
@@ -98,22 +92,29 @@ under loopback netem) as a partial substitute.
 
 ## Pending / open (carried)
 
-- Finding 10 follow-ups (leg-b scroll artifact; RTO clamp 10 s —
-  observed again in M4 runs after bulk, rto=8–10 s; predictor not
-  RTT-adaptive) — revisit if netem shows impact.
-- polymorph-iroh#10 / lann/jco#11 open: gates M5 browser E2E, M6
-  ceremony E2E, M7 browser ssh. File minimal repros if new defect
-  classes appear when composed-async-under-jco is exercised.
+- Finding 10 follow-ups: leg-b scroll artifact; predictor not
+  RTT-adaptive; **RTO clamp 10 s now measured live** (finding 19 —
+  pinned in every netem cell with delay ≥ 40 ms) — fork patch to
+  C mosh's [50 ms, 1 s] is justified if M6/M7 sessions stall on
+  idle recovery.
+- A3 upstream: polymorph-iroh#10 / lann/jco#11 open, **plus
+  lann/jco#51** (composed-resource TDZ, ours, minimal repro in
+  spikes/compose-async-tdz/) — #51 fires before the scheduler
+  defects on the composed client. Gates M5 browser E2E, M6 ceremony
+  E2E, M7 browser ssh. `just m5-jco-probe` = unblock detector.
 - Upstream courtesies: mosh-go wasip build-tag patch; per-path
   datagram-ceiling issue on polymorph-iroh — M4 fragmented data now
   exists (6–7 oversized per bulk screen), file when convenient.
+- setup.sh gap: `npm install` in
+  `.deps/polymorph-iroh/.deps/webrtc/jco-impl` (node-datachannel)
+  needed for `just m5-jco-probe`; done manually this session.
 - Sibling `../polymorph-iroh` on `port-noq` (old jco pin) — our jco
   transpiles ride it; don't touch.
 - Stray processes to watch on this machine: an iroh-relay `--dev`
   from an older session listens on :3340/:9090 (cwd
   /tmp/opencode/polymorph-iroh — not this repo's). Harnesses use
-  :3345 (m3) and :3347 (m4); no conflict. The user's own
-  `mosh-server -p 0` (pid varies) is NOT ours; leave it.
+  :3345 (m3), :3347 (m4), :3348 (jco-probe); no conflict. The user's
+  own `mosh-server -p 0` (pid varies) is NOT ours; leave it.
 
 ## Environment
 
@@ -134,7 +135,9 @@ under loopback netem) as a partial substitute.
 
 ## Entry points
 
-- `just m4` — the M4 gate (client ↔ proxy ↔ mosh-server over iroh);
+- `just m5` (web module gates) / `just m5-jco-probe` (A3 detector) /
+  `just m5-netem` (loopback matrix; passwordless sudo);
+  `just m4` — the M4 gate (client ↔ proxy ↔ mosh-server over iroh);
   `just m3` — composed core vs upstream iroh + mosh-server;
   `just m2` / `just web-serve`; `just m1`; `just spikes`.
 - `just engine-bindings` — regenerate engine bindings after

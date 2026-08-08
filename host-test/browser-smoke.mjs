@@ -49,7 +49,7 @@ const MIME = {
 
 const ROUTES = [
   [/^\/$/, () => join(WEB, "index.html")],
-  [/^\/app\.mjs$/, () => join(WEB, "app.mjs")],
+  [/^\/(app|boot|connstring|storage|idb-keys)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
   [/^\/xterm\/xterm\.css$/, () => join(WEB, "node_modules/@xterm/xterm/css/xterm.css")],
   [/^\/xterm\/xterm\.js$/, () => join(WEB, "node_modules/@xterm/xterm/lib/xterm.js")],
   [/^\/xterm\/addon-fit\.js$/, () => join(WEB, "node_modules/@xterm/addon-fit/lib/addon-fit.js")],
@@ -85,6 +85,10 @@ const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 wss.on("connection", async (sock, req) => {
   const q = new URL(req.url, "http://x").searchParams;
   const delayMs = Math.max(0, Number(q.get("delay") ?? 0) || 0);
+  // Independent per-datagram drop probability, each way (0..1) — the
+  // M5 measurement knob. Mosh SSP owns recovery; the bridge stays a
+  // dumb lossy pipe like the network it stands in for.
+  const loss = Math.min(1, Math.max(0, Number(q.get("loss") ?? 0) || 0));
 
   let srv;
   try {
@@ -94,10 +98,17 @@ wss.on("connection", async (sock, req) => {
     return;
   }
   liveSessions.add(srv);
-  log(`session: mosh-server :${srv.port} for ws client${delayMs ? ` (delay ${delayMs}ms/way)` : ""}`);
+  log(
+    `session: mosh-server :${srv.port} for ws client` +
+      `${delayMs ? ` (delay ${delayMs}ms/way)` : ""}${loss ? ` (loss ${loss * 100}%/way)` : ""}`,
+  );
 
   const udp = dgram.createSocket("udp4");
-  const later = (fn) => (delayMs ? setTimeout(fn, delayMs) : fn());
+  const later = (fn) => {
+    if (loss && Math.random() < loss) return;
+    if (delayMs) setTimeout(fn, delayMs);
+    else fn();
+  };
   udp.on("message", (m) => later(() => sock.readyState === sock.OPEN && sock.send(m)));
   sock.on("message", (m, isBinary) => {
     if (!isBinary) return;
@@ -109,7 +120,7 @@ wss.on("connection", async (sock, req) => {
     liveSessions.delete(srv);
   });
 
-  sock.send(JSON.stringify({ key: srv.key, delayMs }));
+  sock.send(JSON.stringify({ key: srv.key, delayMs, loss }));
 });
 
 const stopAll = () => {

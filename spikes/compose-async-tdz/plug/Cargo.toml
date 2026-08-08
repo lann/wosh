@@ -1,0 +1,17 @@
+[package]
+name = "tdz-plug"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.59"
+
+[profile.release]
+lto = true
+opt-level = "s"

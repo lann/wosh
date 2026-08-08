@@ -13,6 +13,17 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #wrap { display: flex; flex-direction: column; height: 100%; }
+    #panel {
+      font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
+      padding: 6px 8px; border-bottom: 1px solid #222;
+    }
+    #panel button { font-size: 11px; }
+    #panel input {
+      background: #000; color: #ddd; border: 1px solid #333;
+      font: 12px monospace; padding: 2px 4px;
+    }
+    #panel .boot-notice { color: #d90; margin-top: 4px; }
+    #panel .boot-proxy, #panel .boot-pending, #panel .boot-entry { margin-top: 4px; }
     #term { flex: 1; min-height: 0; padding: 2px; }
   </style>
   <script type="importmap">
@@ -32,8 +43,13 @@
 <body>
   <div id="wrap">
     <div id="status">connecting…</div>
+    <div id="panel"></div>
     <div id="term"></div>
   </div>
   <script type="module" src="/app.mjs"></script>
+  <script type="module">
+    import { initBoot } from "/boot.mjs";
+    window.__moshBoot = await initBoot(document.getElementById("panel"));
+  </script>
 </body>
 </html>

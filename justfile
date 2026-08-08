@@ -140,3 +140,26 @@ proxy-build:
 # server datagrams sub-framed through the tunnel.
 m4: compose-client compose-proxy proxy-build
     cd host-test/proxy-e2e && cargo run --release
+
+# --- M5 browser client (D, unblocked parts) ---------------------------------
+
+# Node + headless-Chromium gates for the M5 browser modules:
+# connstring parsing, the localStorage schema, IndexedDB CryptoKey
+# persistence (identity survives reloads), bootstrap panel flows.
+m5-web:
+    cd host-test && npm run web-tests
+
+# Probe the A3-blocked leg: the composed client transpiled by the
+# pinned jco fork (JSPI) against a real proxy. Prints a classification;
+# currently THROWS AT INSTANTIATION (composed-resource TDZ,
+# lann/jco#51 — minimal repro in spikes/compose-async-tdz/).
+m5-jco-probe: compose-client compose-proxy proxy-build
+    cd host-test && npm run jco-probe
+
+# The loopback netem matrix over the M3 gate (needs passwordless sudo
+# for tc): delay/loss cells, per-phase timings as the measurement.
+m5-netem:
+    scripts/netem-matrix.sh
+
+# The unblocked-parts gate.
+m5: m5-web

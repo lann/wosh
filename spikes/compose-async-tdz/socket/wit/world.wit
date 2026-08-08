@@ -1,0 +1,22 @@
+package tdz:socket;
+
+/// The minimal consumer: an async export that awaits the imported
+/// async factory and uses the returned resource (the shape of
+/// client-core's dial path through the fused endpoint).
+interface driver {
+  run: async func() -> result<u32, string>;
+}
+
+/// Names the imported resource type in an *exported* signature (the
+/// shape of client-core's `embed.attach-proxy(conn: connection, …)`).
+interface handoff {
+  use tdz:plug/maker.{widget};
+
+  accept: async func(w: widget) -> u32;
+}
+
+world socket-world {
+  import tdz:plug/maker;
+  export driver;
+  export handoff;
+}

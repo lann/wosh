@@ -322,6 +322,10 @@ async fn run(component_path: &str) -> Result<()> {
         .run_concurrent(async move |accessor| {
             let guest = client.experiment_mosh_client_client().client_session();
 
+            // Phase timings print with each OK: the netem matrix
+            // (scripts/netem-matrix.sh) runs this gate under loopback
+            // delay/loss and reads these numbers as the measurement.
+            let t0 = std::time::Instant::now();
             let session = guest
                 .call_dial(
                     accessor,
@@ -334,7 +338,10 @@ async fn run(component_path: &str) -> Result<()> {
                 )
                 .await?
                 .map_err(|e| anyhow!("dial: {e}"))?;
-            println!("[composed-e2e] dial OK (mosh over iroh datagrams)");
+            println!(
+                "[composed-e2e] dial OK (mosh over iroh datagrams) ({}ms)",
+                t0.elapsed().as_millis()
+            );
 
             let max_dgram = guest.call_max_datagram_size(accessor, session).await?;
             println!("[composed-e2e] max-datagram-size: {max_dgram:?}");
@@ -359,21 +366,24 @@ async fn run(component_path: &str) -> Result<()> {
                 bail!("timeout waiting for {label} ({needle:?})\n--- visible ---\n{visible}")
             };
 
+            let t = std::time::Instant::now();
             wait_for(&mut visible, "$", "shell prompt").await?;
-            println!("[composed-e2e] prompt OK");
+            println!("[composed-e2e] prompt OK ({}ms)", t.elapsed().as_millis());
 
+            let t = std::time::Instant::now();
             guest
                 .call_feed_keys(accessor, session, b"echo m0sh_$(printf iroh)_ok\r".to_vec())
                 .await?;
             wait_for(&mut visible, "m0sh_iroh_ok", "echo marker").await?;
-            println!("[composed-e2e] echo round-trip OK");
+            println!("[composed-e2e] echo round-trip OK ({}ms)", t.elapsed().as_millis());
 
+            let t = std::time::Instant::now();
             guest.call_resize(accessor, session, 100, 30).await?;
             guest
                 .call_feed_keys(accessor, session, b"stty size\r".to_vec())
                 .await?;
             wait_for(&mut visible, "30 100", "stty size after resize").await?;
-            println!("[composed-e2e] resize OK");
+            println!("[composed-e2e] resize OK ({}ms)", t.elapsed().as_millis());
 
             let stats = guest.call_stats(accessor, session).await?;
             println!(

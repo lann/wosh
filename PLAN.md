@@ -174,12 +174,16 @@ in the sibling checkout; conformance is the gate):
   embedder-side (IndexedDB CryptoKey), polymorph-webcrypto#97 additive
   later.
 - A3 (external, watch/assist): jco scheduler hardening —
-  polymorph-iroh#10, lann/jco#11 (both still open 2026-08-08). The
+  polymorph-iroh#10, lann/jco#11 (both still open 2026-08-08), plus
+  **lann/jco#51** (filed with M5, finding 18): composed-resource TDZ
+  at instantiation — fires *before* the scheduler machinery on our
+  composed client; minimal repro in `spikes/compose-async-tdz/`. The
   dbad4d7d "all-fixes" pin adds CM-async machinery + composed
   guest-to-guest tests, but componentize-go async-lower is still
-  broken under it (finding 14: hang, previously throw). Gates M5
-  browser E2E, M7 browser ssh, and composed-async. Everything before
-  M5 is sequenced to not depend on it.
+  broken under it (finding 14: hang, previously throw) and #51
+  reproduces there too. Gates M5 browser E2E, M7 browser ssh, and
+  composed-async. Everything before M5 is sequenced to not depend on
+  it; `just m5-jco-probe` is the standing unblock detector.
 
 **B — engine**: `experiment:mosh` WIT world (sync `session` resource:
 `feed-keys`, `resize`, `handle-datagram`, `tick -> list<datagram>`,
@@ -225,7 +229,14 @@ reconnect; consumes the composed client core (B2) — engine⇄endpoint
 plumbing lives inside the composition; JS keeps the tick-driving out
 only if the composed tick proves unreliable under JSPI. rAF-coalesced
 xterm writes; measurements under netem (loss/latency vs prediction
-feel) — the thesis findings.
+feel) — the thesis findings. *(M5 landed the A3-independent parts:
+connstring/storage/idb-keys modules + boot panel, gated by `just m5`
+(finding 17); Ed25519 identity persists non-extractable through
+IndexedDB; netem matrix ran natively over the M3 gate instead
+(finding 19); the composed-core-in-browser leg is blocked on
+A3 + lann/jco#51 with `just m5-jco-probe` as the detector (finding
+18). Remaining when unblocked: qr-scanner wiring, composed-core page
+pump, WebRTC-direct E2E, in-browser prediction-feel measurements.)*
 
 **E — passkeys**: webauthn-rs RP server in the proxy; ceremonies over
 the control channel; register on "make persistent" (attestation none,
@@ -262,7 +273,7 @@ async export, per finding 3b).
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
 | M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | **DONE** — finding 15; live datagram ceiling 1162 B; composed-async proven on wasmtime |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | **DONE** — finding 16; wrong-token negative path; sub-framing measured live (6–7 oversized datagrams per bulk run) |
-| M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
+| M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **unblocked parts DONE** (findings 17–19) — modules+panel gated, native netem matrix green to 10% loss; **composed-core-in-browser blocked on A3 + lann/jco#51**; two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
 | M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |
 
@@ -291,12 +302,14 @@ gates that stop the plan stop it into discussion, not silent fallback
    client UX must detect and explain, as the probe now does.
 6. **Composed-async under jco is unproven** (D7): proven on the
    wasmtime path (finding 15 — spawn_local pumps, wait-for tick, async
-   cross-component calls all live in the composed core), still
-   unproven under jco, where the glue's machinery rides exactly the A3
-   scheduler hardening (M5). Goal-aligned response: minimal repro +
-   upstream issue, as with #10/#11. Fallback stays cheap by
-   construction: the engine's sync surface is unchanged, so JS
-   two-component orchestration remains a drop-in.
+   cross-component calls all live in the composed core); under jco it
+   is now *exercised* and fails **earlier** than the A3 scheduler —
+   instantiation-time TDZ on composed resource classes (finding 18,
+   lann/jco#51, minimal repro `spikes/compose-async-tdz/`), with the
+   scheduler defects (#10/#11) still queued behind it. Goal-aligned
+   response happened: minimal repro + upstream issue. Fallback stays
+   cheap by construction: the engine's sync surface is unchanged, so
+   JS two-component orchestration remains a drop-in.
 
 ## References
 

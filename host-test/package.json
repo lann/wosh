@@ -6,14 +6,18 @@
   "description": "M1 conformance harness: the engine component (jco-transpiled, wasi served by preview2-shim) driven from node against real mosh servers over loopback UDP.",
   "scripts": {
     "transpile": "node jco-transpile.mjs transpile ../engine-go/main.wasm --name mosh-engine -o generated",
+    "transpile-client": "node jco-transpile.mjs transpile ../client-core/composed-client.wasm --name composed-client --async-mode jspi --map 'polymorph:webcrypto/*@0.1.0=../../.deps/polymorph-iroh/.deps/webcrypto/js/jco/webcrypto.js#*' --map 'polymorph:webrtc-datachannels/connections@0.1.0=../../.deps/polymorph-iroh/.deps/webrtc/jco-impl/webrtc.js' --map 'polymorph:websocket/connections@0.1.0=../../.deps/polymorph-iroh/.deps/websocket/js/jco/websocket.js' --map 'wasi:clocks/monotonic-clock@0.3.0=@bytecodealliance/preview3-shim/clocks#monotonicClock' --map 'wasi:sockets/*@0.3.0=@bytecodealliance/preview3-shim/sockets#*' -o generated-client",
     "conformance-c": "node run-conformance.mjs --server c",
-    "conformance-go": "node run-conformance.mjs --server go"
+    "conformance-go": "node run-conformance.mjs --server go",
+    "web-tests": "node web-tests.mjs",
+    "jco-probe": "npm run transpile-client && node --experimental-wasm-jspi jco-probe.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/jco-transpile": "file:../../polymorph-iroh/.deps/jco/packages/jco-transpile"
   },
   "dependencies": {
     "@bytecodealliance/preview2-shim": "^0.19.0",
+    "@bytecodealliance/preview3-shim": "^0.2.2",
     "playwright-core": "^1.62.1",
     "ws": "^8.21.3"
   }

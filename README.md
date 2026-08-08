@@ -6,7 +6,8 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M4 complete (native proxy E2E over iroh).** Local-only
+**Status: M5 complete to its A3 boundary (browser modules gated; jco
+leg blocked upstream, probe standing).** Local-only
 experiment: no CI, no stability, delete-at-will. If it earns a public
 repository it gets a new name. The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
@@ -122,7 +123,8 @@ ssh/mosh layer is the strong security boundary.
 - `spikes/compose/` — D7 composition spike: sync Rust adapter
   wac-plugged with the engine; wasmtime/node/browser legs
   (`just spike-compose-wasmtime spike-compose-jco
-  spike-compose-browser`).
+  spike-compose-browser`). `spikes/compose-async-tdz/` — the minimal
+  repro for lann/jco#51 (finding 18).
 - `web/prf-probe/` — M0 WebAuthn PRF capability probe page (deploy to
   the target gh-pages origin; run on Firefox mobile Nightly).
 - `wit/` — the `experiment:mosh` engine world.
@@ -144,9 +146,13 @@ ssh/mosh layer is the strong security boundary.
 - `proxy/` — the native proxy shell: wasmtime + composed proxy-core,
   four host imports (authorize/new-session/end-session/log),
   connstring + QR bootstrap UX.
-- `web/` — the static client site. M2 shape: `index.html` + `app.mjs`
-  (xterm.js front end, engine pump) served by the bridge; grows into
-  the real client (bootstrap, storage, composed core) from M5.
+- `web/` — the static client site: `index.html` + `app.mjs` (xterm.js
+  + engine over the M2 dev bridge; idles honestly without one) +
+  the M5 bootstrap modules — `boot.mjs` (panel: fragment/manual
+  entry, explicit save offers, saved proxies, A3 notice),
+  `connstring.mjs`, `storage.mjs`, `idb-keys.mjs` (non-extractable
+  CryptoKey persistence). Gates: `just m5-web`; the in-browser iroh
+  leg waits on A3/lann/jco#51 (`just m5-jco-probe` is the detector).
 
 ## Milestones
 
@@ -157,7 +163,7 @@ ssh/mosh layer is the strong security boundary.
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | **DONE** — findings 12–13; `just m2` / `just web-serve` |
 | M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
-| M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | blocked on polymorph-iroh#10 for the browser endpoint leg |
+| M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **unblocked parts DONE** (findings 17–19; `just m5 m5-jco-probe m5-netem`); browser endpoint leg **blocked on A3** + new lann/jco#51 |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | |
 | M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | |
 
@@ -432,3 +438,62 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     conventions for the host imports (async WIT import ⇒
     `HostWithStore` fn taking `&Accessor`, sync ⇒ `Access`; empty
     `impl Host for &mut Ctx`) are recorded in proxy/src/main.rs.
+
+17. **M5 unblocked parts built and gated (`just m5`): bootstrap
+    modules, storage schema, and IndexedDB identity persistence all
+    green in node + headless Chromium.** `web/connstring.mjs` (v1
+    format parse/format, fragment extraction incl. percent-encoding
+    and the URL-without-fragment case), `web/storage.mjs` (schema v1
+    `{v, proxies[], identityRef, sessions[]}`; proxy id = endpoint id;
+    pairing tokens deliberately not persisted; session keys are the D4
+    tagged variant carrying `seqFloor`, with a forward-only bump
+    helper per finding 13), `web/idb-keys.mjs` + boot panel wiring in
+    `index.html`/`boot.mjs` (fragment → parse → explicit save offer;
+    saved-proxy list; manual entry; honest A3 notice on connect).
+    Key result: a **non-extractable Ed25519 WebCrypto key pair
+    round-trips through IndexedDB structured clone and survives page
+    reloads** in Chromium 151 — generated with `extractable: false`,
+    signs after retrieval, private key never exposed — exactly the
+    embedder-side persistence PR #31's `identity-from-keys` expects.
+    The M2 dev-bridge page (`just m2`) stays green under the new
+    layout; without a bridge the terminal idles and says why instead
+    of failing.
+
+18. **Composed-async under jco, exercised for real (M5 probe): it
+    fails EARLIER than the A3 scheduler — a new defect class, filed
+    as [lann/jco#51](https://github.com/lann/jco/issues/51).**
+    `just m5-jco-probe` transpiles the composed client (JSPI mode,
+    polymorph shims mapped) and drives it at a live proxy; the module
+    throws at import time: `Cannot access 'Connection' before
+    initialization` — jco emits a `taskReturn` trampoline whose lift
+    metadata references a resource class *by value* above the class
+    declaration (TDZ). Trigger, minimized in
+    `spikes/compose-async-tdz/` (two tiny Rust components): an async
+    cross-component call returning `own<resource>` **plus** the same
+    resource type re-exported in an exported interface (our `embed`'s
+    `connection`); without the re-export the identical composition
+    transpiles and runs correctly, and the uncomposed endpoint is also
+    fine. Reproduced identically on the dbad4d7d "all-fixes" scratch
+    jco; correct under wasmtime (`ok(42)`). Same family as lann/jco#34
+    (top-level emission ordering), different site. The probe stays in
+    the tree as the A3-unblock detector: it classifies UNBLOCKED /
+    THROWS / HANGS on every run, and building the real browser leg
+    starts the day it prints UNBLOCKED.
+
+19. **Netem matrix over the M3 gate (`just m5-netem`): the composed
+    stack holds to 10% loopback loss with conformance fully green —
+    and the finding-10b RTO clamp is confirmed live.** Loopback netem
+    (delay on lo counts once per hop: direct-path echo crosses ~4
+    hops, so RTT ≈ 4×delay). Numbers (dial / prompt / echo / resize,
+    ms): baseline 18/136/134/138; 40 ms 375/324/244/245; 100 ms
+    867/548/438/437; 40 ms+3% loss 369/320/219/193; 40 ms+10% loss
+    749/1420/186/222. Echo times track physics (4×delay + mosh's
+    collation interval); loss shows up in dial/first-paint (handshake
+    and initial screen retransmits) while established-flow phases ride
+    through. The engine's RTO pinned at **10 s** in every non-baseline
+    cell (mosh-go clamps RTO to [250 ms, 10 s] and inflates RTT
+    samples on bursts — finding 10b): masked interactively because
+    every keystroke triggers an immediate send, but idle-recovery
+    after a lost state update can stall up to 10 s — now measured
+    grounds for the candidate fork patch (clamp to C mosh's [50 ms,
+    1 s]) if M6/M7 sessions feel it.
