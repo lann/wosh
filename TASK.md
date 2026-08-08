@@ -5,34 +5,27 @@ Point-in-time working state for resuming this effort. The full plan is
 file says where work stopped and what comes next. Update it at the end
 of each session.
 
-## Status: M2 complete; upstream #28+#29 landed (evaluated suitable); M3 = B2 glue
+## Status: M3 complete (composed native gate passed), M4 next
 
-- M0 `4003320`..`59d9b8f`; M1 `fe86742`; D7 `1929ae2`; M2 `601f799`.
-  This session: upstream suitability evaluation (finding 14).
-- **Upstream moved (2026-08-08)**: polymorph-iroh merged PR #30
-  (datagram surface, closes #28) and PR #31 (identity resource,
-  closes #29) — both evaluated **suitable as-is** (finding 14): the
-  datagram WIT is exactly the planned B2 contract (sync send
-  drop-oldest, async recv accept-family, ceiling ≈ 1156–1176 B ≥ our
-  1138 B); identity constructors preserve the crypto split, browser
-  persistence stays embedder-side. Our A1/A2 PR work evaporates; M3
-  is now purely B2. Finding 9 was NOT addressed upstream (no comments
-  on #28): M4 forwarder sub-frames; file a fresh per-path-ceiling
-  issue when concrete.
-- **jco repin evaluated**: upstream moved to dbad4d7d ("all-fixes");
-  scratch-built it and re-ran our spikes — sync + composed-sync green
-  on node/browser (forward-compat proven), componentize-go
-  async-lower **still broken** (now hangs instead of throwing).
-  #10 / lann/jco#11 still open ⇒ A3 still gates M5/M7 browser legs
-  and composed-async. Runner deps restored to the sibling pin after
-  the experiment.
-- **Sibling checkout caveat**: `../polymorph-iroh` sits on branch
-  `port-noq` (diverges from main, declares the old jco pin 30186b2 —
-  which our transpiles ride via `.deps/jco`). B2 needs the endpoint
-  from main: use a worktree (evaluation used
-  `git worktree add /tmp/opencode/piroh-main origin/main` +
-  `SKIP_NODE=1 scripts/setup.sh`; endpoint builds clean, 2.0 MB) or
-  wait for the checkout to advance — don't move the user's branch.
+- M0 `4003320`..`59d9b8f`; M1 `fe86742`; D7 `1929ae2`; M2 `601f799`;
+  upstream evaluation `fda916b`. This session: M3 — client-core glue
+  + composed native leg (finding 15).
+- **M3 gate PASSED**: `just m3` — engine+glue+endpoint wac-composed
+  (7.3 MB), under wasmtime CM-async, dialing an **upstream-iroh** peer
+  (UDP direct + home relay) that forwards datagrams to a stock C
+  mosh-server. Prompt/echo/resize/stats green; live
+  `max-datagram-size` = **1162 B** (engine max 1138 B → 24 B
+  headroom); composed-async proven on the wasmtime path (risk 6 is
+  jco-only now).
+- `client-core/`: `client` interface (dial + methods, engine-types
+  only) and `embed.attach(connection, …)` split deliberately — native
+  hosts bindgen `client` without resolving fused-away endpoint types;
+  M5's jco path consumes `embed`. Driver surface is uniformly async
+  (mixed sync/async exports generate two host calling conventions).
+- `.deps/polymorph-iroh` cloned+built by setup.sh at the finding-14
+  pin `bcaed0f2`; iroh-relay needs `enable_metrics = false`.
+- Sibling checkout still on `port-noq` (old jco pin) — our transpiles
+  ride it; unchanged, fine.
 - **Finding 13 (M6 design input)**: a fresh engine instance can never
   rejoin a running mosh-server (SSP replay + OCB nonce reuse). The D4
   escrow blob must be `{key, seq-floor}` bumped strictly forward each
@@ -55,11 +48,11 @@ of each session.
 
 ## Pending / open
 
-- **D7 follow-through**: B2 client-core glue is now the active work
-  (see Next). Composed async under jco is the unproven half — expect
-  to exercise it at M5, file jco issues if new defects surface (PLAN
-  risk 6; finding 14: async-lower still broken at dbad4d7d, hang
-  variant). Control-channel-in-glue vs -in-JS: decide by M5.
+- **D7 follow-through**: composed-async is proven on wasmtime
+  (finding 15); the jco half rides A3 and is exercised at M5 — file
+  jco issues if new defects surface (PLAN risk 6).
+  Control-channel-in-glue vs -in-JS: decide during M4 step 3 (the
+  proxy's control channel forces the client side's hand).
 - **Finding 9 (M4)**: stock C mosh-server emits datagrams up to
   1252 B — over the ~1156–1176 B iroh ceiling (finding 14 refines).
   Upstream did not address it (#28 closed without it being raised):
@@ -87,34 +80,45 @@ of each session.
 - Upstream courtesy when convenient: offer mosh-go the wasip build-tag
   patch (and later fragment-size/RTO learnings) as issues/PRs.
 
-## Next: M3 — B2 client-core glue, composed native leg
+## Next: M4 — the proxy
 
-The upstream surface is merged; M3 is entirely our side now (PLAN B2 +
-milestone M3). Gate: engine+glue+endpoint wac-composed, talking mosh
-over real iroh datagrams under wasmtime.
+Workstream C. Gate: native E2E over iroh with the real proxy binary —
+the composed client core (already proven, `just m3`) connecting
+through the proxy to `mosh-server -i 127.0.0.1` it spawned.
 
-1. `client-core/` Rust component (wit-bindgen 0.59 + async feature,
-   mirror upstream's guest conventions — see the exec-model guest in
-   polymorph-iroh): imports `experiment:mosh/engine` and
-   `polymorph:iroh/endpoint`; exports a driver interface
-   (attach(connection, key, cols, rows), feed-keys, resize,
-   drain-output, stats, detach). Owns the recv-datagram loop and the
-   wait-for tick (~8 ms); forwards engine tick output via
-   send-datagram (sync→sync, legal); logs `max-datagram-size` at
-   attach (confirm ≥ 1138, finding 14).
-2. wac-compose engine + glue + endpoint (their demo composes the same
-   way: `wac plug`; multiple --plug args work). Native leg: wasmtime
-   host cribbing polymorph-iroh's host-wasmtime endpoint-demo driver
-   (webcrypto/websocket/sockets host shims), against a real
-   mosh-server through a UDP↔datagram pump — effectively the M1
-   conformance suite with iroh in the middle.
-3. Endpoint source: build from polymorph-iroh main via worktree until
-   the sibling checkout advances (see status caveat).
-4. Findings; decide whether the M4 proxy consumes the same composed
-   artifact (likely) before starting workstream C.
+1. `proxy/` Rust binary. Per **D1** it embeds wasmtime + the
+   polymorph-iroh **endpoint component** (not the upstream iroh crate
+   — the harness used upstream iroh deliberately, for interop; the
+   proxy must exercise our own stack, and browsers reach the
+   WebRTC-direct path only via polymorph signaling). The
+   composed-e2e harness seeds the code: Ctx/linker/shims, relay
+   config, accept loop, UDP pump. Host-side endpoint driving means
+   bindgen against the `iroh-endpoint` world + host-side resource
+   handling (new vs the harness, which kept iroh native).
+2. Sessions: spawn `mosh-server -i 127.0.0.1` per session (interim
+   mode/D2 — proxy runs as the target user), parse MOSH CONNECT, hand
+   the key over the control channel.
+3. Control channel: one bi stream per connection, ALPN
+   `experiment-mosh/ctl/0`, versioned CBOR (ciborium): hello(pairing
+   token), TOFU state, session new/list/attach/detach, key delivery.
+   Client side: decide control-in-glue vs control-in-JS *now* — for
+   the native leg the harness can drive either; the D7 sub-question
+   (PLAN B2) says decide by M5.
+4. Terminal UX: QR (unicode half-blocks) + connection string
+   (version ‖ endpoint-id ‖ relay ref ‖ pairing token, base64url —
+   exact format is an M5 concern, v0 can be plain fields); TOFU
+   store (`known_clients`) + accept prompt; unknown-without-token
+   silently rejected.
+5. **Sub-framing** (finding 9): stock server datagrams up to 1252 B >
+   1162 B ceiling — tunnel-layer fragmentation for oversized
+   datagrams (both tunnel ends are ours: proxy forwarder ↔ client
+   glue). Then file the per-path-ceiling issue upstream with data.
+6. E2E: composed client (dial or attach) ↔ proxy ↔ mosh-server;
+   M1-suite assertions + a large-screen-update phase that exercises
+   sub-framing. Findings; update this file.
 
-Then: M4 proxy (+ sub-framing for 1252 B server datagrams) → M5
-browser client (A3-gated) → M6 passkeys (escrow `{key, seq-floor}`,
+Then: M5 browser client (A3-gated; identity persistence, bootstrap,
+composed-in-browser) → M6 passkeys (escrow `{key, seq-floor}`,
 finding 13) → M7 inner ssh. Milestone table in README.
 
 ## Environment
@@ -142,6 +146,8 @@ finding 13) → M7 inner ssh. Milestone table in README.
 
 ## Entry points
 
+- `just m3` — composed client core vs upstream iroh + stock
+  mosh-server (native gate); `just compose-client` — build+fuse.
 - `just m2` — browser smoke gate; `just web-serve` — manual browser
   mosh (URL printed; one shell per tab; `?delay=150` for prediction).
 - `just m1` — engine build + wasmtime smoke + both conformance legs.
@@ -149,11 +155,13 @@ finding 13) → M7 inner ssh. Milestone table in README.
   order.
 - `just engine-bindings` — regenerate bindings after `wit/mosh.wit`
   changes (rewrites go.mod deliberately; commit the result).
-- `scripts/setup.sh` — idempotent toolchain setup.
-- `host-test/run-conformance.mjs` — the conformance driver (`--server
-  c|go`); `host-test/browser-smoke.mjs` — M2 bridge + gate;
-  `host-test/mosh-servers.mjs` — shared server launcher;
-  `host-test/moshgo-server/` — leg-b server wrapper.
+- `scripts/setup.sh` — idempotent toolchain setup (now also clones and
+  builds `.deps/polymorph-iroh` at the pinned rev).
+- `client-core/src/lib.rs` — the D7 glue; `client-core/wit/world.wit`
+  — driver surface (`client` + `embed`).
+- `host-test/composed-e2e/` — the M3 harness (M4 proxy seed);
+  `host-test/run-conformance.mjs` — M1 driver;
+  `host-test/browser-smoke.mjs` — M2 bridge + gate.
 - `web/app.mjs` — the browser client pump (engine drive contract).
 - `engine-go/export_experiment_mosh_engine/{engine,tracker}.go` — the
   handwritten engine (tracker cribbed from mosh-go `cmd/mosh-wasm`).

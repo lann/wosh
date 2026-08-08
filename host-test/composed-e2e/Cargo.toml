@@ -1,0 +1,25 @@
+[package]
+name = "composed-e2e"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "M3 gate: the wac-composed client core (engine+glue+endpoint) under wasmtime, speaking mosh over iroh datagrams to a stock mosh-server behind an upstream-iroh forwarder"
+
+[workspace]
+
+[dependencies]
+# The composed client runs under wasmtime with polymorph's host shims
+# (same stack as polymorph-iroh's own endpoint-demo host).
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+wasmtime-webrtc-datachannels = { path = "../../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
+polymorph-webcrypto-wasmtime = { path = "../../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
+wasmtime-websocket = { path = "../../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
+# The server side of the wire is upstream iroh itself: RFC 9221 interop
+# against the real implementation, and the M4 forwarder in miniature.
+iroh = { path = "../../.deps/polymorph-iroh/.deps/iroh/iroh" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util"] }
+anyhow = "1"
+bytes = "1"
+hex = "0.4"
+env_logger = "0.11"

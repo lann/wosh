@@ -85,7 +85,11 @@ ssh/mosh layer is the strong security boundary.
 
 - `.deps/mosh-go/` — vendored mosh-go fork at the pinned rev, with the
   wasm build-tag and fragment-size patches (`DEPS.md` there is the
-  patch ledger).
+  patch ledger). Other `.deps/` entries (polymorph-iroh at the
+  finding-14 pin) are cloned by `scripts/setup.sh`, not committed.
+- `client-core/` — the D7/B2 glue component (Rust): async pumps
+  between the sync engine and the endpoint; `composed-client.wasm` is
+  the wac-fused artifact (engine+glue+endpoint).
 - `spikes/componentize-go/` — M0 feasibility spikes (sync exports;
   async/goroutine abstraction probes).
 - `spikes/compose/` — D7 composition spike: sync Rust adapter
@@ -99,7 +103,8 @@ ssh/mosh layer is the strong security boundary.
   committed; regenerate with `just engine-bindings` after WIT changes).
 - `host-test/` — M1 conformance harness: jco-transpiled engine driven
   from node over loopback UDP against stock C `mosh-server` (gate) and
-  mosh-go's server (`moshgo-server/`).
+  mosh-go's server (`moshgo-server/`); `composed-e2e/` — the M3 native
+  gate (composed core under wasmtime vs upstream iroh + mosh-server).
 - `proxy/` — the native proxy (from M4).
 - `web/` — the static client site. M2 shape: `index.html` + `app.mjs`
   (xterm.js front end, engine pump) served by the bridge; grows into
@@ -112,7 +117,7 @@ ssh/mosh layer is the strong security boundary.
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues filed | componentize-go fails ⇒ stop and discuss; PRF result selects D4 arm |
 | M1 | engine WIT + Go impl; native harness vs C mosh-server over UDP | **DONE** — wire compat (findings 7–10); `just m1` |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | **DONE** — findings 12–13; `just m2` / `just web-serve` |
-| M3 | polymorph-iroh datagram PR (native legs) | upstream conformance |
+| M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | blocked on polymorph-iroh#10 for the browser endpoint leg |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | |
@@ -335,3 +340,29 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     Consequence for the plan: M3's "A1 PR upstream" and M5's "A2 PR"
     are done by upstream — M3 collapses into B2 (client-core glue
     against the merged surface, native-first).
+
+15. **M3 gate PASSED: the wac-composed client core speaks mosh over
+    iroh datagrams natively — and interoperates with upstream iroh on
+    the wire.** `client-core/` (Rust, wit-bindgen 0.59 async) is the
+    D7 glue: it owns the recv-datagram loop and the 8 ms `wait-for`
+    tick as `spawn_local` tasks, `dial` binds its own endpoint
+    (identity-generate through the fused webcrypto path, UDP direct +
+    home relay) or `embed.attach` takes an embedder connection; fused
+    with the engine and the polymorph-iroh endpoint via `wac plug`
+    (7.3 MB). The native harness (`host-test/composed-e2e`, `just m3`)
+    drives it under wasmtime's CM-async host and forwards datagrams to
+    a stock C mosh-server through an **upstream-iroh** peer — every
+    datagram crosses implementations (RFC 9221 interop, not just
+    self-consistency). M1 conformance assertions green end-to-end;
+    live `max-datagram-size` = **1162 B exactly** (the plan's original
+    estimate): the engine's 1138 B wire max leaves 24 B headroom.
+    Composed-async is thereby **proven on the wasmtime path** — risk 6
+    narrows to jco-only. Paper cuts worth remembering: (a) mixed
+    sync/async exports generate two different host calling conventions
+    (store-context vs accessor) — the driver surface went uniformly
+    async; (b) a native host can only bindgen against composed exports
+    whose signatures avoid fused-away imported types — `attach`
+    (naming the endpoint's `connection`) lives in a separate `embed`
+    interface outside the harness's bindgen view, consumed instead by
+    M5's jco path; (c) `iroh-relay` needs `enable_metrics = false` to
+    coexist with anything else on the machine.

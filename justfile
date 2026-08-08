@@ -104,3 +104,18 @@ m2: engine-transpile
 # Manual browser mosh: prints a URL; every tab gets its own shell.
 web-serve: engine-transpile
     cd host-test && node browser-smoke.mjs --serve
+
+# --- M3 composed client core (D7/B2) ---------------------------------------
+
+# Build the client-core glue component.
+client-core-build:
+    cd client-core && cargo build --target wasm32-wasip2 --release
+
+# Fuse engine + glue + endpoint into the composed client artifact.
+compose-client: engine-build client-core-build
+    wac plug client-core/target/wasm32-wasip2/release/client_core.wasm --plug engine-go/main.wasm --plug .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm -o client-core/composed-client.wasm
+
+# The M3 gate: the composed core under wasmtime speaks mosh over iroh
+# datagrams to a stock mosh-server behind an upstream-iroh forwarder.
+m3: compose-client
+    cd host-test/composed-e2e && cargo run --release -- ../../client-core/composed-client.wasm

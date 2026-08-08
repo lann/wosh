@@ -1,0 +1,19 @@
+[package]
+name = "client-core"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "experiment-mosh client-core glue: composes the sync mosh engine with the polymorph-iroh endpoint (D7/B2)"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.59", features = ["async", "async-spawn"] }
+hex = "0.4"
+
+[profile.release]
+lto = true
+opt-level = "s"

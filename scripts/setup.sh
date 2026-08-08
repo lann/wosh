@@ -79,4 +79,31 @@ if [ -f "$WEB/package.json" ] && [ ! -d "$WEB/node_modules" ]; then
   (cd "$WEB" && npm install --no-fund --no-audit)
 fi
 
+# --- polymorph-iroh (pinned): endpoint component, host shims, relay --------
+# The rev evaluated in finding 14 (datagram + identity surfaces merged).
+PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
+PIROH_PIN=bcaed0f2b98ef72ab5acbbc543a8bb78bb921a56
+PIROH_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/polymorph-iroh"
+if [ ! -d "$PIROH_DIR/.git" ]; then
+  say "cloning polymorph-iroh @ ${PIROH_PIN:0:12}"
+  git clone "$PIROH_REPO" "$PIROH_DIR"
+fi
+if [ "$(git -C "$PIROH_DIR" rev-parse HEAD)" != "$PIROH_PIN" ]; then
+  git -C "$PIROH_DIR" fetch --quiet origin
+  git -C "$PIROH_DIR" checkout --quiet "$PIROH_PIN"
+fi
+say "polymorph-iroh: $(git -C "$PIROH_DIR" log --oneline -1)"
+# Its own pinned deps (webcrypto/websocket/webrtc shims, upstream iroh,
+# tls); SKIP_NODE: we consume jco from the sibling checkout, not here.
+(cd "$PIROH_DIR" && SKIP_NODE=1 scripts/setup.sh >/dev/null)
+PIROH_STAMP="$PIROH_DIR/.experiment-mosh-built-at"
+if [ -f "$PIROH_STAMP" ] && [ "$(cat "$PIROH_STAMP")" = "$PIROH_PIN" ]; then
+  say "polymorph-iroh artifacts already built"
+else
+  say "building iroh-endpoint component + iroh-relay (takes a few minutes cold)"
+  (cd "$PIROH_DIR" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
+  (cd "$PIROH_DIR/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
+  echo "$PIROH_PIN" > "$PIROH_STAMP"
+fi
+
 say "setup complete"

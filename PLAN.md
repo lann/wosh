@@ -189,14 +189,14 @@ fragment-size patches applied, ledger in its `DEPS.md`. *(Built — M1.)*
 **B2 — client-core glue (Rust)**: the composition seam of D7. Imports
 the engine's `session` interface and the #28 datagram surface; owns
 the recv-datagram loop and the `wait-for` tick; exports the client
-driver interface JS talks to (attach connection+key+size, feed-keys,
-resize, drain-output or output notification, stats, detach).
-wac-composes with the engine (mechanics proven, finding 11; sync
-adapter spike in `spikes/compose/`). Native-first: composed core under
-wasmtime is M4's E2E vehicle; the browser composed leg rides A3 (M5).
-Open sub-question (decide by M5): move the CBOR control channel from
-JS into the glue — Rust shares ciborium shapes with the proxy — with
-WebAuthn ceremonies surfaced as driver-level events.
+driver interface (`client` with `dial` for self-contained use;
+`embed.attach` for embedder-owned connections — split so native hosts
+can bindgen `client` without resolving fused-away endpoint types).
+wac-composes with the engine and endpoint. *(Built — M3, finding 15;
+native gate `just m3`.)* Open sub-question (decide by M5): move the
+CBOR control channel from JS into the glue — Rust shares ciborium
+shapes with the proxy — with WebAuthn ceremonies surfaced as
+driver-level events.
 
 **C — proxy**: Rust binary embedding wasmtime + the endpoint component
 (reuse polymorph-iroh host-wasmtime patterns; relay + UDP +
@@ -252,7 +252,7 @@ async export, per finding 3b).
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues | **DONE** — D5 PASSED (findings 1–5); D4 → PRF arm (finding 6); #28/#29 filed |
 | M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
-| M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | composed core talks mosh over iroh datagrams natively |
+| M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | **DONE** — finding 15; live datagram ceiling 1162 B; composed-async proven on wasmtime |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | composed core passes the M1 conformance suite over iroh |
 | M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
@@ -281,13 +281,14 @@ gates that stop the plan stop it into discussion, not silent fallback
    findings (done for M0).
 5. **Extension interference with WebAuthn** in the field (finding 6) —
    client UX must detect and explain, as the probe now does.
-6. **Composed-async under jco is unproven** (D7): composition
-   mechanics are green sync-only (finding 11), but the glue's async
-   recv/tick imports inside a wac composition may surface jco defects
-   beyond the known A3 set once exercised (M5). Goal-aligned response:
-   minimal repro + upstream issue, as with #10/#11. Fallback stays
-   cheap by construction: the engine's sync surface is unchanged, so
-   JS two-component orchestration remains a drop-in.
+6. **Composed-async under jco is unproven** (D7): proven on the
+   wasmtime path (finding 15 — spawn_local pumps, wait-for tick, async
+   cross-component calls all live in the composed core), still
+   unproven under jco, where the glue's machinery rides exactly the A3
+   scheduler hardening (M5). Goal-aligned response: minimal repro +
+   upstream issue, as with #10/#11. Fallback stays cheap by
+   construction: the engine's sync surface is unchanged, so JS
+   two-component orchestration remains a drop-in.
 
 ## References
 

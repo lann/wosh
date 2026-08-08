@@ -1,0 +1,68 @@
+package experiment:mosh-client;
+
+/// The client-core glue (D7/B2): the composition seam between the pure
+/// sync mosh engine and the async polymorph-iroh endpoint. It owns the
+/// only async parts of the client — the recv-datagram loop and the
+/// ~8 ms tick — and exposes one driver surface to the embedder.
+interface client {
+  use experiment:mosh/engine.{session-stats};
+
+  resource client-session {
+    /// The self-contained shape (native harness, proxy tooling): the
+    /// glue generates a throwaway identity, binds its own endpoint
+    /// (UDP direct enabled), dials `peer-id-hex`, and attaches.
+    /// `direct` is an `ip:port` dial hint; the relay is still required
+    /// by `endpoint.bind`.
+    dial: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, key: string, cols: u16, rows: u16) -> result<client-session, string>;
+
+    /// Queue keystrokes (prediction overlay surfaces via drain-output).
+    feed-keys: async func(keys: list<u8>);
+
+    /// Propagate a terminal resize.
+    resize: async func(cols: u16, rows: u16);
+
+    /// Drain accumulated display bytes (ANSI, pre-diffed).
+    drain-output: async func() -> list<u8>;
+
+    stats: async func() -> session-stats;
+
+    /// The connection's current datagram ceiling (engine wire maximum
+    /// is 1138 B; the embedder may assert headroom).
+    max-datagram-size: async func() -> option<u32>;
+
+    /// Stop the pumps and close the connection. The mosh session on
+    /// the server survives (finding 13 governs reattach).
+    detach: async func();
+  }
+}
+
+/// The embedder-owned-endpoint shape (the browser client, M5): the
+/// embedder binds/dials, then hands the connection over; the glue owns
+/// it from here (close on detach). Split from `client` because this is
+/// the one function whose signature names endpoint types: hosts of the
+/// composed artifact can bind against `client` alone without resolving
+/// the fused-away endpoint import (the composed component has no
+/// polymorph:iroh imports for a host to unify `connection` against).
+interface embed {
+  use polymorph:iroh/endpoint@0.1.0.{connection};
+  use client.{client-session};
+
+  attach: async func(conn: connection, key: string, cols: u16, rows: u16) -> result<client-session, string>;
+}
+
+/// The glue component's own world (what client-core builds against).
+world client-world {
+  import experiment:mosh/engine;
+  import polymorph:iroh/identity-generate@0.1.0;
+  import polymorph:iroh/endpoint@0.1.0;
+  import wasi:clocks/monotonic-clock@0.3.0;
+  export client;
+  export embed;
+}
+
+/// The composed artifact as a native host sees it (bindgen view for
+/// the harness; the engine and endpoint are fused inside, `embed` is
+/// deliberately out of view).
+world composed-client {
+  export client;
+}
