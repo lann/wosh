@@ -218,7 +218,12 @@ credential store keyed to the proxy owner); reattach = UV/UP assertion
 verifying origin + rpIdHash + challenge, then authorize forwarding and
 release the escrowed ciphertext; client evals `prf` in the same get()
 and unwraps locally. New-device flow works via synced passkeys
-(PRF secret syncs; escrow provides the blob).
+(PRF secret syncs; escrow provides the blob). The escrowed blob is
+`{key, seq-floor}`, not the key alone: SSP replay protection plus OCB
+nonce-reuse safety require every reattach to resume with a strictly
+larger datagram sequence (finding 13) — the engine grows an
+initial-sequence connect option and a current-sequence stat with this
+milestone; the floor gets a large forward margin on each attach.
 
 **F — inner ssh**: proxy stream-forward pinned to `127.0.0.1:22`;
 engine grows an ssh mode (x/crypto/ssh over an imported stream;
@@ -239,7 +244,7 @@ async export, per finding 3b).
 |---|---|---|
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues | **DONE** — D5 PASSED (findings 1–5); D4 → PRF arm (finding 6); #28/#29 filed |
 | M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
-| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | engine under jco in a real browser; composition not required for this gate |
+| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
 | M3 | A1 datagram PR upstream, native legs green; client-core glue starts against it | upstream conformance |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh, driving the **wac-composed client core** (engine+glue+endpoint) under wasmtime | composed core passes the M1 conformance suite over iroh |
 | M5 | A2 identity PR + browser client proper; composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |

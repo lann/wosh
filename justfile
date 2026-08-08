@@ -93,3 +93,14 @@ conformance-go: engine-transpile
 
 # All M1 legs, gate order.
 m1: engine-wasmtime-smoke conformance-c conformance-go
+
+# --- M2 browser mosh ------------------------------------------------------
+
+# The M2 gate: xterm.js + engine in headless Chromium over the ws bridge
+# (prompt, echo, resize, prediction-under-latency).
+m2: engine-transpile
+    cd host-test && node browser-smoke.mjs
+
+# Manual browser mosh: prints a URL; every tab gets its own shell.
+web-serve: engine-transpile
+    cd host-test && node browser-smoke.mjs --serve

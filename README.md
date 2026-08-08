@@ -101,7 +101,9 @@ ssh/mosh layer is the strong security boundary.
   from node over loopback UDP against stock C `mosh-server` (gate) and
   mosh-go's server (`moshgo-server/`).
 - `proxy/` — the native proxy (from M4).
-- `web/` — the static client site (from M2).
+- `web/` — the static client site. M2 shape: `index.html` + `app.mjs`
+  (xterm.js front end, engine pump) served by the bridge; grows into
+  the real client (bootstrap, storage, composed core) from M5.
 
 ## Milestones
 
@@ -109,7 +111,7 @@ ssh/mosh layer is the strong security boundary.
 |---|---|---|
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues filed | componentize-go fails ⇒ stop and discuss; PRF result selects D4 arm |
 | M1 | engine WIT + Go impl; native harness vs C mosh-server over UDP | **DONE** — wire compat (findings 7–10); `just m1` |
-| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | engine runs under jco in-browser |
+| M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | **DONE** — findings 12–13; `just m2` / `just web-serve` |
 | M3 | polymorph-iroh datagram PR (native legs) | upstream conformance |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | blocked on polymorph-iroh#10 for the browser endpoint leg |
@@ -264,3 +266,38 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     (the client-core glue's recv/tick) remains unproven under jco and
     rides A3 — deliberately not probed here to keep the signal clean.
     `spikes/compose/`; ~56 KB adapter, composed artifact ~5.2 MB.
+
+12. **M2 gate PASSED: the engine drives xterm.js in a real browser.**
+    jco-transpiled engine + preview2-shim browser dist + xterm.js
+    5.5 in headless Chromium, datagrams over the throwaway ws↔UDP
+    bridge (`host-test/browser-smoke.mjs`; manual mode
+    `just web-serve`, one shell per tab). Page pump = the M1 harness
+    contract: ws message → `handle-datagram`, 8 ms `tick` → ws sends,
+    `drain-output` → rAF-coalesced `term.write`; `onData` →
+    `feed-keys` with an immediate drain so predictions paint same-
+    frame. Prompt, echo round-trip, and resize (browser → engine →
+    server pty, `stty size`) all green. Under a 150 ms/way bridge
+    delay, typed keystrokes painted locally ~145 ms after the first
+    keypress — half the 300 ms RTT, before any server echo could
+    arrive — rendered underlined (9 speculative cells), with
+    `stats().predictor-active` observable from the page. Note:
+    mosh-go's predictor engages on any printable keystroke (no
+    RTT-adaptive gating like C mosh) and resets on control characters;
+    if netem work (M5) shows low-RTT flicker, adaptive display is a
+    candidate fork patch.
+
+13. **A fresh engine instance can never rejoin a running mosh-server
+    — reattach needs a persisted sequence floor (M6 design input).**
+    SSP replay protection drops datagrams whose 63-bit nonce sequence
+    is ≤ the highest seen, and a restarted client starts at 0; worse,
+    reusing a sequence under the same key is OCB nonce reuse. Real
+    mosh never hits this because detach/reattach keeps the client
+    *process* alive. Consequence discovered while building the M2
+    bridge (each ws connection must spawn its own mosh-server): the
+    D4 escrow blob must carry `{key, seq-floor}` with the floor bumped
+    strictly forward on every attach (large-margin jump is safe —
+    sequence gaps are legal; screen state re-converges from mosh's
+    diff-from-acked mechanism, which is why the engine's resize-first
+    kick works). Engine additions planned with M6: a connect option
+    for the initial sequence and a current-sequence stat for
+    detach-time persistence.

@@ -5,23 +5,26 @@ Point-in-time working state for resuming this effort. The full plan is
 file says where work stopped and what comes next. Update it at the end
 of each session.
 
-## Status: M1 complete (wire-compat gate passed), D7 composition ruling revised, M2 next
+## Status: M2 complete (browser gate passed), M3 next
 
-- M0 at `4003320`..`59d9b8f` (spikes, PRF probe, plan). This session:
-  M1 — engine WIT + Go implementation + conformance harness — then D7.
-- **M1 gate PASSED** (findings 7–10): `just m1` — wasmtime version
-  smoke, then the jco-transpiled engine driven from node over loopback
-  UDP against (a) stock C mosh-server 1.4.0 and (b) mosh-go's server.
-  Echo, resize, 4 KB multi-fragment paste, server bulk, stats, size
-  bound (ours ≤ 1138 B) all green on both legs.
-- **D7 (revised)**: client wasm components will be **wac-composed**
-  into one client core (owner preference: advance the component
-  model). Engine stays pure sync; a Rust glue component will own async
-  recv/tick (B2 in PLAN); composed core becomes M4's native E2E
-  vehicle; browser composed leg rides A3 with JS orchestration as the
-  recorded fallback. **Finding 11**: composition mechanics (sync Rust
-  adapter + engine via `wac plug`) green under wasmtime, jco/node,
-  jco/browser — `spikes/compose/`, `just spike-compose-*`.
+- M0 `4003320`..`59d9b8f`; M1 `fe86742` (wire-compat gate, findings
+  7–10); D7 `1929ae2` (composition ruling + spike, finding 11). This
+  session: M2 — browser mosh over the throwaway ws bridge.
+- **M2 gate PASSED** (findings 12–13): `just m2` — xterm.js + the
+  jco-transpiled engine in headless Chromium; prompt, echo, resize
+  green; prediction paints locally underlined at ~145 ms vs 300 ms
+  RTT under a 150 ms/way bridge delay. `just web-serve` = manual mode
+  (one mosh-server + shell per tab; ?delay=150 to feel prediction).
+- **Finding 13 (M6 design input)**: a fresh engine instance can never
+  rejoin a running mosh-server (SSP replay + OCB nonce reuse). The D4
+  escrow blob must be `{key, seq-floor}` bumped strictly forward each
+  attach; engine grows an initial-seq connect option + current-seq
+  stat at M6. PLAN workstream E updated.
+- **D7 recap**: client wasm components will be wac-composed (engine
+  stays pure sync; Rust glue owns async recv/tick — B2 in PLAN;
+  composed core is M4's native E2E vehicle; browser composed leg
+  rides A3; JS orchestration is the recorded fallback). Composition
+  mechanics proven sync-only (finding 11, `spikes/compose/`).
 - mosh-go is a **vendored fork** at `.deps/mosh-go` (rev
   8dca5c67ec8e + patches; ledger in its `DEPS.md`): wasm build tags on
   `server.go`, `maxFragmentPayload` 1300→1100. Engine additionally
@@ -44,10 +47,14 @@ of each session.
   tunnel-layer sub-framing, or #28 grows path-dependent
   `max-datagram-size` (relay/WebRTC paths have no real 1200 B MTU).
 - Finding 10 follow-ups, revisit when they bite: leg-b scroll artifact
-  (`99` for `299`; mosh-go server vs our tracker unattributed — M2
-  xterm.js adds signal); mosh-go RTO clamp 10 s vs C mosh 1 s (RTO
-  observed pinned at 10 s after bulk; patch candidate for M2/M5 feel
-  measurements).
+  (`99` for `299`; mosh-go server vs our tracker unattributed — M2's
+  xterm.js path showed no such artifact in its phases, weak signal
+  toward the mosh-go server); mosh-go RTO clamp 10 s vs C mosh 1 s
+  (patch candidate for M5 feel measurements); mosh-go predictor is
+  not RTT-adaptive (predicts on every printable — finding 12; flicker
+  patch candidate if netem shows it).
+- Finding 13 (M6): escrow blob `{key, seq-floor}`; engine
+  initial-seq connect option + current-seq stat.
 - D4 sub-policy, decide during M6: runtime authenticator without `prf`
   ⇒ refuse persistence (lean) vs plaintext-with-warning.
 - polymorph-iroh#10 (jco scheduler defect): gates the browser endpoint
@@ -62,30 +69,30 @@ of each session.
 - Upstream courtesy when convenient: offer mosh-go the wasip build-tag
   patch (and later fragment-size/RTO learnings) as issues/PRs.
 
-## Next: M2 — browser mosh (no iroh yet)
+## Next: M3 — polymorph-iroh datagram surface (#28), native legs
 
-Gate: the engine runs under jco in a real browser, driving xterm.js.
-Composition is deliberately not required for this gate (D7): the page
-drives the engine's sync surface directly, same as the conformance
-harness; the composed client core enters at M3/M4 (glue) and M5
-(browser).
+Upstream work in the sibling `../polymorph-iroh` checkout, per its
+AGENTS.md: issue-first (#28 already filed), one decision per PR,
+conformance is the gate. Design per PLAN A1: `max-datagram-size` /
+`send-datagram` (sync, drop-on-full) / `recv-datagram` (async) on
+`connection`; pump plumbing for `DatagramReceived` /
+`DatagramsUnblocked` in both endpoint impls; native legs green (the
+jco leg rides #10/A3 and is explicitly out of scope for the PR gate).
 
-1. Throwaway ws↔UDP datagram bridge in node (each ws binary message =
-   one datagram, no framing beyond that; spawn mosh-server like the
-   conformance driver does — reuse its startServer).
-2. `web/` static page: xterm.js + browser-transpiled engine
-   (preview2-shim `dist/browser` worked in M0 finding 1), ws datagram
-   pump, 8 ms tick, rAF-coalesced terminal writes; keystrokes from
-   xterm.js `onData` → `feed-keys`; fit-addon resize → `resize`.
-3. Browser leg of the harness via playwright-core findChrome (crib
-   `spikes/componentize-go/runner/chrome.mjs` + `run-sync-browser.mjs`)
-   asserting the same echo/resize markers through the page.
-4. First prediction-feel observation on real keystrokes (predictor
-   engages only under RTT; netem measurements are M5, not here).
-5. Append findings; update this file.
+Feed in the M1/M2 findings where the surface design touches them:
 
-Then: M3 (#28 datagram PR, native legs) → M4 proxy → M5 (#29 + browser
-E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
+1. Finding 9: stock mosh-server emits up to 1252 B datagrams — either
+   `max-datagram-size` must be honest per-path (relay websocket and
+   WebRTC data channels have no physical 1200 B MTU) or the M4
+   forwarder sub-frames; raise on the issue before implementing.
+2. After the PR: start B2 client-core glue against the new surface
+   (compose with the engine; native wasmtime leg first — that
+   composition is M4's E2E vehicle).
+
+Then: M4 proxy (+ composed-core native E2E over iroh) → M5 (#29 +
+browser client proper; A3-gated) → M6 passkeys (escrow `{key,
+seq-floor}`, finding 13; engine grows initial-seq option) → M7 inner
+ssh. Milestone table in README.
 
 ## Environment
 
@@ -98,6 +105,8 @@ E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
   now checks); mosh-go vendored at `.deps/mosh-go`; vt-go v0.1.0.
 - D7 spike adds: Rust 1.96.0 + `wasm32-wasip2` target (setup.sh adds
   the target if rustup is present), wit-bindgen 0.59, wac 0.10.1.
+- M2 adds: `@xterm/xterm` 5.5 + `@xterm/addon-fit` (web/), `ws` +
+  `playwright-core` (host-test).
 - jco: lann/jco fork @ 30186b2, consumed from
   `../polymorph-iroh/.deps/jco/packages/jco-transpile` as a `file:` dep
   of `spikes/componentize-go/runner` and `host-test`.
@@ -110,6 +119,8 @@ E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
 
 ## Entry points
 
+- `just m2` — browser smoke gate; `just web-serve` — manual browser
+  mosh (URL printed; one shell per tab; `?delay=150` for prediction).
 - `just m1` — engine build + wasmtime smoke + both conformance legs.
 - `just spikes` — every spike leg (M0 sync/async + D7 compose), gate
   order.
@@ -117,7 +128,10 @@ E2E over iroh) → M6 passkeys → M7 inner ssh. Milestone table in README.
   changes (rewrites go.mod deliberately; commit the result).
 - `scripts/setup.sh` — idempotent toolchain setup.
 - `host-test/run-conformance.mjs` — the conformance driver (`--server
-  c|go`); `host-test/moshgo-server/` — leg-b server wrapper.
+  c|go`); `host-test/browser-smoke.mjs` — M2 bridge + gate;
+  `host-test/mosh-servers.mjs` — shared server launcher;
+  `host-test/moshgo-server/` — leg-b server wrapper.
+- `web/app.mjs` — the browser client pump (engine drive contract).
 - `engine-go/export_experiment_mosh_engine/{engine,tracker}.go` — the
   handwritten engine (tracker cribbed from mosh-go `cmd/mosh-wasm`).
 - `web/prf-probe/` — M0 capability probe (deployed copy at

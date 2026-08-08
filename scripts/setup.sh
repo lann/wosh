@@ -72,4 +72,11 @@ if [ -f "$HOST_TEST/package.json" ] && [ ! -d "$HOST_TEST/node_modules" ]; then
   (cd "$HOST_TEST" && npm install --no-fund --no-audit)
 fi
 
+# --- web client deps --------------------------------------------------------
+WEB="$(cd "$(dirname "$0")/.." && pwd)/web"
+if [ -f "$WEB/package.json" ] && [ ! -d "$WEB/node_modules" ]; then
+  say "npm install (web)"
+  (cd "$WEB" && npm install --no-fund --no-audit)
+fi
+
 say "setup complete"

@@ -1,0 +1,11 @@
+{
+  "name": "experiment-mosh-web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Browser client for experiment-mosh. M2: xterm.js + the jco-transpiled engine over a throwaway ws-datagram bridge (host-test/browser-smoke.mjs serves this page).",
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  }
+}
