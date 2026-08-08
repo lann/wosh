@@ -5,9 +5,9 @@
 // (A3: polymorph-iroh#10 / lann/jco#11) and this panel says so rather
 // than faking it.
 
-import { parseConnstring, connstringFromFragment } from "/connstring.mjs";
-import * as store from "/storage.mjs";
-import { openKeyStore, ensureIdentity } from "/idb-keys.mjs";
+import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
+import * as store from "./storage.mjs";
+import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
 
 const A3_MESSAGE =
   "in-browser iroh is pending upstream jco async-scheduler hardening " +

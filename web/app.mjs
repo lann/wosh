@@ -41,7 +41,11 @@ try {
   // protection reads our restarted nonce sequence as replay) and sends
   // its key in a JSON hello frame; every later frame is one datagram.
   // A static serve has no bridge: not an error, the terminal idles.
-  const ws = new WebSocket(`ws://${location.host}/ws${location.search}`);
+  // (Scheme must follow the page's: an https page may not open ws://,
+  // and the constructor throws synchronously if asked — the wss
+  // attempt instead fails through the normal no-bridge path.)
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${scheme}//${location.host}/ws${location.search}`);
   ws.binaryType = "arraybuffer";
   let hello = null;
   try {
@@ -61,7 +65,7 @@ try {
 
   async function runBridgeSession(term, fit, ws, hello) {
     // --- engine -----------------------------------------------------------
-    const { engine } = await import("/generated/mosh-engine.js");
+    const { engine } = await import("./generated/mosh-engine.js");
     const session = engine.Session.connect(hello.key, term.cols, term.rows);
 
     // --- display path: drain → rAF-coalesced terminal writes --------------

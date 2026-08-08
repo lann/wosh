@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>experiment-mosh</title>
-  <link rel="stylesheet" href="/xterm/xterm.css" />
+  <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
     html, body { height: 100%; margin: 0; background: #000; }
     #status {
@@ -29,16 +29,16 @@
   <script type="importmap">
     {
       "imports": {
-        "@bytecodealliance/preview2-shim/cli": "/shim/cli.js",
-        "@bytecodealliance/preview2-shim/clocks": "/shim/clocks.js",
-        "@bytecodealliance/preview2-shim/filesystem": "/shim/filesystem.js",
-        "@bytecodealliance/preview2-shim/io": "/shim/io.js",
-        "@bytecodealliance/preview2-shim/random": "/shim/random.js"
+        "@bytecodealliance/preview2-shim/cli": "./shim/cli.js",
+        "@bytecodealliance/preview2-shim/clocks": "./shim/clocks.js",
+        "@bytecodealliance/preview2-shim/filesystem": "./shim/filesystem.js",
+        "@bytecodealliance/preview2-shim/io": "./shim/io.js",
+        "@bytecodealliance/preview2-shim/random": "./shim/random.js"
       }
     }
   </script>
-  <script src="/xterm/xterm.js"></script>
-  <script src="/xterm/addon-fit.js"></script>
+  <script src="./xterm/xterm.js"></script>
+  <script src="./xterm/addon-fit.js"></script>
 </head>
 <body>
   <div id="wrap">
@@ -46,9 +46,9 @@
     <div id="panel"></div>
     <div id="term"></div>
   </div>
-  <script type="module" src="/app.mjs"></script>
+  <script type="module" src="./app.mjs"></script>
   <script type="module">
-    import { initBoot } from "/boot.mjs";
+    import { initBoot } from "./boot.mjs";
     window.__moshBoot = await initBoot(document.getElementById("panel"));
   </script>
 </body>
