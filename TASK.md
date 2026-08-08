@@ -5,16 +5,34 @@ Point-in-time working state for resuming this effort. The full plan is
 file says where work stopped and what comes next. Update it at the end
 of each session.
 
-## Status: M2 complete (browser gate passed), M3 next
+## Status: M2 complete; upstream #28+#29 landed (evaluated suitable); M3 = B2 glue
 
-- M0 `4003320`..`59d9b8f`; M1 `fe86742` (wire-compat gate, findings
-  7–10); D7 `1929ae2` (composition ruling + spike, finding 11). This
-  session: M2 — browser mosh over the throwaway ws bridge.
-- **M2 gate PASSED** (findings 12–13): `just m2` — xterm.js + the
-  jco-transpiled engine in headless Chromium; prompt, echo, resize
-  green; prediction paints locally underlined at ~145 ms vs 300 ms
-  RTT under a 150 ms/way bridge delay. `just web-serve` = manual mode
-  (one mosh-server + shell per tab; ?delay=150 to feel prediction).
+- M0 `4003320`..`59d9b8f`; M1 `fe86742`; D7 `1929ae2`; M2 `601f799`.
+  This session: upstream suitability evaluation (finding 14).
+- **Upstream moved (2026-08-08)**: polymorph-iroh merged PR #30
+  (datagram surface, closes #28) and PR #31 (identity resource,
+  closes #29) — both evaluated **suitable as-is** (finding 14): the
+  datagram WIT is exactly the planned B2 contract (sync send
+  drop-oldest, async recv accept-family, ceiling ≈ 1156–1176 B ≥ our
+  1138 B); identity constructors preserve the crypto split, browser
+  persistence stays embedder-side. Our A1/A2 PR work evaporates; M3
+  is now purely B2. Finding 9 was NOT addressed upstream (no comments
+  on #28): M4 forwarder sub-frames; file a fresh per-path-ceiling
+  issue when concrete.
+- **jco repin evaluated**: upstream moved to dbad4d7d ("all-fixes");
+  scratch-built it and re-ran our spikes — sync + composed-sync green
+  on node/browser (forward-compat proven), componentize-go
+  async-lower **still broken** (now hangs instead of throwing).
+  #10 / lann/jco#11 still open ⇒ A3 still gates M5/M7 browser legs
+  and composed-async. Runner deps restored to the sibling pin after
+  the experiment.
+- **Sibling checkout caveat**: `../polymorph-iroh` sits on branch
+  `port-noq` (diverges from main, declares the old jco pin 30186b2 —
+  which our transpiles ride via `.deps/jco`). B2 needs the endpoint
+  from main: use a worktree (evaluation used
+  `git worktree add /tmp/opencode/piroh-main origin/main` +
+  `SKIP_NODE=1 scripts/setup.sh`; endpoint builds clean, 2.0 MB) or
+  wait for the checkout to advance — don't move the user's branch.
 - **Finding 13 (M6 design input)**: a fresh engine instance can never
   rejoin a running mosh-server (SSP replay + OCB nonce reuse). The D4
   escrow blob must be `{key, seq-floor}` bumped strictly forward each
@@ -37,15 +55,17 @@ of each session.
 
 ## Pending / open
 
-- **D7 follow-through**: B2 client-core glue (Rust) starts once #28's
-  datagram surface exists (M3); composed async under jco is the
-  unproven half — expect to exercise it at M5, file jco issues if new
-  defects surface (PLAN risk 6). Control-channel-in-glue vs -in-JS:
-  decide by M5.
-- **Finding 9 (M3/M4 decision)**: stock C mosh-server emits datagrams
-  up to 1252 B — over the ~1162 B iroh ceiling. M4 forwarder needs
-  tunnel-layer sub-framing, or #28 grows path-dependent
-  `max-datagram-size` (relay/WebRTC paths have no real 1200 B MTU).
+- **D7 follow-through**: B2 client-core glue is now the active work
+  (see Next). Composed async under jco is the unproven half — expect
+  to exercise it at M5, file jco issues if new defects surface (PLAN
+  risk 6; finding 14: async-lower still broken at dbad4d7d, hang
+  variant). Control-channel-in-glue vs -in-JS: decide by M5.
+- **Finding 9 (M4)**: stock C mosh-server emits datagrams up to
+  1252 B — over the ~1156–1176 B iroh ceiling (finding 14 refines).
+  Upstream did not address it (#28 closed without it being raised):
+  M4 forwarder sub-frames at the tunnel layer; file a fresh upstream
+  issue (per-path ceiling on relay/WebRTC paths) once the forwarder
+  makes the need concrete.
 - Finding 10 follow-ups, revisit when they bite: leg-b scroll artifact
   (`99` for `299`; mosh-go server vs our tracker unattributed — M2's
   xterm.js path showed no such artifact in its phases, weak signal
@@ -58,41 +78,44 @@ of each session.
 - D4 sub-policy, decide during M6: runtime authenticator without `prf`
   ⇒ refuse persistence (lean) vs plaintext-with-warning.
 - polymorph-iroh#10 (jco scheduler defect): gates the browser endpoint
-  leg (M5) and browser-side ssh-in-engine (M7). Watch lann/jco#11 /
-  polymorph-iroh PR #27. Everything before M5 is deliberately
-  independent of it.
-- Upstream issues filed, PRs to come from this experiment:
-  polymorph-iroh#28 (datagram WIT surface — M3),
-  polymorph-iroh#29 (injectable identity — M5). Branch in the sibling
-  `../polymorph-iroh` checkout; follow its AGENTS.md (issue-first, one
-  decision per PR, conformance is the gate).
+  leg (M5) and browser-side ssh-in-engine (M7). Watch lann/jco#11;
+  both still open as of 2026-08-08 (finding 14 — the dbad4d7d
+  "all-fixes" pin did not clear our async-lower probe). Everything
+  before M5 is deliberately independent of it.
+- ~~Upstream issues #28/#29~~ **resolved upstream** (PRs #30/#31,
+  finding 14) — no PRs to write from this experiment for A1/A2.
 - Upstream courtesy when convenient: offer mosh-go the wasip build-tag
   patch (and later fragment-size/RTO learnings) as issues/PRs.
 
-## Next: M3 — polymorph-iroh datagram surface (#28), native legs
+## Next: M3 — B2 client-core glue, composed native leg
 
-Upstream work in the sibling `../polymorph-iroh` checkout, per its
-AGENTS.md: issue-first (#28 already filed), one decision per PR,
-conformance is the gate. Design per PLAN A1: `max-datagram-size` /
-`send-datagram` (sync, drop-on-full) / `recv-datagram` (async) on
-`connection`; pump plumbing for `DatagramReceived` /
-`DatagramsUnblocked` in both endpoint impls; native legs green (the
-jco leg rides #10/A3 and is explicitly out of scope for the PR gate).
+The upstream surface is merged; M3 is entirely our side now (PLAN B2 +
+milestone M3). Gate: engine+glue+endpoint wac-composed, talking mosh
+over real iroh datagrams under wasmtime.
 
-Feed in the M1/M2 findings where the surface design touches them:
+1. `client-core/` Rust component (wit-bindgen 0.59 + async feature,
+   mirror upstream's guest conventions — see the exec-model guest in
+   polymorph-iroh): imports `experiment:mosh/engine` and
+   `polymorph:iroh/endpoint`; exports a driver interface
+   (attach(connection, key, cols, rows), feed-keys, resize,
+   drain-output, stats, detach). Owns the recv-datagram loop and the
+   wait-for tick (~8 ms); forwards engine tick output via
+   send-datagram (sync→sync, legal); logs `max-datagram-size` at
+   attach (confirm ≥ 1138, finding 14).
+2. wac-compose engine + glue + endpoint (their demo composes the same
+   way: `wac plug`; multiple --plug args work). Native leg: wasmtime
+   host cribbing polymorph-iroh's host-wasmtime endpoint-demo driver
+   (webcrypto/websocket/sockets host shims), against a real
+   mosh-server through a UDP↔datagram pump — effectively the M1
+   conformance suite with iroh in the middle.
+3. Endpoint source: build from polymorph-iroh main via worktree until
+   the sibling checkout advances (see status caveat).
+4. Findings; decide whether the M4 proxy consumes the same composed
+   artifact (likely) before starting workstream C.
 
-1. Finding 9: stock mosh-server emits up to 1252 B datagrams — either
-   `max-datagram-size` must be honest per-path (relay websocket and
-   WebRTC data channels have no physical 1200 B MTU) or the M4
-   forwarder sub-frames; raise on the issue before implementing.
-2. After the PR: start B2 client-core glue against the new surface
-   (compose with the engine; native wasmtime leg first — that
-   composition is M4's E2E vehicle).
-
-Then: M4 proxy (+ composed-core native E2E over iroh) → M5 (#29 +
-browser client proper; A3-gated) → M6 passkeys (escrow `{key,
-seq-floor}`, finding 13; engine grows initial-seq option) → M7 inner
-ssh. Milestone table in README.
+Then: M4 proxy (+ sub-framing for 1252 B server datagrams) → M5
+browser client (A3-gated) → M6 passkeys (escrow `{key, seq-floor}`,
+finding 13) → M7 inner ssh. Milestone table in README.
 
 ## Environment
 

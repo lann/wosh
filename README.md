@@ -301,3 +301,37 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     kick works). Engine additions planned with M6: a connect option
     for the initial sequence and a current-sequence stat for
     detach-time persistence.
+
+14. **Upstream evaluation (2026-08-08): #28 and #29 are implemented,
+    merged, and suitable as-is; the jco pin bump is not yet the A3
+    unblock.** polymorph-iroh PR #30 ships the datagram surface
+    exactly in our planned B2 shape — sync `send-datagram` with
+    drop-*oldest*-on-full (the right direction for SSP: stale state
+    diffs should die first), async `recv-datagram` with the
+    accept-family concurrency contract, `max-datagram-size` as
+    capability probe — with conformance across relay/UDP/WebRTC plus
+    RFC 9221 interop against upstream iroh in both directions.
+    Ceiling: 1200 − 1-RTT overhead − frame bound ≈ 1156–1176 B, so
+    the patched engine's ≤ 1138 B fits with margin (log the live
+    value at B2 first-run). Finding 9 was never raised on #28 (closed
+    same-day): stock-server 1252 B datagrams remain over the ceiling —
+    M4 forwarder sub-frames; file a fresh upstream issue (per-path
+    ceiling on relay/WebRTC, where no physical 1200 B MTU exists) when
+    the need is concrete. PR #31 ships identity as a resource with
+    per-path constructors (`identity-generate`, `identity-from-keys`
+    over polymorph-webcrypto handles; borrowed into an
+    `endpoint-options` resource) — crypto-split preserved, browser
+    persistence stays embedder-side as we planned. The endpoint
+    component builds clean from main (2.0 MB, rust 1.97) and exports
+    endpoint + the three identity interfaces. jco: upstream repinned
+    30186b2 → dbad4d7d ("all-fixes": sync-start-call, future/stream
+    transfer, concurrent task lifetimes, composed guest-to-guest
+    tests); re-ran our spikes against a scratch build of dbad4d7d —
+    sync and composed-sync green on node + browser (forward-compat
+    confirmed for the coming repin), but componentize-go
+    **async-lower is still broken** (failure mode now a hang rather
+    than the old `Missing subtask` throw). #10 and lann/jco#11 remain
+    open; A3 still gates M5/M7 browser legs and composed-async.
+    Consequence for the plan: M3's "A1 PR upstream" and M5's "A2 PR"
+    are done by upstream — M3 collapses into B2 (client-core glue
+    against the merged surface, native-first).

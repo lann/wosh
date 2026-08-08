@@ -154,21 +154,28 @@ interim key delivery (M4, removed/demoted in M7), WebAuthn ceremonies
 in the sibling checkout; conformance is the gate):
 
 - A1 [#28](https://github.com/polymorph-components/polymorph-iroh/issues/28)
-  QUIC datagram surface: `max-datagram-size` / `send-datagram` (sync,
-  drop-on-full) / `recv-datagram` (async) on `connection`; pump plumbing
-  for `DatagramReceived`/`DatagramsUnblocked` in both endpoint impls.
-  noq-proto already ships RFC 9221 and endpoints already advertise it.
-  ~1162 B application ceiling under the fixed 1200 B MTU profile (mosh
-  fragments at ~500 B — fits). Native legs first; jco leg rides #10.
+  QUIC datagram surface: **DONE upstream** (PR #30, 2026-08-08) —
+  `max-datagram-size` (option, capability probe) / `send-datagram`
+  (sync, drop-oldest-on-full) / `recv-datagram` (async, accept-family
+  concurrency); conformance relay/UDP/WebRTC + RFC 9221 interop vs
+  upstream iroh both directions. Ceiling ≈ 1156–1176 B under the
+  1200 B profile — engine's ≤ 1138 B fits (finding 14). Finding 9
+  (stock server 1252 B) was not addressed: sub-frame in the M4
+  forwarder; file a fresh per-path-ceiling issue when concrete.
 - A2 [#29](https://github.com/polymorph-components/polymorph-iroh/issues/29)
-  injectable/persistable identity: optional identity reference in
-  `endpoint-options`; private key stays behind the webcrypto boundary
-  (crypto-split invariant). Browser persistence (IndexedDB CryptoKey,
-  load-or-generate-by-name) likely lands as a polymorph-webcrypto
-  surface PR that this consumes.
+  injectable/persistable identity: **DONE upstream** (PR #31) —
+  identity resource, `identity-generate` / `identity-from-keys`
+  (webcrypto handles; crypto-split intact), borrowed into an
+  `endpoint-options` resource. Browser persistence stays
+  embedder-side (IndexedDB CryptoKey), polymorph-webcrypto#97 additive
+  later.
 - A3 (external, watch/assist): jco scheduler hardening —
-  polymorph-iroh#10, lann/jco#11, PR #27. Gates M5 browser E2E and M7
-  browser ssh. Everything before M5 is sequenced to not depend on it.
+  polymorph-iroh#10, lann/jco#11 (both still open 2026-08-08). The
+  dbad4d7d "all-fixes" pin adds CM-async machinery + composed
+  guest-to-guest tests, but componentize-go async-lower is still
+  broken under it (finding 14: hang, previously throw). Gates M5
+  browser E2E, M7 browser ssh, and composed-async. Everything before
+  M5 is sequenced to not depend on it.
 
 **B — engine**: `experiment:mosh` WIT world (sync `session` resource:
 `feed-keys`, `resize`, `handle-datagram`, `tick -> list<datagram>`,
@@ -245,9 +252,9 @@ async export, per finding 3b).
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues | **DONE** — D5 PASSED (findings 1–5); D4 → PRF arm (finding 6); #28/#29 filed |
 | M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
-| M3 | A1 datagram PR upstream, native legs green; client-core glue starts against it | upstream conformance |
-| M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh, driving the **wac-composed client core** (engine+glue+endpoint) under wasmtime | composed core passes the M1 conformance suite over iroh |
-| M5 | A2 identity PR + browser client proper; composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
+| M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | composed core talks mosh over iroh datagrams natively |
+| M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | composed core passes the M1 conformance suite over iroh |
+| M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **blocked on A3** for the browser endpoint leg (composed or not); two-component JS orchestration is the recorded fallback |
 | M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
 | M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |
 
