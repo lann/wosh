@@ -46,6 +46,10 @@ type Transport struct {
 	seqInMax    uint64
 	seqInMaxSet bool // false until first datagram received
 
+	// Fresh-process reattach: adopt SSP state numbering from the first
+	// complete instruction the server sends (see Recv).
+	resumeAdopt bool
+
 	// Timestamps.
 	lastSend time.Time
 	lastRecv time.Time
@@ -291,10 +295,46 @@ func (t *Transport) Recv(wire []byte) []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Process ack from remote.
+	// Resume adoption (fresh-process reattach). The first complete
+	// instruction from the server carries everything a resuming client
+	// must learn: AckNum is the server's high-water mark for OUR state
+	// numbers (frozen while we were detached — servers only advance it
+	// when they accept a client state), and OldNum is the anchor the
+	// server is currently diffing from. Adopt both. Sender: our state
+	// numbers must continue above the server's mark (lower or equal
+	// new_nums are dropped by its dedup check) and diffs must be based
+	// on the server's own latest state — UserStream diffs are
+	// positional, so any other base corrupts the C server's action
+	// bookkeeping (get_remote_diff fatal_asserts on a shrinking action
+	// count). Receiver: pretend we hold the server's anchor; contents
+	// are unknowable, so the engine forces a full repaint afterwards
+	// (resize dance). The crypto sequence can NOT be learned this way
+	// (replay/nonce safety) — that one rides the escrowed floor.
+	if t.resumeAdopt {
+		t.resumeAdopt = false
+		if ti.AckNum > t.sentNum {
+			t.sentNum = ti.AckNum
+		}
+		if ti.AckNum > t.ackedByRemote {
+			t.ackedByRemote = ti.AckNum
+		}
+		if t.pendingDiff != nil {
+			// Re-issue the pre-adoption diff (typically the initial
+			// resize) as a fresh state above the adopted floor.
+			t.diffSent = false
+			t.hasPendingBase = false
+		}
+		t.receivedNums = []uint64{ti.OldNum}
+		t.ackNum = ti.OldNum
+		t.sentAckNum = ti.OldNum
+	}
+
+	// Process ack from remote. An unsent pending diff must never be
+	// cleared by an ack — the ack can only cover states sent before
+	// the diff existed (the diffSent guard).
 	if ti.AckNum > t.ackedByRemote {
 		t.ackedByRemote = ti.AckNum
-		if t.ackedByRemote >= t.sentNum && t.pendingDiff != nil {
+		if t.ackedByRemote >= t.sentNum && t.pendingDiff != nil && t.diffSent {
 			t.pendingDiff = nil
 			t.diffSent = false
 			t.hasPendingBase = false
@@ -403,6 +443,47 @@ func (t *Transport) RTO() time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.rto
+}
+
+// SeqOut returns the crypto-layer outgoing sequence counter: the
+// sequence of the most recently sent datagram. A detaching client
+// persists this so a future instance can resume above it (SSP replay
+// protection drops sequences at or below the peer's high-water mark,
+// and reusing one under the same key is OCB nonce reuse).
+func (t *Transport) SeqOut() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.seqOut
+}
+
+// SetSeqOut sets the outgoing sequence counter; the next datagram uses
+// seq+1. Must be called before any datagram is sent — reattach flows
+// set it to a persisted floor plus a forward margin.
+func (t *Transport) SetSeqOut(seq uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seqOut = seq
+}
+
+// EnableResumeAdopt puts the transport in fresh-process reattach mode:
+// SSP state numbering and the receiver anchor are adopted from the
+// first complete instruction the server sends (see Recv). Reattach
+// flows enable this together with SetSeqOut — the crypto sequence
+// cannot be learned from the wire, but the SSP state numbers can and
+// must be: the server's retained-state window moved while we were
+// away, and an escrowed snapshot of it goes stale (positional
+// UserStream diffs make staleness corrupting, not just lossy).
+func (t *Transport) EnableResumeAdopt() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.resumeAdopt = true
+}
+
+// HasPending reports whether a diff is set and not yet acknowledged.
+func (t *Transport) HasPending() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pendingDiff != nil
 }
 
 // encryptFragment encrypts a fragment and wraps it in the mosh wire format.

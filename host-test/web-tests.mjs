@@ -112,6 +112,55 @@ const CS = `1.${ID}.t0ken.http://127.0.0.1:3347`;
 
 console.log("[web-tests] node phase OK (connstring, storage)");
 
+// --- phase 1.5: prf-wrap crypto under node (synthetic PRF output) -------------
+
+const prf = await import("../web/prf-wrap.mjs");
+
+{
+  // Wrap/unwrap round-trip; the sealed floor is authoritative.
+  const prfOut = crypto.getRandomValues(new Uint8Array(32));
+  const credId = crypto.getRandomValues(new Uint8Array(16));
+  const escrow = await prf.wrapEscrow(prfOut, { key: "S3KR1T", seqFloor: 42 }, credId);
+  assert.deepEqual(Object.keys(escrow), ["prf"]);
+  assert.equal(escrow.prf.seqFloor, 42);
+  const inner = await prf.unwrapEscrow(prfOut, escrow);
+  assert.deepEqual(inner, { key: "S3KR1T", seqFloor: 42 });
+
+  // A proxy-tampered outer floor does not reach the attach path.
+  const tamperedOuter = { prf: { ...escrow.prf, seqFloor: 1 } };
+  assert.deepEqual(await prf.unwrapEscrow(prfOut, tamperedOuter), {
+    key: "S3KR1T",
+    seqFloor: 42,
+  });
+
+  // Ciphertext tampering and wrong-credential PRF output both throw.
+  const ct = prf.unb64u(escrow.prf.ct);
+  ct[0] ^= 1;
+  await assert.rejects(
+    prf.unwrapEscrow(prfOut, { prf: { ...escrow.prf, ct: prf.b64u(ct) } }),
+    /unwrap failed/,
+  );
+  await assert.rejects(
+    prf.unwrapEscrow(crypto.getRandomValues(new Uint8Array(32)), escrow),
+    /unwrap failed/,
+  );
+
+  // The blob is exactly the storage-schema session key (and therefore
+  // the proto::Escrow JSON — parity-tested on the Rust side).
+  const withSession = store.recordSession(store.emptyState(), {
+    proxyId: ID,
+    key: escrow,
+  });
+  assert.equal(withSession.sessions[0].key.prf.ct, escrow.prf.ct);
+
+  // D4 sub-policy: no prf ⇒ no persistence.
+  assert.throws(() => prf.assertPersistencePermitted(false), /refusing to persist/);
+  assert.throws(() => prf.assertPersistencePermitted(undefined), /refusing to persist/);
+  prf.assertPersistencePermitted(true);
+}
+
+console.log("[web-tests] node phase OK (prf-wrap crypto, D4 policy guard)");
+
 // --- phase 2: IndexedDB keys + bootstrap panel in headless Chromium ----------
 
 const PAGE = `<!doctype html><meta charset=utf-8>
@@ -178,6 +227,67 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       if (store.load(localStorage).proxies.length !== 0) return "FAIL: forget did not persist";
       return "OK phase2";
     }
+    if (phase === "3") {
+      // WebAuthn prf ceremony against the CDP virtual authenticator
+      // (wired by the node side before navigation). Prototype calls
+      // per finding 6.
+      const prf = await import("/prf-wrap.mjs");
+      const protoCreate = CredentialsContainer.prototype.create;
+      const protoGet = CredentialsContainer.prototype.get;
+      const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+      const cred = await protoCreate.call(navigator.credentials, {
+        publicKey: {
+          rp: { name: "experiment-mosh web-tests" },
+          user: { id: rand(16), name: "m6", displayName: "m6" },
+          challenge: rand(32),
+          pubKeyCredParams: [
+            { type: "public-key", alg: -7 },
+            { type: "public-key", alg: -257 },
+          ],
+          authenticatorSelection: {
+            residentKey: "required",
+            userVerification: "required",
+          },
+          extensions: prf.prfExtensionForCreate(),
+        },
+      });
+      const enabled = cred.getClientExtensionResults().prf?.enabled === true;
+      if (!enabled) return "OK phase3 (prf NOT supported at create)";
+
+      const assert1 = await protoGet.call(navigator.credentials, {
+        publicKey: {
+          challenge: rand(32),
+          userVerification: "required",
+          extensions: prf.prfExtensionForGet(),
+        },
+      });
+      const out1 = assert1.getClientExtensionResults().prf?.results?.first;
+      if (!out1 || out1.byteLength !== 32) {
+        return "FAIL: prf enabled at create but eval returned " + out1?.byteLength;
+      }
+
+      // Wrap under the real PRF output; unwrap with a SECOND assertion's
+      // output (deterministic per credential+salt — the reattach path).
+      const escrow = await prf.wrapEscrow(
+        out1,
+        { key: "mosh-key-b64", seqFloor: 7 },
+        new Uint8Array(cred.rawId),
+      );
+      const assert2 = await protoGet.call(navigator.credentials, {
+        publicKey: {
+          challenge: rand(32),
+          userVerification: "required",
+          extensions: prf.prfExtensionForGet(),
+        },
+      });
+      const out2 = assert2.getClientExtensionResults().prf?.results?.first;
+      const inner = await prf.unwrapEscrow(out2, escrow);
+      if (inner.key !== "mosh-key-b64" || inner.seqFloor !== 7) {
+        return "FAIL: unwrap after fresh assertion: " + JSON.stringify(inner);
+      }
+      return "OK phase3 (prf supported; wrap survives a fresh assertion)";
+    }
     return "FAIL: unknown phase";
   })().catch((e) => "FAIL: " + (e.message ?? e));
 </script>`;
@@ -189,7 +299,7 @@ const server = http.createServer(async (req, res) => {
     res.end(PAGE);
     return;
   }
-  const m = /^\/(boot|connstring|storage|idb-keys)\.mjs$/.exec(pathname);
+  const m = /^\/(boot|connstring|storage|idb-keys|prf-wrap)\.mjs$/.exec(pathname);
   if (!m || pathname.includes("..")) {
     res.statusCode = 404;
     res.end("not found");
@@ -210,7 +320,13 @@ if (!executablePath) throw new Error("no Chromium found; set CHROME_PATH");
 const browser = await chromium.launch({
   executablePath,
   headless: true,
-  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  args: [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    // Phase 3 needs a valid RP ID; "localhost" is one, "127.0.0.1" is
+    // not. Pin the resolution so the page still hits our v4 listener.
+    "--host-resolver-rules=MAP localhost 127.0.0.1",
+  ],
 });
 try {
   const page = await browser.newPage();
@@ -227,7 +343,39 @@ try {
   console.log(`[web-tests] browser phase 2: ${r2}`);
   if (r2 !== "OK phase2") process.exit(1);
 
-  console.log("web tests (M5 unblocked parts): OK");
+  // Phase 3: real WebAuthn ceremonies against the CDP virtual
+  // authenticator (the finding is the capability report either way;
+  // the full browser↔proxy ceremony E2E stays A3-blocked).
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  let authenticatorAdded = false;
+  try {
+    await cdp.send("WebAuthn.addVirtualAuthenticator", {
+      options: {
+        protocol: "ctap2",
+        ctap2Version: "ctap2_1",
+        transport: "internal",
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        hasPrf: true,
+        automaticPresenceSimulation: true,
+      },
+    });
+    authenticatorAdded = true;
+  } catch (e) {
+    console.log(
+      `[web-tests] browser phase 3: SKIPPED (virtual authenticator with hasPrf unavailable: ${e.message})`,
+    );
+  }
+  if (authenticatorAdded) {
+    await page.goto(`http://localhost:${server.address().port}/?phase=3`);
+    const r3 = await page.evaluate(() => window.__result);
+    console.log(`[web-tests] browser phase 3: ${r3}`);
+    if (!r3.startsWith("OK phase3")) process.exit(1);
+  }
+
+  console.log("web tests (M5 unblocked parts + M6 prf): OK");
 } finally {
   await browser.close();
   server.close();

@@ -65,6 +65,7 @@ version = "0.0.1"
 dependencies = [
  "ciborium",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

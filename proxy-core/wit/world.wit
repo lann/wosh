@@ -1,13 +1,38 @@
 package experiment:mosh-proxy;
 
 /// Host services the proxy-core component cannot provide itself: OS
-/// process spawning, operator interaction, TOFU persistence.
+/// process spawning, operator interaction, TOFU persistence, the
+/// WebAuthn relying party (webauthn-rs), and the escrow store —
+/// proxy-core stays protocol-only (D9).
 interface host {
   record session-info {
+    /// Host-assigned stable id (reattach names sessions by it).
+    session-id: u64,
     /// The MOSH CONNECT key for the spawned server.
     key: string,
     /// The loopback UDP port the mosh-server listens on.
     udp-port: u16,
+  }
+
+  /// A verified reattach target.
+  record reattach-info {
+    /// The persistent session's mosh-server port.
+    udp-port: u16,
+    /// The escrowed blob, exactly as `make-persistent` stored it.
+    escrow: list<u8>,
+  }
+
+  /// One WebAuthn ceremony step. Payloads are opaque webauthn-rs JSON
+  /// blobs relayed from/to the client; the host holds the RP state.
+  enum ceremony-kind {
+    /// [] → CreationChallengeResponse JSON.
+    register-start,
+    /// RegisterPublicKeyCredential JSON → [] (verified + stored).
+    register-finish,
+    /// [] → RequestChallengeResponse JSON.
+    auth-start,
+    /// PublicKeyCredential JSON → [] (assertion verified).
+    auth-finish,
   }
 
   /// Authorize a peer presenting `pairing-token`. Host policy: known
@@ -19,7 +44,21 @@ interface host {
   /// Spawn `mosh-server -i 127.0.0.1` for a new session.
   new-session: async func() -> result<session-info, string>;
 
-  /// The session's connection ended: reclaim the server process.
+  /// Run one ceremony step for `session-id` (see ceremony-kind).
+  webauthn-step: async func(kind: ceremony-kind, session-id: u64, payload: list<u8>) -> result<list<u8>, string>;
+
+  /// Store the (opaque) escrow blob and mark the session persistent.
+  /// Requires a completed registration for the session.
+  make-persistent: async func(session-id: u64, escrow: list<u8>) -> result<_, string>;
+
+  /// Resolve a persistent session for tunneling after a verified
+  /// assertion. proxy-core only calls this after `auth-finish`
+  /// succeeded for the same session on the same connection.
+  reattach: async func(session-id: u64) -> result<reattach-info, string>;
+
+  /// The session's connection ended: reclaim the server process —
+  /// unless the session is persistent, in which case it survives for
+  /// a future reattach.
   end-session: func(udp-port: u16);
 
   log: func(message: string);

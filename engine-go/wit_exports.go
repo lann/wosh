@@ -14,16 +14,27 @@ import (
 )
 
 var staticPinner = runtime.Pinner{}
-var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, 56, 8))
+var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, 64, 8))
 var syncExportPinner = runtime.Pinner{}
 
 //go:wasmexport experiment:mosh/engine#[static]session.connect
-func wasm_export_experiment_mosh_engine_static_session_connect(arg0 uintptr, arg1 uint32, arg2 int32, arg3 int32) uintptr {
+func wasm_export_experiment_mosh_engine_static_session_connect(arg0 uintptr, arg1 uint32, arg2 int32, arg3 int32, arg4 int32, arg5 int64) uintptr {
 
 	pinner := &syncExportPinner
 	value := unsafe.String((*uint8)(unsafe.Pointer(arg0)), arg1)
+	var option witTypes.Option[uint64]
+	switch arg4 {
+	case 0:
+
+		option = witTypes.None[uint64]()
+	case 1:
+
+		option = witTypes.Some[uint64](uint64(arg5))
+	default:
+		panic("unreachable")
+	}
 	witRuntime.Unpin()
-	result := export_experiment_mosh_engine.SessionConnect(value, uint16(arg2), uint16(arg3))
+	result := export_experiment_mosh_engine.SessionConnect(value, uint16(arg2), uint16(arg3), option)
 
 	switch result.Tag() {
 	case witTypes.ResultOk:
@@ -151,6 +162,7 @@ func wasm_export_experiment_mosh_engine_method_session_stats(arg0 uintptr) uintp
 	}
 	*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 48)) = int8(result0)
 	*(*int32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 52)) = int32((result).TrackedStates)
+	*(*int64)(unsafe.Add(unsafe.Pointer(exportReturnArea), 56)) = int64((result).CurrentSeq)
 	return exportReturnArea
 
 }

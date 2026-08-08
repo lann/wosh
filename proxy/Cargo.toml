@@ -18,10 +18,15 @@ wasmtime-wasi = { version = "47", features = ["p3"] }
 wasmtime-webrtc-datachannels = { path = "../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
 polymorph-webcrypto-wasmtime = { path = "../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
 wasmtime-websocket = { path = "../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-std", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-std", "io-util", "signal"] }
 futures = "0.3"
 anyhow = "1"
 hex = "0.4"
 rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
 env_logger = "0.11"
+webauthn-rs = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4", "v5"] }

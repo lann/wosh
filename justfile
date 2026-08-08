@@ -163,3 +163,17 @@ m5-netem:
 
 # The unblocked-parts gate.
 m5: m5-web
+
+# --- M6 passkeys (E) ---------------------------------------------------------
+
+# The M6 gate: passkey ceremonies over the control channel against a
+# real webauthn-rs RP (soft authenticator), escrowed {key, seq-floor}
+# blob returned verbatim, detach keeps the persistent session, and a
+# FRESH client process reattaches: assertion-gated, crypto sequence
+# above the escrowed floor, SSP state numbers adopted live from the
+# server (finding 20), pre-detach screen resynced via the resize
+# dance. Browser-side PRF wrap/unwrap + the D4 policy guard ride
+# `just m5-web` (web-tests phase 3, CDP virtual authenticator); the
+# full browser↔proxy ceremony E2E stays A3-blocked.
+m6: compose-client compose-proxy proxy-build
+    cd host-test/passkey-e2e && cargo run --release

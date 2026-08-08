@@ -1,16 +1,24 @@
-//! The experiment-mosh proxy (M4, workstream C): a thin native shell
-//! around the composed proxy-core component.
+//! The experiment-mosh proxy (M4/M6, workstream C): a thin native
+//! shell around the composed proxy-core component.
 //!
 //! Architecture (D1 + D9): the proxy's brain — accept loop, control
-//! channel, TOFU flow, datagram tunnel with sub-framing — lives in
-//! `proxy-core` (a wasm component, fused with the polymorph-iroh
-//! endpoint component by wac). This binary provides exactly the OS
-//! surface the component imports: spawn/reap `mosh-server -i
-//! 127.0.0.1` (interim mode, D2 — the proxy runs as the target
-//! user), the operator TOFU prompt, TOFU persistence, and logging —
-//! plus bootstrap UX: the connection string and its QR code.
+//! channel, TOFU flow, datagram tunnel with sub-framing, ceremony
+//! routing — lives in `proxy-core` (a wasm component, fused with the
+//! polymorph-iroh endpoint component by wac). This binary provides
+//! exactly the OS/RP surface the component imports: spawn/reap
+//! `mosh-server -i 127.0.0.1` (interim mode, D2 — the proxy runs as
+//! the target user), the operator TOFU prompt, TOFU persistence,
+//! logging, the WebAuthn relying party (webauthn-rs, M6), the escrow
+//! store, and the session persistence policy — plus bootstrap UX: the
+//! connection string and its QR code.
+//!
+//! wasmtime-47 bindgen conventions (worth keeping): async WIT imports
+//! ⇒ `HostWithStore<T>` associated fns taking `&Accessor<Ctx, Self>`
+//! with state via `accessor.with(|mut a| a.get()…)`; sync WIT imports
+//! ⇒ still `async fn` but taking `Access<'_, Ctx, Self>` directly;
+//! plus an empty `impl Host for &mut Ctx`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -24,6 +32,10 @@ use wasmtime_webrtc_datachannels::{
     self as webrtc_host, WasiWebrtcCtx, WasiWebrtcCtxView, WasiWebrtcView,
 };
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
+use webauthn_rs::prelude::{
+    PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    Url, Uuid, Webauthn, WebauthnBuilder,
+};
 
 mod bindings {
     wasmtime::component::bindgen!({
@@ -38,7 +50,7 @@ mod bindings {
     });
 }
 
-use bindings::experiment::mosh_proxy::host::{Host, SessionInfo};
+use bindings::experiment::mosh_proxy::host::{CeremonyKind, ReattachInfo, SessionInfo};
 
 struct Cli {
     relay: String,
@@ -49,13 +61,16 @@ struct Cli {
     yes: bool,
     no_qr: bool,
     shell: Option<String>,
+    rp_id: String,
+    rp_origin: String,
 }
 
 fn usage() -> anyhow::Error {
     anyhow!(
         "usage: experiment-mosh-proxy --relay <url> [--state-dir <dir>] \
          [--qr-base <url>] [--component <composed-proxy.wasm>] \
-         [--token <pairing-token>] [--yes] [--no-qr] [--shell <cmd…>]"
+         [--token <pairing-token>] [--yes] [--no-qr] [--shell <cmd…>] \
+         [--rp-id <domain>] [--rp-origin <url>]"
     )
 }
 
@@ -68,6 +83,8 @@ fn parse_args() -> Result<Cli> {
     let mut yes = false;
     let mut no_qr = false;
     let mut shell = None;
+    let mut rp_id = None;
+    let mut rp_origin = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(usage);
@@ -80,6 +97,8 @@ fn parse_args() -> Result<Cli> {
             "--yes" => yes = true,
             "--no-qr" => no_qr = true,
             "--shell" => shell = Some(value()?),
+            "--rp-id" => rp_id = Some(value()?),
+            "--rp-origin" => rp_origin = Some(value()?),
             _ => return Err(usage()),
         }
     }
@@ -99,6 +118,11 @@ fn parse_args() -> Result<Cli> {
         yes,
         no_qr,
         shell,
+        // The production RP ID is the client site's registrable domain
+        // (PLAN: bootstrap/session UX); localhost defaults serve the
+        // native harness and local development.
+        rp_id: rp_id.unwrap_or_else(|| "localhost".into()),
+        rp_origin: rp_origin.unwrap_or_else(|| "http://localhost".into()),
     })
 }
 
@@ -141,15 +165,19 @@ impl KnownClients {
 
 /// A spawned stock mosh-server (detaches; daemon pid on stderr).
 struct MoshSession {
+    id: u64,
     port: u16,
     key: String,
     pid: Option<u32>,
+    /// Persistent sessions survive connection close (M6): the
+    /// mosh-server keeps running and reattach is assertion-gated.
+    persistent: bool,
 }
 
 impl MoshSession {
     /// `shell`: whitespace-split command appended after `--` (tests
     /// pin `bash --noprofile --norc -i`); none ⇒ the user's shell.
-    fn spawn(shell: Option<&str>) -> Result<Self> {
+    fn spawn(id: u64, shell: Option<&str>) -> Result<Self> {
         let mut args: Vec<String> = ["new", "-i", "127.0.0.1", "-c", "256"]
             .iter()
             .map(|s| s.to_string())
@@ -178,7 +206,13 @@ impl MoshSession {
             .nth(1)
             .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
             .and_then(|s| s.parse().ok());
-        Ok(Self { port, key, pid })
+        Ok(Self {
+            id,
+            port,
+            key,
+            pid,
+            persistent: false,
+        })
     }
 
     fn kill(&self) {
@@ -207,9 +241,44 @@ struct Ctx {
     table: ResourceTable,
     known: KnownClients,
     sessions: Vec<MoshSession>,
+    next_session_id: u64,
     pairing_token: String,
     auto_accept: bool,
     shell: Option<String>,
+    // --- the WebAuthn relying party + escrow store (M6) ---
+    webauthn: Webauthn,
+    reg_states: HashMap<u64, PasskeyRegistration>,
+    auth_states: HashMap<u64, PasskeyAuthentication>,
+    /// Verified credentials per session (webauthn-rs Passkey, serde).
+    passkeys: HashMap<u64, Vec<webauthn_rs::prelude::Passkey>>,
+    /// Opaque client-wrapped blobs; returned verbatim on reattach.
+    escrows: HashMap<u64, Vec<u8>>,
+    state_dir: PathBuf,
+}
+
+impl Ctx {
+    /// Durable copy of credentials + escrows (state-dir JSON). The
+    /// mosh-server processes themselves do not survive a proxy
+    /// restart, so this durability serves escrow recovery and future
+    /// multi-proxy work, not live-session recovery.
+    fn persist_stores(&self) {
+        #[derive(serde::Serialize)]
+        struct Stores<'a> {
+            passkeys: &'a HashMap<u64, Vec<webauthn_rs::prelude::Passkey>>,
+            escrows: HashMap<u64, String>,
+        }
+        let stores = Stores {
+            passkeys: &self.passkeys,
+            escrows: self
+                .escrows
+                .iter()
+                .map(|(k, v)| (*k, hex::encode(v)))
+                .collect(),
+        };
+        if let Ok(json) = serde_json::to_vec_pretty(&stores) {
+            let _ = std::fs::write(self.state_dir.join("passkeys.json"), json);
+        }
+    }
 }
 
 impl Drop for Ctx {
@@ -308,10 +377,15 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
     async fn new_session(
         accessor: &wasmtime::component::Accessor<Ctx, Self>,
     ) -> wasmtime::Result<Result<SessionInfo, String>> {
-        let shell = accessor.with(|mut a| a.get().shell.clone());
-        match MoshSession::spawn(shell.as_deref()) {
+        let (id, shell) = accessor.with(|mut a| {
+            let ctx = a.get();
+            ctx.next_session_id += 1;
+            (ctx.next_session_id, ctx.shell.clone())
+        });
+        match MoshSession::spawn(id, shell.as_deref()) {
             Ok(s) => {
                 let info = SessionInfo {
+                    session_id: id,
                     key: s.key.clone(),
                     udp_port: s.port,
                 };
@@ -322,12 +396,77 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
         }
     }
 
+    async fn webauthn_step(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+        kind: CeremonyKind,
+        session_id: u64,
+        payload: Vec<u8>,
+    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
+        Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            webauthn_step_impl(ctx, kind, session_id, &payload)
+        }))
+    }
+
+    async fn make_persistent(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+        session_id: u64,
+        escrow: Vec<u8>,
+    ) -> wasmtime::Result<Result<(), String>> {
+        Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            if !ctx.passkeys.contains_key(&session_id) {
+                return Err("no registered passkey for this session".into());
+            }
+            let Some(s) = ctx.sessions.iter_mut().find(|s| s.id == session_id) else {
+                return Err("no such session".into());
+            };
+            s.persistent = true;
+            ctx.escrows.insert(session_id, escrow);
+            ctx.persist_stores();
+            println!("session {session_id} is now persistent (passkey-bound)");
+            Ok(())
+        }))
+    }
+
+    async fn reattach(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+        session_id: u64,
+    ) -> wasmtime::Result<Result<ReattachInfo, String>> {
+        Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            let Some(s) = ctx.sessions.iter().find(|s| s.id == session_id) else {
+                return Err("no such session".into());
+            };
+            if !s.persistent {
+                return Err("session is not persistent".into());
+            }
+            let escrow = ctx
+                .escrows
+                .get(&session_id)
+                .ok_or("no escrow for this session")?
+                .clone();
+            Ok(ReattachInfo {
+                udp_port: s.port,
+                escrow,
+            })
+        }))
+    }
+
     async fn end_session(
         mut access: wasmtime::component::Access<'_, Ctx, Self>,
         udp_port: u16,
     ) -> wasmtime::Result<()> {
-        access.get().sessions.retain(|s| {
+        let ctx = access.get();
+        ctx.sessions.retain(|s| {
             if s.port == udp_port {
+                if s.persistent {
+                    println!(
+                        "session {} detached; mosh-server on udp:{} kept (persistent)",
+                        s.id, s.port
+                    );
+                    return true;
+                }
                 s.kill();
                 false
             } else {
@@ -346,6 +485,72 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
     }
 }
 
+/// The RP state machine, one step per call (payloads are webauthn-rs
+/// JSON). User identity is derived from the session id — a session's
+/// passkey authorizes reattach to that session, nothing else.
+fn webauthn_step_impl(
+    ctx: &mut Ctx,
+    kind: CeremonyKind,
+    session_id: u64,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    match kind {
+        CeremonyKind::RegisterStart => {
+            if !ctx.sessions.iter().any(|s| s.id == session_id) {
+                return Err("no such session".into());
+            }
+            let user = Uuid::new_v5(&Uuid::NAMESPACE_OID, session_id.to_string().as_bytes());
+            let name = format!("session-{session_id}");
+            let (ccr, state) = ctx
+                .webauthn
+                .start_passkey_registration(user, &name, &name, None)
+                .map_err(|e| format!("start registration: {e}"))?;
+            ctx.reg_states.insert(session_id, state);
+            serde_json::to_vec(&ccr).map_err(|e| format!("encode: {e}"))
+        }
+        CeremonyKind::RegisterFinish => {
+            let state = ctx
+                .reg_states
+                .remove(&session_id)
+                .ok_or("no registration in flight")?;
+            let cred: RegisterPublicKeyCredential =
+                serde_json::from_slice(payload).map_err(|e| format!("decode: {e}"))?;
+            let passkey = ctx
+                .webauthn
+                .finish_passkey_registration(&cred, &state)
+                .map_err(|e| format!("registration refused: {e}"))?;
+            ctx.passkeys.entry(session_id).or_default().push(passkey);
+            ctx.persist_stores();
+            println!("session {session_id}: passkey registered");
+            Ok(Vec::new())
+        }
+        CeremonyKind::AuthStart => {
+            let passkeys = ctx
+                .passkeys
+                .get(&session_id)
+                .ok_or("no passkey bound to this session")?;
+            let (rcr, state) = ctx
+                .webauthn
+                .start_passkey_authentication(passkeys)
+                .map_err(|e| format!("start authentication: {e}"))?;
+            ctx.auth_states.insert(session_id, state);
+            serde_json::to_vec(&rcr).map_err(|e| format!("encode: {e}"))
+        }
+        CeremonyKind::AuthFinish => {
+            let state = ctx
+                .auth_states
+                .remove(&session_id)
+                .ok_or("no authentication in flight")?;
+            let cred: PublicKeyCredential =
+                serde_json::from_slice(payload).map_err(|e| format!("decode: {e}"))?;
+            ctx.webauthn
+                .finish_passkey_authentication(&cred, &state)
+                .map_err(|e| format!("assertion refused: {e}"))?;
+            println!("session {session_id}: assertion verified");
+            Ok(Vec::new())
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -353,6 +558,14 @@ async fn main() -> Result<()> {
     let cli = parse_args()?;
     let token = cli.token.clone().unwrap_or_else(random_token);
     let known = KnownClients::load(&cli.state_dir)?;
+
+    let rp_origin = Url::parse(&cli.rp_origin)
+        .with_context(|| format!("--rp-origin {}", cli.rp_origin))?;
+    let webauthn = WebauthnBuilder::new(&cli.rp_id, &rp_origin)
+        .context("webauthn RP")?
+        .rp_name("experiment-mosh")
+        .build()
+        .context("webauthn RP")?;
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -380,9 +593,16 @@ async fn main() -> Result<()> {
             table: ResourceTable::new(),
             known,
             sessions: Vec::new(),
+            next_session_id: 0,
             pairing_token: token.clone(),
             auto_accept: cli.yes,
             shell: cli.shell.clone(),
+            webauthn,
+            reg_states: HashMap::new(),
+            auth_states: HashMap::new(),
+            passkeys: HashMap::new(),
+            escrows: HashMap::new(),
+            state_dir: cli.state_dir.clone(),
         },
     );
     let proxy = bindings::ComposedProxy::instantiate_async(&mut store, &component, &linker).await?;
@@ -417,10 +637,28 @@ async fn main() -> Result<()> {
             }
             println!("ready; pairing token: {token}");
 
-            // Park forever; the store keeps driving the component's
-            // accept/session tasks. Ctrl-C exits (sessions reaped by
-            // Ctx::drop via process teardown).
-            std::future::pending::<()>().await;
+            // Park until asked to stop; the store keeps driving the
+            // component's accept/session tasks. SIGINT/SIGTERM reap
+            // sessions before exit: persistent sessions deliberately
+            // outlive *connections* (M6), never the proxy process —
+            // and process teardown without this handler (SIGKILL, or
+            // default signal disposition) never runs Ctx::drop, which
+            // would orphan every mosh-server.
+            let mut term =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            accessor.with(|mut a| {
+                let ctx = a.get();
+                for s in &ctx.sessions {
+                    s.kill();
+                }
+                let n = ctx.sessions.len();
+                ctx.sessions.clear();
+                println!("shutting down; reaped {n} session(s)");
+            });
             Ok(())
         })
         .await??;

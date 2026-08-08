@@ -23,7 +23,7 @@ impl Guest for Component {
     }
 
     fn session_round_trip(key: String, cols: u16, rows: u16) -> Result<RoundTripReport, String> {
-        let session = Session::connect(&key, cols, rows)?;
+        let session = Session::connect(&key, cols, rows, None)?;
         session.feed_keys(b"date\r");
         let datagrams = session.tick();
         let output = session.drain_output();

@@ -6,8 +6,8 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M5 complete to its A3 boundary (browser modules gated; jco
-leg blocked upstream, probe standing).** Local-only
+**Status: M6 complete (passkey persistence + fresh-process reattach,
+native gate green; browser ceremony E2E A3-blocked).** Local-only
 experiment: no CI, no stability, delete-at-will. If it earns a public
 repository it gets a new name. The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
@@ -56,13 +56,21 @@ ssh/mosh layer is the strong security boundary.
 - **D3** Upstream-first: the two polymorph-iroh gaps (QUIC datagram WIT
   surface, stable/injectable endpoint identity) are issues+PRs against
   polymorph-iroh, per its conventions (both fall under its issue #3).
-- **D4** *(resolved 2026-08-07, finding 6)* Mosh key at rest: the M0
-  PRF probe **passed** on Firefox mobile Nightly ⇒ PRF-wrapped key,
-  ciphertext escrowed on the proxy; the proxy never sees the plaintext
-  key. Storage schema stays a tagged variant (`plain` arm kept for
-  emergencies); `mosh-server` binds loopback regardless. Open
-  sub-policy for M6: runtime authenticator without `prf` ⇒ refuse
-  persistence (lean) vs plaintext-with-warning.
+- **D4** *(resolved 2026-08-07, finding 6; sub-policy resolved
+  2026-08-08, M6)* Mosh key at rest: the M0 PRF probe **passed** on
+  Firefox mobile Nightly ⇒ PRF-wrapped key, ciphertext escrowed on the
+  proxy; the proxy never sees the plaintext key. Storage schema stays a
+  tagged variant (`plain` arm kept for emergencies); `mosh-server`
+  binds loopback regardless. Sub-policy (M6): an authenticator without
+  `prf` ⇒ **refuse persistence** (the lean arm) — the alternative is
+  the mosh key sitting in plaintext on the proxy, which is what the PRF
+  arm exists to prevent. The guard lives in code
+  (`web/prf-wrap.mjs assertPersistencePermitted`, tested); the `plain`
+  schema arm survives for tests and emergencies (the native M6 gate
+  exercises it deliberately). Trust note (finding 21): everything
+  outside `ct` in a proxy-returned escrow is attacker-controlled — the
+  *sealed* `seqFloor` is authoritative at attach; a rolled-back floor
+  would mean OCB nonce reuse under traffic the proxy has seen.
 - **D5** Engine is big-Go (mosh-go) via componentize-go, sync sans-I/O
   exports. If the componentize-go spike fails the gate: stop and
   discuss — no automatic TinyGo fallback.
@@ -138,7 +146,9 @@ ssh/mosh layer is the strong security boundary.
   mosh-go's server (`moshgo-server/`); `composed-e2e/` — the M3 native
   gate (composed core under wasmtime vs upstream iroh + mosh-server);
   `proxy-e2e/` — the M4 native gate (composed core ↔ real proxy ↔
-  proxy-spawned mosh-server over iroh).
+  proxy-spawned mosh-server over iroh); `passkey-e2e/` — the M6 native
+  gate (ceremonies, escrow, persistent detach, fresh-process reattach;
+  webauthn-authenticator-rs soft passkey as the user).
 - `proxy-core/` — the D9 proxy-brain component (accept loop, control
   channel, TOFU via host import, sub-framed datagram pumps,
   `wasi:sockets` UDP to mosh-server); fused into
@@ -151,8 +161,11 @@ ssh/mosh layer is the strong security boundary.
   the M5 bootstrap modules — `boot.mjs` (panel: fragment/manual
   entry, explicit save offers, saved proxies, A3 notice),
   `connstring.mjs`, `storage.mjs`, `idb-keys.mjs` (non-extractable
-  CryptoKey persistence). Gates: `just m5-web`; the in-browser iroh
-  leg waits on A3/lann/jco#51 (`just m5-jco-probe` is the detector).
+  CryptoKey persistence) — and the M6 escrow crypto: `prf-wrap.mjs`
+  (PRF→HKDF→AES-GCM wrap/unwrap of `{key, seqFloor}`, D4 policy
+  guard). Gates: `just m5-web` (includes the phase-3 ceremony tests
+  against the CDP virtual authenticator); the in-browser iroh leg
+  waits on A3/lann/jco#51 (`just m5-jco-probe` is the detector).
 
 ## Milestones
 
@@ -164,7 +177,7 @@ ssh/mosh layer is the strong security boundary.
 | M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **unblocked parts DONE** (findings 17–19; `just m5 m5-jco-probe m5-netem`); browser endpoint leg **blocked on A3** + new lann/jco#51 |
-| M6 | passkeys (ceremonies over control channel, gated reattach) | |
+| M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native gate) + web-tests phase 3; browser↔proxy ceremony E2E A3-blocked |
 | M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | |
 
 ## Running
@@ -187,7 +200,8 @@ polymorph-iroh/.deps), headless Chromium 151. M1 adds: stock
 `mosh-server` 1.4.0 (Debian), mosh-go @ 8dca5c67ec8e (vendored fork,
 see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0. The D7 compose spike adds:
 wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
-0.59.
+0.59. M6 adds: webauthn-rs 0.5 (proxy RP), webauthn-authenticator-rs
+0.5.5 SoftPasskey + webauthn-rs-proto 0.5 (harness).
 
 1. **componentize-go sync path: green everywhere (D5 gate PASSED).**
    Sync function exports and exported *resources* work under wasmtime
@@ -497,3 +511,54 @@ wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
     after a lost state update can stall up to 10 s — now measured
     grounds for the candidate fork patch (clamp to C mosh's [50 ms,
     1 s]) if M6/M7 sessions feel it.
+
+20. **M6 gate PASSED (`just m6`) — and fresh-process reattach needed a
+    second protocol lesson beyond finding 13: SSP state numbers are a
+    separate counter, and they must be adopted live, not persisted.**
+    The gate: connect → real registration ceremony (webauthn-rs RP in
+    the proxy, webauthn-authenticator-rs SoftPasskey as the user, over
+    the control channel) → escrow `{key, seqFloor}` → make-persistent
+    → detach (proxy keeps mosh-server, "kept (persistent)") → bogus
+    session-id and garbage assertion both refused → fresh client
+    process: assertion verified, escrow returned verbatim, attach at
+    floor+10 000 → **pre-detach screen resyncs, echo works, sequence
+    resumed above the floor** → second persistent detach → SIGTERM
+    reaps. What it took (mosh 1.4.0 sources, fork patch 3 in
+    `.deps/mosh-go/DEPS.md`): a fresh client's instructions were
+    dropped by the server's dedup (its retained client-state window
+    is {0..N}; mosh-go never advances throwaway), and the server's
+    diffs anchor at a state K the fresh client doesn't have — with
+    acks for culled states *ignored*, both directions deadlock
+    silently (the observed empty screen). Escrowing state floors is
+    unsafe: UserStream diffs are positional, so a stale sender floor
+    corrupts (server `fatal_assert`) or drops keystrokes. Instead the
+    transport **adopts** from the server's first instruction (its
+    `ack_num` = our sender floor, frozen during detach; its `old_num`
+    = the receiver anchor) — heartbeats arrive every 3 s, so adoption
+    is prompt, and the escrow stays `{key, seqFloor}`. Screen content
+    at the adopted anchor is unknowable, so the engine forces a full
+    repaint with a **resize dance** (attach one row off, snap to true
+    size on the first content diff): a size change is the only
+    client-reachable full-repaint trigger in the protocol
+    (`terminaldisplay.cc` emits clear + full redraw when a diff
+    crosses a size boundary). Two latent mosh-go bugs surfaced and
+    fixed along the way (ledgered as fork patch 4): an ack could
+    clear a never-sent pending diff, and the acked-action bookkeeping
+    keyed by predicted state numbers breaks when numbering moves.
+
+21. **Browser PRF leg (web-tests phase 3): Chromium 151's CDP virtual
+    authenticator supports `hasPrf`, real prototype-call ceremonies
+    pass headless, and the PRF→HKDF→AES-GCM escrow wrap survives a
+    fresh assertion** (`prf.enabled` true at create; 32-byte eval at
+    get; unwrap under a *second* assertion's PRF output returns the
+    sealed `{key, seqFloor}` — the deterministic-KEK property the
+    reattach flow relies on). Tamper (ct bit-flip) and
+    wrong-credential unwraps throw; the blob shape is byte-identical
+    across `web/storage.mjs`, `web/prf-wrap.mjs`, and `proto::Escrow`
+    (parity-tested both sides). Security note now recorded with D4:
+    in a proxy-returned escrow only the sealed payload is trusted —
+    the outer `seqFloor` is client-local bookkeeping, and attach uses
+    the inner value plus a per-reattach `FLOOR_JUMP` (2^32) so a
+    client that dies without a detach-time write still cannot reuse a
+    nonce. The full browser↔proxy ceremony E2E remains A3-blocked
+    (lann/jco#51 fires at instantiation, before the scheduler).

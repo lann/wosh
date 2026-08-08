@@ -23,10 +23,10 @@ type Client struct {
 	// Action tracking for cumulative diffs.
 	actionsMu        sync.Mutex
 	actions          []UserInstruction
-	ackedActionCount int                // how many actions the server has
-	lastAcked        uint64
-	sentActionCounts map[uint64]int     // sentNum → action count at that state
-	dirty            bool               // true = new actions since last tick
+	ackedActionCount int  // actions the server has definitely applied
+	inFlightCovers   int  // len(actions) covered by the pending diff
+	inFlight         bool // a diff is pending in the transport
+	dirty            bool // true = new actions since last tick
 
 	done chan struct{}
 	wg   sync.WaitGroup
@@ -69,7 +69,6 @@ func DialConn(conn Conn, ocb *OCB) (*Client, error) {
 		ocb:              ocb,
 		outputC:          make(chan struct{}, 1),
 		done:             make(chan struct{}),
-		sentActionCounts: make(map[uint64]int),
 	}
 
 	c.wg.Add(2)
@@ -93,7 +92,6 @@ func DialConnManual(conn Conn, ocb *OCB) (*Client, error) {
 		ocb:              ocb,
 		outputC:          make(chan struct{}, 1),
 		done:             make(chan struct{}),
-		sentActionCounts: make(map[uint64]int),
 	}
 
 	c.wg.Add(1)
@@ -111,13 +109,33 @@ func DialConnManual(conn Conn, ocb *OCB) (*Client, error) {
 // Use this when the caller needs raw transport diffs (e.g., for
 // framebuffer state tracking in the WASM client).
 func DialConnRaw(conn Conn, ocb *OCB) (*Client, error) {
+	return DialConnRawSeq(conn, ocb, 0)
+}
+
+// DialConnRawSeq is DialConnRaw with an initial crypto-layer sequence:
+// the first datagram is sent with initialSeq+1. Reattach flows pass a
+// persisted floor (plus margin) so a fresh client never reuses a
+// sequence the server has already seen under this key — the sequence
+// must be set before the association datagram below, or the first
+// send would burn a low (possibly replayed) nonce.
+//
+// A non-zero initialSeq also enables resume adoption: SSP state
+// numbering is learned from the first instruction the server sends
+// (Transport.EnableResumeAdopt) — a fresh process cannot know the
+// server's retained-state window, and unlike the crypto sequence it
+// does not need to be persisted, because the server's view is frozen
+// while no client is attached.
+func DialConnRawSeq(conn Conn, ocb *OCB, initialSeq uint64) (*Client, error) {
 	c := &Client{
-		conn:             conn,
-		transport:        NewTransport(ocb, false),
-		ocb:              ocb,
-		outputC:          make(chan struct{}, 1),
-		done:             make(chan struct{}),
-		sentActionCounts: make(map[uint64]int),
+		conn:      conn,
+		transport: NewTransport(ocb, false),
+		ocb:       ocb,
+		outputC:   make(chan struct{}, 1),
+		done:      make(chan struct{}),
+	}
+	c.transport.SetSeqOut(initialSeq)
+	if initialSeq > 0 {
+		c.transport.EnableResumeAdopt()
 	}
 
 	c.transport.ForceNextSend()
@@ -220,39 +238,29 @@ func (c *Client) Tick() {
 }
 
 func (c *Client) tick() {
-	// Only create a new state when the server has acked the previous one.
-	// This matches the Dart mosh client's behavior: at most one unacked
-	// state in flight. Keystrokes accumulate until the ack arrives, then
-	// the next tick sends them all as a single new state.
-	// Without this check, SetPending resets diffSent, causing Tick() to
-	// increment sentNum for the same cumulative payload — the server
-	// applies duplicate keystrokes.
+	// At most one unacked state in flight (matches the Dart mosh
+	// client): keystrokes accumulate until the ack arrives, then the
+	// next tick sends them all as a single new state. The transport
+	// clears its pending diff exactly when the state carrying it is
+	// acked — advance the action base then, and only then. (Keying
+	// this off state numbers breaks when resume adoption moves them;
+	// the pending-diff lifecycle is number-agnostic.)
 	c.actionsMu.Lock()
-	if c.dirty && c.transport.AckedByRemote() >= c.transport.SentNum() {
+	if c.inFlight && !c.transport.HasPending() {
+		c.ackedActionCount = c.inFlightCovers
+		c.inFlight = false
+	}
+	if c.dirty && !c.inFlight && c.transport.AckedByRemote() >= c.transport.SentNum() {
 		c.dirty = false
-		c.processAcksLocked()
 		newActions := c.actions[c.ackedActionCount:]
 		c.transport.SetPending(MarshalUserMessage(newActions))
-		c.sentActionCounts[c.transport.SentNum()+1] = len(c.actions)
+		c.inFlight = true
+		c.inFlightCovers = len(c.actions)
 	}
 	c.actionsMu.Unlock()
 
 	for _, dg := range c.transport.Tick() {
 		c.conn.Write(dg)
-	}
-}
-
-func (c *Client) processAcksLocked() {
-	acked := c.transport.AckedByRemote()
-	if acked > c.lastAcked {
-		c.lastAcked = acked
-		// Only advance base when server caught up (no states in flight).
-		if acked >= c.transport.SentNum() {
-			if count, ok := c.sentActionCounts[acked]; ok && count > c.ackedActionCount {
-				c.ackedActionCount = count
-			}
-			c.sentActionCounts = make(map[uint64]int)
-		}
 	}
 }
 

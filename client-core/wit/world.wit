@@ -38,9 +38,53 @@ interface client {
     /// is 1138 B; the embedder may assert headroom).
     max-datagram-size: async func() -> option<u32>;
 
+    /// The proxy-assigned session id (none on the `dial` path).
+    session-id: async func() -> option<u64>;
+
+    /// The session's mosh key. For embedder-side persistence only
+    /// (D4): wrap it (PRF arm) or store it (plain arm) together with
+    /// a sequence floor from `stats.current-seq` — never send it
+    /// anywhere in plaintext.
+    session-key: async func() -> string;
+
+    /// Passkey ceremonies (M6), passed through the control channel;
+    /// the embedder owns the authenticator. Returns the webauthn-rs
+    /// `CreationChallengeResponse` JSON.
+    register-start: async func() -> result<list<u8>, string>;
+
+    /// Complete registration with the authenticator's
+    /// `RegisterPublicKeyCredential` JSON.
+    register-finish: async func(response: list<u8>) -> result<_, string>;
+
+    /// Escrow the embedder-wrapped blob on the proxy and mark the
+    /// session persistent (survives detach; reattach is
+    /// assertion-gated). Requires a completed registration.
+    make-persistent: async func(escrow: list<u8>) -> result<_, string>;
+
     /// Stop the pumps and close the connection. The mosh session on
-    /// the server survives (finding 13 governs reattach).
+    /// the server survives iff persistent (finding 13 governs
+    /// reattach).
     detach: async func();
+  }
+
+  /// Reattach to a persistent session (M6). Two phases because the
+  /// embedder unwraps the escrow between assertion and engine start:
+  /// begin → challenge → (embedder runs the authenticator) → finish
+  /// returns the escrow blob → (embedder unwraps key, bumps the
+  /// sequence floor forward) → attach starts the engine on the
+  /// already-authorized connection. Drop the flow after attach.
+  resource reattach-flow {
+    begin: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, pairing-token: string, session-id: u64) -> result<reattach-flow, string>;
+
+    /// The webauthn-rs `RequestChallengeResponse` JSON.
+    challenge: async func() -> list<u8>;
+
+    /// Send the assertion (`PublicKeyCredential` JSON); resolves with
+    /// the escrow blob.
+    finish: async func(assertion: list<u8>) -> result<list<u8>, string>;
+
+    /// `initial-seq` must be strictly above the escrowed floor.
+    attach: async func(key: string, initial-seq: u64, cols: u16, rows: u16) -> result<client-session, string>;
   }
 }
 

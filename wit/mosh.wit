@@ -24,13 +24,19 @@ interface engine {
     predictor-active: bool,
     /// Server framebuffer states tracked for diff application.
     tracked-states: u32,
+    /// Crypto-layer outgoing sequence of the most recent datagram.
+    /// Persist on detach: a future reattach must resume strictly
+    /// above it (replay protection + OCB nonce-reuse safety).
+    current-seq: u64,
   }
 
   resource session {
     /// Start a session from the base64 key in `MOSH CONNECT <port> <key>`
     /// and the initial terminal size. The first tick after connect
     /// carries the association datagram; errors are bad-key only.
-    connect: static func(key: string, cols: u16, rows: u16) -> result<session, string>;
+    /// `initial-seq` (reattach flows) starts the outgoing sequence
+    /// above a persisted floor; none means a fresh session (0).
+    connect: static func(key: string, cols: u16, rows: u16, initial-seq: option<u64>) -> result<session, string>;
 
     /// Queue keystrokes for the server and run local-echo prediction.
     /// Predicted echo appears in drain-output immediately.

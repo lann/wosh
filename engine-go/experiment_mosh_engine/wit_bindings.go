@@ -28,4 +28,8 @@ type SessionStats struct {
 	PredictorActive bool
 	// Server framebuffer states tracked for diff application.
 	TrackedStates uint32
+	// Crypto-layer outgoing sequence of the most recent datagram.
+	// Persist on detach: a future reattach must resume strictly
+	// above it (replay protection + OCB nonce-reuse safety).
+	CurrentSeq uint64
 }

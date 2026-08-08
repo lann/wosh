@@ -27,6 +27,23 @@ pub enum Client {
     /// Create a mosh session (`mosh-server -i 127.0.0.1`) and attach
     /// to it. v0: one session per connection.
     NewSession { cols: u16, rows: u16 },
+    /// Begin passkey registration for the attached session (M6).
+    /// Proxy answers with `RegisterChallenge`.
+    RegisterStart,
+    /// The authenticator's response to `RegisterChallenge`
+    /// (webauthn-rs `RegisterPublicKeyCredential` JSON).
+    RegisterFinish { response: Vec<u8> },
+    /// Escrow the (client-wrapped, opaque) session blob and mark the
+    /// session persistent: it survives detach and future reattaches
+    /// are assertion-gated. Requires a registered passkey.
+    MakePersistent { escrow: Vec<u8> },
+    /// Attach to a persistent session instead of creating one.
+    /// Proxy answers with `AuthChallenge`; the tunnel opens only
+    /// after a verified `AuthFinish`.
+    Reattach { session_id: u64 },
+    /// The authenticator's assertion for `AuthChallenge`
+    /// (webauthn-rs `PublicKeyCredential` JSON).
+    AuthFinish { assertion: Vec<u8> },
 }
 
 /// Proxy → client control messages.
@@ -38,6 +55,19 @@ pub enum Proxy {
     /// The mosh session is live; `key` is the MOSH CONNECT key. All
     /// connection datagrams now tunnel to this session.
     SessionReady { session_id: u64, key: String },
+    /// WebAuthn creation options (webauthn-rs
+    /// `CreationChallengeResponse` JSON).
+    RegisterChallenge { challenge: Vec<u8> },
+    /// Registration verified and stored.
+    RegisterOk,
+    /// Escrow stored; the session is persistent from now on.
+    PersistOk,
+    /// WebAuthn request options (webauthn-rs
+    /// `RequestChallengeResponse` JSON) for a `Reattach`.
+    AuthChallenge { challenge: Vec<u8> },
+    /// Assertion verified: the escrow blob comes back and the
+    /// datagram tunnel now targets the persistent session.
+    ReattachReady { session_id: u64, escrow: Vec<u8> },
     /// Terminal failure; the connection closes after this.
     Error { message: String },
 }
@@ -68,6 +98,50 @@ pub fn decode<T: for<'de> Deserialize<'de>>(buf: &mut Vec<u8>) -> Result<Option<
     let msg = ciborium::from_reader(&buf[4..4 + len]).map_err(|e| format!("cbor: {e}"))?;
     buf.drain(..4 + len);
     Ok(Some(msg))
+}
+
+// --- escrow blob ---------------------------------------------------------
+
+/// The escrowed session blob (M6). Opaque bytes to the proxy — it
+/// stores and returns them, never parses. Between client-side parties
+/// (web/storage.mjs, the native harness) the format is this tagged
+/// variant as JSON, byte-compatible with the storage schema's session
+/// `key` field (D4): `{"plain":{...}}` or `{"prf":{...}}`. Every arm
+/// carries `seqFloor` (finding 13): reattach must resume the datagram
+/// sequence strictly above it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Escrow {
+    Plain {
+        key: String,
+        #[serde(rename = "seqFloor")]
+        seq_floor: u64,
+    },
+    Prf {
+        #[serde(rename = "credId")]
+        cred_id: String,
+        salt: String,
+        iv: String,
+        ct: String,
+        #[serde(rename = "seqFloor")]
+        seq_floor: u64,
+    },
+}
+
+impl Escrow {
+    pub fn seq_floor(&self) -> u64 {
+        match self {
+            Escrow::Plain { seq_floor, .. } | Escrow::Prf { seq_floor, .. } => *seq_floor,
+        }
+    }
+
+    pub fn to_json(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("escrow encode")
+    }
+
+    pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(bytes).map_err(|e| format!("escrow: {e}"))
+    }
 }
 
 // --- datagram tunnel framing -------------------------------------------
@@ -192,5 +266,48 @@ mod tests {
         let m2: Client = decode(&mut buf).unwrap().unwrap();
         assert!(matches!(m2, Client::NewSession { cols: 80, rows: 24 }));
         assert!(decode::<Client>(&mut buf).unwrap().is_none());
+    }
+
+    #[test]
+    fn ceremony_round_trip() {
+        let mut buf = encode(&Client::Reattach { session_id: 7 });
+        buf.extend_from_slice(&encode(&Client::AuthFinish {
+            assertion: b"{}".to_vec(),
+        }));
+        assert!(matches!(
+            decode::<Client>(&mut buf).unwrap().unwrap(),
+            Client::Reattach { session_id: 7 }
+        ));
+        assert!(matches!(
+            decode::<Client>(&mut buf).unwrap().unwrap(),
+            Client::AuthFinish { .. }
+        ));
+
+        let mut buf = encode(&Proxy::ReattachReady {
+            session_id: 7,
+            escrow: b"blob".to_vec(),
+        });
+        assert!(matches!(
+            decode::<Proxy>(&mut buf).unwrap().unwrap(),
+            Proxy::ReattachReady { session_id: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn escrow_json_matches_storage_schema() {
+        // Byte-compatibility with web/storage.mjs `{plain:{key,seqFloor}}`.
+        let escrow = Escrow::Plain {
+            key: "K".into(),
+            seq_floor: 5,
+        };
+        assert_eq!(escrow.to_json(), br#"{"plain":{"key":"K","seqFloor":5}}"#);
+        assert_eq!(Escrow::from_json(&escrow.to_json()).unwrap(), escrow);
+        assert_eq!(escrow.seq_floor(), 5);
+
+        let prf: Escrow = Escrow::from_json(
+            br#"{"prf":{"credId":"c","salt":"s","iv":"i","ct":"t","seqFloor":9}}"#,
+        )
+        .unwrap();
+        assert_eq!(prf.seq_floor(), 9);
     }
 }

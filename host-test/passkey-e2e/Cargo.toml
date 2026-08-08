@@ -1,0 +1,23 @@
+[package]
+name = "passkey-e2e"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "M6 gate: passkey ceremonies over the control channel (webauthn-rs RP in the proxy, soft authenticator in the harness), escrowed persistence, and assertion-gated reattach with a strictly-forward sequence floor"
+
+[workspace]
+
+[dependencies]
+experiment-mosh-proto = { path = "../../proto" }
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+wasmtime-webrtc-datachannels = { path = "../../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
+polymorph-webcrypto-wasmtime = { path = "../../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
+wasmtime-websocket = { path = "../../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util"] }
+anyhow = "1"
+env_logger = "0.11"
+serde_json = "1"
+url = "2"
+webauthn-rs-proto = "0.5"
+webauthn-authenticator-rs = { version = "0.5", features = ["softpasskey"] }

@@ -141,9 +141,12 @@ ssh/datagram forward setup (M7/M3).
   user-presence ceremony; synced passkeys give multi-device reattach;
   the proxy never sees plaintext. Storage schema keeps a tagged variant
   (`{prf: {credId, salt, iv, ct}} | {plain: …}`) so policy changes
-  never force migrations. Open sub-policy (decide in M6): runtime
-  authenticator without `prf` ⇒ refuse persistence (lean) vs
-  plaintext-with-warning.
+  never force migrations. Sub-policy (resolved M6): runtime
+  authenticator without `prf` ⇒ **refuse persistence** (the lean arm);
+  the `plain` schema arm stays for tests/emergencies. The *sealed*
+  seq-floor is the authoritative one at attach — outer fields of a
+  proxy-returned escrow are attacker-controlled, and a rolled-back
+  floor means OCB nonce reuse (finding 21).
 - **Trusted computing base, honestly**: the static-site origin serves
   the client code — its compromise owns new sessions regardless of
   layering (SRI/self-host hardening is future work). Passkey RP ID is
@@ -250,6 +253,13 @@ nonce-reuse safety require every reattach to resume with a strictly
 larger datagram sequence (finding 13) — the engine grows an
 initial-sequence connect option and a current-sequence stat with this
 milestone; the floor gets a large forward margin on each attach.
+*(Built — M6, findings 20–21; native gate `just m6`, browser crypto +
+ceremonies in web-tests phase 3. SSP state numbers turned out to be a
+second counter that must survive reattach and must be adopted live
+from the server rather than escrowed — fork patches 3–4; the engine
+forces the post-adopt repaint with a resize dance. D4 sub-policy
+resolved: no `prf` ⇒ refuse persistence. Browser↔proxy ceremony E2E
+A3-blocked.)*
 
 **F — inner ssh**: proxy stream-forward pinned to `127.0.0.1:22`;
 engine grows an ssh mode (x/crypto/ssh over an imported stream;
@@ -274,7 +284,7 @@ async export, per finding 3b).
 | M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | **DONE** — finding 15; live datagram ceiling 1162 B; composed-async proven on wasmtime |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | **DONE** — finding 16; wrong-token negative path; sub-framing measured live (6–7 oversized datagrams per bulk run) |
 | M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **unblocked parts DONE** (findings 17–19) — modules+panel gated, native netem matrix green to 10% loss; **composed-core-in-browser blocked on A3 + lann/jco#51**; two-component JS orchestration is the recorded fallback |
-| M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | |
+| M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | **DONE** — findings 20–21; `just m6`; state-number adoption + resize dance (fork patches 3–4); no-prf ⇒ refuse persistence; browser ceremony E2E A3-blocked |
 | M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | ssh-in-component shape per findings 2–4 |
 
 Every milestone appends findings to README.md (findings-first culture);
