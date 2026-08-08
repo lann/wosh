@@ -48,13 +48,14 @@ struct Cli {
     token: Option<String>,
     yes: bool,
     no_qr: bool,
+    shell: Option<String>,
 }
 
 fn usage() -> anyhow::Error {
     anyhow!(
         "usage: experiment-mosh-proxy --relay <url> [--state-dir <dir>] \
          [--qr-base <url>] [--component <composed-proxy.wasm>] \
-         [--token <pairing-token>] [--yes] [--no-qr]"
+         [--token <pairing-token>] [--yes] [--no-qr] [--shell <cmd…>]"
     )
 }
 
@@ -66,6 +67,7 @@ fn parse_args() -> Result<Cli> {
     let mut token = None;
     let mut yes = false;
     let mut no_qr = false;
+    let mut shell = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(usage);
@@ -77,6 +79,7 @@ fn parse_args() -> Result<Cli> {
             "--token" => token = Some(value()?),
             "--yes" => yes = true,
             "--no-qr" => no_qr = true,
+            "--shell" => shell = Some(value()?),
             _ => return Err(usage()),
         }
     }
@@ -95,6 +98,7 @@ fn parse_args() -> Result<Cli> {
         token,
         yes,
         no_qr,
+        shell,
     })
 }
 
@@ -143,9 +147,19 @@ struct MoshSession {
 }
 
 impl MoshSession {
-    fn spawn() -> Result<Self> {
+    /// `shell`: whitespace-split command appended after `--` (tests
+    /// pin `bash --noprofile --norc -i`); none ⇒ the user's shell.
+    fn spawn(shell: Option<&str>) -> Result<Self> {
+        let mut args: Vec<String> = ["new", "-i", "127.0.0.1", "-c", "256"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if let Some(shell) = shell {
+            args.push("--".into());
+            args.extend(shell.split_whitespace().map(|s| s.to_string()));
+        }
         let out = std::process::Command::new("mosh-server")
-            .args(["new", "-i", "127.0.0.1", "-c", "256"])
+            .args(&args)
             .env("LC_ALL", "C.UTF-8")
             .env("TERM", "xterm-256color")
             .output()
@@ -195,6 +209,7 @@ struct Ctx {
     sessions: Vec<MoshSession>,
     pairing_token: String,
     auto_accept: bool,
+    shell: Option<String>,
 }
 
 impl Drop for Ctx {
@@ -293,7 +308,8 @@ impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
     async fn new_session(
         accessor: &wasmtime::component::Accessor<Ctx, Self>,
     ) -> wasmtime::Result<Result<SessionInfo, String>> {
-        match MoshSession::spawn() {
+        let shell = accessor.with(|mut a| a.get().shell.clone());
+        match MoshSession::spawn(shell.as_deref()) {
             Ok(s) => {
                 let info = SessionInfo {
                     key: s.key.clone(),
@@ -366,6 +382,7 @@ async fn main() -> Result<()> {
             sessions: Vec::new(),
             pairing_token: token.clone(),
             auto_accept: cli.yes,
+            shell: cli.shell.clone(),
         },
     );
     let proxy = bindings::ComposedProxy::instantiate_async(&mut store, &component, &linker).await?;

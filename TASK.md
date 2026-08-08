@@ -12,12 +12,71 @@ autonomously** (M4 → M7), with A3-blocked browser legs documented
 rather than waited on, and a summary of significant design decisions
 at the end. Deliver findings-first; commit per milestone.
 
-## Status: M4 IN PROGRESS (~85%), checkpointed mid-implementation
+## Status: M4 IN PROGRESS (~95%) — gate runs end-to-end, one teardown bug left
 
 Commit history: M0 `4003320`..`59d9b8f`; M1 `fe86742`; D7 `1929ae2`;
 M2 `601f799`; upstream eval `fda916b`; M3 `a20c531`; M4 WIP
-checkpoint 1 `4ededc6`. Everything after is uncommitted WIP described
-here.
+checkpoints `4ededc6`, `e3215ba`. Uncommitted since: proxy `--shell`
+flag, `host-test/proxy-e2e/` harness, M3 regression re-run.
+
+### Fresh results (this checkpoint)
+
+- **M3 regression green** after the D8 glue rework
+  (`just compose-client && just m3`).
+- **proxy-e2e runs the whole gate except the final assertion**
+  (`/tmp/opencode/m4-run.log`): relay + proxy up; connstring parsed;
+  **wrong pairing token refused** (negative path, proxy logs `peer
+  refused`, stays up); real session: TOFU `--yes` accept → mosh-server
+  spawned → control channel + key delivery OK → max-datagram-size
+  1162 → prompt/echo/resize OK → **bulk over the sub-framed tunnel
+  OK** (`seq 1 500` at 100 cols arrived complete — impossible without
+  proxy-side fragmentation of >1162 B server datagrams) → stats OK →
+  detach.
+- **Remaining failure**: after client detach, the proxy never prints
+  the per-connection summary line (`… session closed (fragmented=N
+  …)`) within the harness's 5 s wait ⇒ `Error: proxy never logged a
+  session summary`, rc=1.
+
+### The teardown bug (next thing to fix)
+
+`proxy-core::serve_connection` ends when BOTH pumps end
+(`futures::join`), then calls `host::end_session` + logs the summary.
+After client `detach` (client-side `conn.close`):
+
+- inbound pump should exit via `recv_datagram` → Err on peer close;
+- outbound pump should exit via `alive=false` + `wake_receiver()`
+  (zero-length self-datagram; empty payload hits `continue` → `while
+  alive.get()` re-check → exit).
+
+One of these is not completing (or close propagation to a pending
+`recv-datagram` in the endpoint impl is slower than 5 s). Debug plan:
+temporary `host::log` at each pump exit to localize; manual
+proxy+connect/detach run to see if the summary appears late;
+lengthen the harness wait if it's mere latency; check whether the
+client-side `conn.close` actually emits CONNECTION_CLOSE promptly
+(client-core detach also stops its own pumps — its endpoint may need
+a beat to flush; consider `wait-closed` before harness teardown).
+Also note `MoshSession`/proxy `--shell` fix already landed: the proxy
+spawns the user's shell by default (correct product behavior; the
+first e2e run failed because a starship prompt contains no `$`) and
+tests pass `--shell "bash --noprofile --norc -i"`.
+
+**Orphan watch**: the failed run kill_on_drop'ed the proxy, so
+`end_session`/Ctx::drop never reaped mosh-server on udp:60002 —
+check `pgrep -a mosh-server` for `-i 127.0.0.1` instances before the
+next run (the user's own `-p 0` server is NOT ours; leave it).
+
+### M4 remaining steps
+
+1. Fix teardown → summary logged; rerun `cargo run --release` in
+   `host-test/proxy-e2e` (expect `fragmented ≥ 1`, gate OK).
+2. justfile: `proxy-core-build`, `compose-proxy`, `proxy-build`, `m4`.
+3. Docs: README decision log **D8** (control-in-glue) + **D9**
+   (proxy-core component; accessor-vs-store-context rationale) +
+   finding 16 (M4 gate numbers incl. fragmented count, negative-path
+   token test, `--shell` note); milestone row M4; PLAN workstream C.
+4. Commit M4; then proceed M5 → M6 → M7 per the standing instruction
+   (their plans are unchanged below).
 
 ### M4 decisions (record in README decision log at commit)
 
@@ -64,30 +123,6 @@ here.
   &mut Ctx`; wire with
   `bindings::ComposedProxy::add_to_linker::<Ctx, Ctx>(&mut linker,
   |ctx| ctx)`.
-
-### M4 remaining steps, in order
-
-1. **Recompose + M3 regression**: `just compose-client` (the on-disk
-   composed-client.wasm predates the D8 glue rework) then `just m3`
-   must stay green (dial path unchanged).
-2. Write `host-test/proxy-e2e/`: spawn relay (its own port; note a
-   stray smoke-test relay may still be running on :3346 — kill or
-   avoid) + proxy child (`--yes --no-qr --token t3st --state-dir
-   <tmp> --relay …`); parse `connstring:` + `direct-addr:` from proxy
-   stdout; drive the composed CLIENT via
-   `client-session.connect-proxy(relay, id-hex, Some(direct), token,
-   80, 24)` under wasmtime (crib composed-e2e Ctx/driver); M1-suite
-   assertions + bulk phase (`seq 1 500` at 100×30 — stalls unless
-   proxy→client sub-framing works) + after detach, read proxy stdout
-   for `fragmented=` ≥ 1; kill proxy (SIGKILL, plus reap any
-   mosh-server with `-i 127.0.0.1` args guard? proxy Ctx::drop
-   reaps on clean exit; harness should pkill by parsed pids only).
-3. justfile: `proxy-core-build`, `compose-proxy`, `proxy-build`,
-   `m4` (compose-client + compose-proxy + run proxy-e2e).
-4. Docs + commit: README decision log D8+D9 + finding 16 (proxy
-   architecture, E2E numbers incl. fragmented count, live ceiling),
-   milestone row M4, PLAN workstream C status + composition ruling
-   cross-ref, this file.
 
 ## Then: M5 — browser client (A3-gated browser leg)
 

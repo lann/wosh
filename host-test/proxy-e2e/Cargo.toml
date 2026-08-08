@@ -1,0 +1,18 @@
+[package]
+name = "proxy-e2e"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "M4 gate: composed client core -> experiment-mosh-proxy (proxy-core component) -> stock mosh-server, over real iroh with tunnel sub-framing"
+
+[workspace]
+
+[dependencies]
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+wasmtime-webrtc-datachannels = { path = "../../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
+polymorph-webcrypto-wasmtime = { path = "../../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
+wasmtime-websocket = { path = "../../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util"] }
+anyhow = "1"
+env_logger = "0.11"
