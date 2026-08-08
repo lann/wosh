@@ -1,0 +1,20 @@
+[package]
+name = "proxy-core"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "experiment-mosh proxy-core: the proxy's brain as a component — accepts iroh connections, speaks the control channel, tunnels datagrams to per-session mosh-servers over wasi:sockets UDP"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.59", features = ["async", "async-spawn"] }
+hex = "0.4"
+experiment-mosh-proto = { path = "../proto" }
+
+[profile.release]
+lto = true
+opt-level = "s"

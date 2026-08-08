@@ -1,32 +1,23 @@
-//! The experiment-mosh proxy (M4, workstream C).
+//! The experiment-mosh proxy (M4, workstream C): a thin native shell
+//! around the composed proxy-core component.
 //!
-//! Runs on (or near) the target host. Embeds wasmtime + the
-//! polymorph-iroh **endpoint component** (D1: the same component the
-//! browser client composes — browsers reach the WebRTC-direct path
-//! only via polymorph signaling, so the proxy exercises our stack,
-//! not the upstream iroh crate). Per accepted connection it speaks
-//! the control channel (proto), spawns `mosh-server -i 127.0.0.1`
-//! (interim mode, D2 — the proxy runs as the target user), and pumps
-//! datagrams between the iroh connection and the session's loopback
-//! UDP socket, sub-framing oversized server datagrams (finding 9).
-//!
-//! Bootstrap: prints a connection string (`1.<endpoint-id-hex>.
-//! <pairing-token>.<relay-url>`) and a QR of `<qr-base><connstring>`.
-//! Unknown peers presenting the pairing token hit a TOFU prompt
-//! (`--yes` auto-accepts, for harnesses); known peers connect without
-//! ceremony; unknown peers without the token are dropped silently.
+//! Architecture (D1 + D9): the proxy's brain — accept loop, control
+//! channel, TOFU flow, datagram tunnel with sub-framing — lives in
+//! `proxy-core` (a wasm component, fused with the polymorph-iroh
+//! endpoint component by wac). This binary provides exactly the OS
+//! surface the component imports: spawn/reap `mosh-server -i
+//! 127.0.0.1` (interim mode, D2 — the proxy runs as the target
+//! user), the operator TOFU prompt, TOFU persistence, and logging —
+//! plus bootstrap UX: the connection string and its QR code.
 
 use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context as _, Result};
-use futures::stream::{FuturesUnordered, StreamExt};
+use anyhow::{anyhow, Context as _, Result};
 use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
 use rand::Rng;
-use wasmtime::component::{Accessor, Component, HasData, Linker, ResourceAny, ResourceTable};
+use wasmtime::component::{Component, HasData, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{
@@ -34,12 +25,10 @@ use wasmtime_webrtc_datachannels::{
 };
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 
-use experiment_mosh_proto as proto;
-
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "../.deps/polymorph-iroh/wit",
-        world: "iroh-endpoint",
+        path: "../proxy-core/wit",
+        world: "composed-proxy",
         imports: {
             default: async | store | trappable,
         },
@@ -49,55 +38,7 @@ mod bindings {
     });
 }
 
-const ALPN: &[u8] = b"experiment-mosh/0";
-
-struct Ctx {
-    wasi: WasiCtx,
-    webrtc: WasiWebrtcCtx,
-    webcrypto: WasiWebcryptoCtx,
-    websocket: WasiWebsocketCtx,
-    table: ResourceTable,
-}
-
-impl HasData for Ctx {
-    type Data<'a> = &'a mut Self;
-}
-
-impl WasiView for Ctx {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl WasiWebrtcView for Ctx {
-    fn webrtc(&mut self) -> WasiWebrtcCtxView<'_> {
-        WasiWebrtcCtxView {
-            ctx: &mut self.webrtc,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl WasiWebcryptoView for Ctx {
-    fn webcrypto(&mut self) -> WasiWebcryptoCtxView<'_> {
-        WasiWebcryptoCtxView {
-            ctx: &mut self.webcrypto,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl WasiWebsocketView for Ctx {
-    fn websocket(&mut self) -> WasiWebsocketCtxView<'_> {
-        WasiWebsocketCtxView {
-            ctx: &mut self.websocket,
-            table: &mut self.table,
-        }
-    }
-}
+use bindings::experiment::mosh_proxy::host::{Host, SessionInfo};
 
 struct Cli {
     relay: String,
@@ -112,7 +53,7 @@ struct Cli {
 fn usage() -> anyhow::Error {
     anyhow!(
         "usage: experiment-mosh-proxy --relay <url> [--state-dir <dir>] \
-         [--qr-base <url>] [--component <iroh_endpoint.wasm>] \
+         [--qr-base <url>] [--component <composed-proxy.wasm>] \
          [--token <pairing-token>] [--yes] [--no-qr]"
     )
 }
@@ -144,8 +85,7 @@ fn parse_args() -> Result<Cli> {
         PathBuf::from(home).join(".local/state/experiment-mosh-proxy")
     });
     let component = component.unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../.deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("composed-proxy.wasm")
     });
     Ok(Cli {
         relay: relay.ok_or_else(usage)?,
@@ -226,10 +166,8 @@ impl MoshSession {
             .and_then(|s| s.parse().ok());
         Ok(Self { port, key, pid })
     }
-}
 
-impl Drop for MoshSession {
-    fn drop(&mut self) {
+    fn kill(&self) {
         if let Some(pid) = self.pid {
             let _ = std::process::Command::new("kill")
                 .args(["-9", &pid.to_string()])
@@ -246,25 +184,173 @@ fn random_token() -> String {
         .collect()
 }
 
+/// Host state behind the component's `host` import.
+struct Ctx {
+    wasi: WasiCtx,
+    webrtc: WasiWebrtcCtx,
+    webcrypto: WasiWebcryptoCtx,
+    websocket: WasiWebsocketCtx,
+    table: ResourceTable,
+    known: KnownClients,
+    sessions: Vec<MoshSession>,
+    pairing_token: String,
+    auto_accept: bool,
+}
+
+impl Drop for Ctx {
+    fn drop(&mut self) {
+        for s in &self.sessions {
+            s.kill();
+        }
+    }
+}
+
+impl HasData for Ctx {
+    type Data<'a> = &'a mut Self;
+}
+
+impl WasiView for Ctx {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiWebrtcView for Ctx {
+    fn webrtc(&mut self) -> WasiWebrtcCtxView<'_> {
+        WasiWebrtcCtxView {
+            ctx: &mut self.webrtc,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiWebcryptoView for Ctx {
+    fn webcrypto(&mut self) -> WasiWebcryptoCtxView<'_> {
+        WasiWebcryptoCtxView {
+            ctx: &mut self.webcrypto,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiWebsocketView for Ctx {
+    fn websocket(&mut self) -> WasiWebsocketCtxView<'_> {
+        WasiWebsocketCtxView {
+            ctx: &mut self.websocket,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl bindings::experiment::mosh_proxy::host::Host for &mut Ctx {}
+
+impl bindings::experiment::mosh_proxy::host::HostWithStore<Ctx> for Ctx {
+    async fn authorize(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+        peer_id_hex: String,
+        pairing_token: String,
+    ) -> wasmtime::Result<bool> {
+        let (known, token_ok, auto) = accessor.with(|mut a| {
+            let ctx = a.get();
+            (
+                ctx.known.contains(&peer_id_hex),
+                pairing_token == ctx.pairing_token,
+                ctx.auto_accept,
+            )
+        });
+        if known {
+            return Ok(true);
+        }
+        if !token_ok {
+            println!("refused unknown peer {peer_id_hex} (bad pairing token)");
+            return Ok(false);
+        }
+        let accept = if auto {
+            println!("TOFU: auto-accepting {peer_id_hex} (--yes)");
+            true
+        } else {
+            println!("TOFU: unknown client {peer_id_hex} presented a valid pairing token.");
+            print!("accept? [y/N] ");
+            std::io::stdout().flush()?;
+            let line = tokio::task::spawn_blocking(|| {
+                let mut s = String::new();
+                std::io::stdin().read_line(&mut s).map(|_| s)
+            })
+            .await??;
+            matches!(line.trim(), "y" | "Y" | "yes")
+        };
+        if accept {
+            accessor
+                .with(|mut a| a.get().known.add(&peer_id_hex))
+                .map_err(|e| wasmtime::Error::msg(format!("{e:#}")))?;
+        }
+        Ok(accept)
+    }
+
+    async fn new_session(
+        accessor: &wasmtime::component::Accessor<Ctx, Self>,
+    ) -> wasmtime::Result<Result<SessionInfo, String>> {
+        match MoshSession::spawn() {
+            Ok(s) => {
+                let info = SessionInfo {
+                    key: s.key.clone(),
+                    udp_port: s.port,
+                };
+                accessor.with(|mut a| a.get().sessions.push(s));
+                Ok(Ok(info))
+            }
+            Err(e) => Ok(Err(format!("{e:#}"))),
+        }
+    }
+
+    async fn end_session(
+        mut access: wasmtime::component::Access<'_, Ctx, Self>,
+        udp_port: u16,
+    ) -> wasmtime::Result<()> {
+        access.get().sessions.retain(|s| {
+            if s.port == udp_port {
+                s.kill();
+                false
+            } else {
+                true
+            }
+        });
+        Ok(())
+    }
+
+    async fn log(
+        _access: wasmtime::component::Access<'_, Ctx, Self>,
+        message: String,
+    ) -> wasmtime::Result<()> {
+        println!("{message}");
+        Ok(())
+    }
+}
+
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = env_logger::try_init();
     let cli = parse_args()?;
     let token = cli.token.clone().unwrap_or_else(random_token);
-    let mut known = KnownClients::load(&cli.state_dir)?;
+    let known = KnownClients::load(&cli.state_dir)?;
 
     let mut config = Config::new();
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
     let engine = Engine::new(&config)?;
     let component = Component::from_file(&engine, &cli.component)
-        .with_context(|| format!("loading {}", cli.component.display()))?;
+        .map_err(|e| anyhow!("loading {}: {e}", cli.component.display()))?;
     let mut linker: Linker<Ctx> = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     webrtc_host::add_to_linker(&mut linker)?;
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
+    bindings::ComposedProxy::add_to_linker::<Ctx, Ctx>(&mut linker, |ctx| ctx)?;
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_env().inherit_network();
@@ -276,50 +362,26 @@ async fn main() -> Result<()> {
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
             table: ResourceTable::new(),
+            known,
+            sessions: Vec::new(),
+            pairing_token: token.clone(),
+            auto_accept: cli.yes,
         },
     );
-    let endpoint_world =
-        bindings::IrohEndpoint::instantiate_async(&mut store, &component, &linker).await?;
+    let proxy = bindings::ComposedProxy::instantiate_async(&mut store, &component, &linker).await?;
 
     let relay = cli.relay.clone();
     store
         .run_concurrent(async move |accessor| -> Result<()> {
-            let identity_gen = endpoint_world.polymorph_iroh_identity_generate();
-            let ep_iface = endpoint_world.polymorph_iroh_endpoint();
-            let options_res = ep_iface.endpoint_options();
-            let endpoint_res = ep_iface.endpoint();
-            let conn_res = ep_iface.connection();
-            let send_res = ep_iface.send_stream();
-            let recv_res = ep_iface.recv_stream();
-
-            let identity = identity_gen
-                .call_generate(accessor)
+            let started = proxy
+                .experiment_mosh_proxy_proxy()
+                .call_start(accessor, relay.clone())
                 .await?
-                .map_err(|e| anyhow!("identity-generate: {e:?}"))?;
+                .map_err(|e| anyhow!("proxy start: {e}"))?;
 
-            let options = options_res.call_constructor(accessor, identity).await?;
-            options_res
-                .call_add_alpn(accessor, options, ALPN.to_vec())
-                .await?;
-            options_res
-                .call_relay_url(accessor, options, relay.clone())
-                .await?;
-            options_res
-                .call_udp_bind_addr(accessor, options, "0.0.0.0:0".into())
-                .await?;
-
-            let endpoint = endpoint_res
-                .call_bind(accessor, options)
-                .await?
-                .map_err(|e| anyhow!("bind: {e:?}"))?;
-
-            let id = endpoint_res.call_id(accessor, endpoint).await?;
-            let id_hex = hex::encode(&id);
-            let direct = endpoint_res.call_direct_addr(accessor, endpoint).await?;
-
-            let connstring = format!("1.{id_hex}.{token}.{relay}");
+            let connstring = format!("1.{}.{token}.{relay}", started.endpoint_id_hex);
             println!("connstring: {connstring}");
-            if let Some(direct) = &direct {
+            if let Some(direct) = &started.direct_addr {
                 println!("direct-addr: {direct}");
             }
             if !cli.no_qr {
@@ -338,264 +400,13 @@ async fn main() -> Result<()> {
             }
             println!("ready; pairing token: {token}");
 
-            // One future per live connection, all sharing the accessor.
-            let mut sessions = FuturesUnordered::new();
-            let mut session_ids = 0u64;
-
-            let handle_conn = |conn: ResourceAny, session_id: u64, accepted: bool| {
-                let token = token.clone();
-                async move {
-                    let peer_hex = match conn_res.call_peer(accessor, conn).await {
-                        Ok(p) => hex::encode(p),
-                        Err(e) => {
-                            eprintln!("[conn {session_id}] peer: {e:?}");
-                            return;
-                        }
-                    };
-                    let r = serve_connection(
-                        accessor, &conn_res, &send_res, &recv_res, conn, session_id, &peer_hex,
-                        &token, accepted,
-                    )
-                    .await;
-                    match r {
-                        Ok(summary) => println!("[conn {session_id}] {peer_hex}: {summary}"),
-                        Err(e) => println!("[conn {session_id}] {peer_hex}: error: {e:#}"),
-                    }
-                    let _ = conn_res.call_close(accessor, conn, 0, "done".into()).await;
-                }
-            };
-
-            loop {
-                if sessions.is_empty() {
-                    let conn = endpoint_res
-                        .call_accept(accessor, endpoint)
-                        .await?
-                        .map_err(|e| anyhow!("accept: {e:?}"))?;
-                    session_ids += 1;
-                    let peer = conn_res.call_peer(accessor, conn).await?;
-                    let peer_hex = hex::encode(&peer);
-                    let accepted =
-                        tofu_gate(&mut known, &peer_hex, cli.yes).await?;
-                    sessions.push(handle_conn(conn, session_ids, accepted));
-                } else {
-                    futures::select! {
-                        accepted = futures::FutureExt::fuse(endpoint_res.call_accept(accessor, endpoint)) => {
-                            let conn = accepted?.map_err(|e| anyhow!("accept: {e:?}"))?;
-                            session_ids += 1;
-                            let peer = conn_res.call_peer(accessor, conn).await?;
-                            let peer_hex = hex::encode(&peer);
-                            let ok = tofu_gate(&mut known, &peer_hex, cli.yes).await?;
-                            sessions.push(handle_conn(conn, session_ids, ok));
-                        }
-                        _ = sessions.next() => {}
-                    }
-                }
-            }
+            // Park forever; the store keeps driving the component's
+            // accept/session tasks. Ctrl-C exits (sessions reaped by
+            // Ctx::drop via process teardown).
+            std::future::pending::<()>().await;
+            Ok(())
         })
         .await??;
 
     Ok(())
-}
-
-/// TOFU: known peers pass; unknown peers are provisionally admitted
-/// here and finally gated by the token + operator prompt inside the
-/// control handshake (we only learn "has the token" from Hello).
-/// Returns whether the peer was already known.
-async fn tofu_gate(known: &mut KnownClients, peer_hex: &str, _yes: bool) -> Result<bool> {
-    Ok(known.contains(peer_hex))
-}
-
-/// Everything for one accepted connection: control handshake (token +
-/// TOFU prompt for unknown peers), session spawn, datagram pumps.
-#[allow(clippy::too_many_arguments)]
-async fn serve_connection<'a>(
-    accessor: &Accessor<Ctx>,
-    conn_res: &bindings::exports::polymorph::iroh::endpoint::GuestConnection<'a>,
-    send_res: &bindings::exports::polymorph::iroh::endpoint::GuestSendStream<'a>,
-    recv_res: &bindings::exports::polymorph::iroh::endpoint::GuestRecvStream<'a>,
-    conn: ResourceAny,
-    session_id: u64,
-    peer_hex: &str,
-    token: &str,
-    known_peer: bool,
-) -> Result<String> {
-    // The client opens the control stream.
-    let (ctl_send, ctl_recv) = conn_res
-        .call_accept_bi(accessor, conn)
-        .await?
-        .map_err(|e| anyhow!("accept-bi: {e:?}"))?;
-
-    let mut ctl_buf: Vec<u8> = Vec::new();
-    let mut next_msg = async |buf: &mut Vec<u8>| -> Result<proto::Client> {
-        loop {
-            if let Some(m) = proto::decode::<proto::Client>(buf).map_err(|e| anyhow!(e))? {
-                return Ok(m);
-            }
-            match recv_res
-                .call_read(accessor, ctl_recv, 4096)
-                .await?
-                .map_err(|e| anyhow!("control read: {e:?}"))?
-            {
-                Some(bytes) => buf.extend_from_slice(&bytes),
-                None => bail!("control stream closed"),
-            }
-        }
-    };
-    let send_msg = async |m: &proto::Proxy| -> Result<()> {
-        send_res
-            .call_write(accessor, ctl_send, proto::encode(m))
-            .await?
-            .map_err(|e| anyhow!("control write: {e:?}"))?;
-        Ok(())
-    };
-
-    // Hello: version + pairing token; TOFU for unknown peers.
-    match next_msg(&mut ctl_buf).await? {
-        proto::Client::Hello {
-            version,
-            pairing_token,
-        } => {
-            if version != proto::CONTROL_VERSION {
-                send_msg(&proto::Proxy::Error {
-                    message: format!("control v{version} unsupported"),
-                })
-                .await?;
-                bail!("client speaks control v{version}");
-            }
-            if !known_peer {
-                if pairing_token != token {
-                    // Silent rejection: no prompt fatigue for spam.
-                    bail!("unknown peer with bad token (silently rejected)");
-                }
-                if !prompt_accept(peer_hex).await? {
-                    send_msg(&proto::Proxy::Error {
-                        message: "operator declined".into(),
-                    })
-                    .await?;
-                    bail!("operator declined peer");
-                }
-                KNOWN_ADD.with(|f| f.borrow_mut()(peer_hex));
-            }
-        }
-        other => bail!("expected Hello, got {other:?}"),
-    }
-    send_msg(&proto::Proxy::HelloAck {
-        version: proto::CONTROL_VERSION,
-    })
-    .await?;
-
-    // NewSession → spawn mosh-server, deliver the key.
-    let (cols, rows) = match next_msg(&mut ctl_buf).await? {
-        proto::Client::NewSession { cols, rows } => (cols, rows),
-        other => bail!("expected NewSession, got {other:?}"),
-    };
-    let _ = (cols, rows); // client resizes over SSP; size here is advisory
-    let session = MoshSession::spawn()?;
-    println!(
-        "[conn {session_id}] {peer_hex}: mosh-server on 127.0.0.1:{} (pid {:?})",
-        session.port, session.pid
-    );
-    send_msg(&proto::Proxy::SessionReady {
-        session_id,
-        key: session.key.clone(),
-    })
-    .await?;
-
-    // Datagram pumps with tunnel framing.
-    let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-    udp.connect(("127.0.0.1", session.port)).await?;
-    let udp = Arc::new(udp);
-
-    let max_size = conn_res
-        .call_max_datagram_size(accessor, conn)
-        .await?
-        .context("peer accepts no datagrams")? as usize;
-
-    let mut fragmented = 0u64;
-    let mut forwarded_in = 0u64;
-    let mut forwarded_out = 0u64;
-
-    // conn → UDP (defragment)
-    let inbound = async {
-        let mut defrag = proto::Defragmenter::default();
-        loop {
-            match conn_res.call_recv_datagram(accessor, conn).await {
-                Ok(Ok(datagram)) => {
-                    if let Some(payload) = defrag.push(&datagram) {
-                        forwarded_in += 1;
-                        let _ = udp.send(&payload).await;
-                    }
-                }
-                Ok(Err(_)) | Err(_) => break,
-            }
-        }
-        anyhow::Ok(())
-    };
-
-    // UDP → conn (fragment as needed)
-    let udp2 = udp.clone();
-    let outbound = async {
-        let mut next_id = 0u8;
-        let mut buf = vec![0u8; 2048];
-        loop {
-            let n = match udp2.recv(&mut buf).await {
-                Ok(n) => n,
-                Err(_) => break,
-            };
-            match proto::frame(&buf[..n], max_size, &mut next_id) {
-                Ok(frames) => {
-                    if frames.len() > 1 {
-                        fragmented += 1;
-                    }
-                    for frame in frames {
-                        forwarded_out += 1;
-                        if conn_res
-                            .call_send_datagram(accessor, conn, frame)
-                            .await
-                            .map(|r| r.is_err())
-                            .unwrap_or(true)
-                        {
-                            // Lossy transport: only hard errors break.
-                        }
-                    }
-                }
-                Err(e) => eprintln!("[conn {session_id}] frame: {e}"),
-            }
-        }
-        anyhow::Ok(())
-    };
-
-    // Run until the connection dies (either pump ends) — the control
-    // stream idles for now (M6 ceremonies ride it later).
-    futures::pin_mut!(inbound, outbound);
-    let _ = futures::future::select(inbound, outbound).await;
-
-    Ok(format!(
-        "session closed (in={forwarded_in} out={forwarded_out} fragmented={fragmented})"
-    ))
-}
-
-/// Operator TOFU prompt (auto-accepted under --yes, which is read from
-/// the environment by main and baked in here via thread-local — see
-/// PROMPT_AUTO).
-async fn prompt_accept(peer_hex: &str) -> Result<bool> {
-    if PROMPT_AUTO.with(|c| c.get()) {
-        println!("TOFU: auto-accepting {peer_hex} (--yes)");
-        return Ok(true);
-    }
-    println!("TOFU: unknown client {peer_hex} presented a valid pairing token.");
-    print!("accept? [y/N] ");
-    std::io::stdout().flush()?;
-    let line = tokio::task::spawn_blocking(|| {
-        let mut s = String::new();
-        std::io::stdin().read_line(&mut s).map(|_| s)
-    })
-    .await??;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
-}
-
-thread_local! {
-    static PROMPT_AUTO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static KNOWN_ADD: std::cell::RefCell<Box<dyn FnMut(&str)>> =
-        std::cell::RefCell::new(Box::new(|_| {}));
 }

@@ -1,0 +1,55 @@
+package experiment:mosh-proxy;
+
+/// Host services the proxy-core component cannot provide itself: OS
+/// process spawning, operator interaction, TOFU persistence.
+interface host {
+  record session-info {
+    /// The MOSH CONNECT key for the spawned server.
+    key: string,
+    /// The loopback UDP port the mosh-server listens on.
+    udp-port: u16,
+  }
+
+  /// Authorize a peer presenting `pairing-token`. Host policy: known
+  /// peers pass; unknown peers with the valid token hit the operator
+  /// TOFU prompt (and are persisted on accept); anything else is
+  /// refused. `false` ⇒ the connection is closed without ceremony.
+  authorize: async func(peer-id-hex: string, pairing-token: string) -> bool;
+
+  /// Spawn `mosh-server -i 127.0.0.1` for a new session.
+  new-session: async func() -> result<session-info, string>;
+
+  /// The session's connection ended: reclaim the server process.
+  end-session: func(udp-port: u16);
+
+  log: func(message: string);
+}
+
+interface proxy {
+  record started {
+    endpoint-id-hex: string,
+    /// The endpoint's bound UDP `ip:port` (direct-path dial hint).
+    direct-addr: option<string>,
+  }
+
+  /// Bind the endpoint (home relay required) and start accepting.
+  /// Returns once listening; connections are served on background
+  /// tasks for the instance's lifetime.
+  start: async func(relay-url: string) -> result<started, string>;
+}
+
+/// What proxy-core builds against.
+world proxy-world {
+  import host;
+  import polymorph:iroh/identity-generate@0.1.0;
+  import polymorph:iroh/endpoint@0.1.0;
+  import wasi:sockets/types@0.3.0;
+  export proxy;
+}
+
+/// The composed artifact (proxy-core + endpoint fused) as the native
+/// shell sees it: our host interface in, the proxy surface out.
+world composed-proxy {
+  import host;
+  export proxy;
+}
