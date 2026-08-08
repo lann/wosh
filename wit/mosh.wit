@@ -1,0 +1,63 @@
+package experiment:mosh;
+
+/// The mosh protocol engine: fully synchronous, sans-I/O. The host owns
+/// all I/O and time — it feeds inbound datagrams and keystrokes, drives
+/// an ~8 ms tick, sends whatever tick returns, and paints whatever
+/// drain-output returns. The engine never blocks and never sleeps.
+interface engine {
+  /// One mosh SSP wire datagram (OCB-encrypted, ready for the socket).
+  type datagram = list<u8>;
+
+  /// Transport counters for the harness and for measurement work.
+  record session-stats {
+    /// Highest state number we have sent.
+    sent-num: u64,
+    /// Highest of our states the server has acknowledged.
+    acked-num: u64,
+    /// Highest server state number we have received.
+    recv-num: u64,
+    /// Milliseconds since the last datagram was accepted, if any.
+    last-recv-age-ms: option<u64>,
+    /// Current retransmission timeout in milliseconds.
+    rto-ms: u64,
+    /// Local-echo predictions currently overlaid on the display.
+    predictor-active: bool,
+    /// Server framebuffer states tracked for diff application.
+    tracked-states: u32,
+  }
+
+  resource session {
+    /// Start a session from the base64 key in `MOSH CONNECT <port> <key>`
+    /// and the initial terminal size. The first tick after connect
+    /// carries the association datagram; errors are bad-key only.
+    connect: static func(key: string, cols: u16, rows: u16) -> result<session, string>;
+
+    /// Queue keystrokes for the server and run local-echo prediction.
+    /// Predicted echo appears in drain-output immediately.
+    feed-keys: func(keys: list<u8>);
+
+    /// Propagate a terminal resize to the server and the local display.
+    resize: func(cols: u16, rows: u16);
+
+    /// Process one inbound wire datagram (decrypt, reassemble, apply
+    /// the state diff). Display bytes surface via drain-output.
+    handle-datagram: func(data: datagram);
+
+    /// Flush pending actions, acks, retransmits, and keepalives.
+    /// Call every ~8 ms; send every returned datagram, in order.
+    tick: func() -> list<datagram>;
+
+    /// Drain accumulated display bytes (ANSI, pre-diffed against what
+    /// the previous drain returned — write straight to the terminal).
+    drain-output: func() -> list<u8>;
+
+    stats: func() -> session-stats;
+  }
+
+  /// Engine build identity (pinned mosh-go revision), for telemetry.
+  version: func() -> string;
+}
+
+world engine-world {
+  export engine;
+}

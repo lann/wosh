@@ -57,4 +57,13 @@ if [ -f "$RUNNER/package.json" ] && [ ! -d "$RUNNER/node_modules" ]; then
   (cd "$RUNNER" && npm install --no-fund --no-audit)
 fi
 
+# --- M1 conformance harness -----------------------------------------------
+command -v mosh-server >/dev/null 2>&1 || { echo "missing: mosh-server (apt install mosh) — M1 conformance gate needs it"; exit 1; }
+say "mosh-server: $(mosh-server --version 2>&1 | head -1)"
+HOST_TEST="$(cd "$(dirname "$0")/.." && pwd)/host-test"
+if [ -f "$HOST_TEST/package.json" ] && [ ! -d "$HOST_TEST/node_modules" ]; then
+  say "npm install (host-test)"
+  (cd "$HOST_TEST" && npm install --no-fund --no-audit)
+fi
+
 say "setup complete"

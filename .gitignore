@@ -8,8 +8,10 @@ generated-*/
 main.wasm
 
 # Go
-engine-go/bindings/imports/
-engine-go/bindings/exports/wit_exports/
+# engine-go: generated bindings are COMMITTED (wit_exports.go,
+# */wit_bindings.go, */empty.s) — `componentize-go bindings` rewrites
+# go.mod, losing the .deps replace directive, so regeneration is the
+# deliberate `just engine-bindings` recipe, not part of every build.
 
 # Generated Go bindings in spikes (regenerate: just spike-*-build)
 spikes/**/wit_exports.go
@@ -17,7 +19,10 @@ spikes/**/wit_bindings.go
 spikes/componentize-go/async/wasi_*/
 
 # Pinned sibling checkouts
-.deps/
+.deps/*
+# …except the vendored mosh-go fork: its patches are load-bearing
+# (see .deps/mosh-go/DEPS.md)
+!.deps/mosh-go/
 
 # Editors
 *.swp

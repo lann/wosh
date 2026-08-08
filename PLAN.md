@@ -152,15 +152,20 @@ in the sibling checkout; conformance is the gate):
 `drain-output`, `stats`); Go implementation wrapping mosh-go
 `DialConnRaw` + an in-memory `Conn` (Write→outbox drained by tick,
 Read→inbox pop or immediate timeout); prediction/output handling
-cribbed from mosh-go `cmd/mosh-wasm/state.go`. mosh-go rev-pinned
-(MIT; vendor patches if fragment sizing or API needs it).
+cribbed from mosh-go `cmd/mosh-wasm/state.go`. mosh-go is a vendored
+fork at the pinned rev (`.deps/mosh-go`, MIT): wasm build-tag +
+fragment-size patches applied, ledger in its `DEPS.md`. *(Built — M1.)*
 
 **C — proxy**: Rust binary embedding wasmtime + the endpoint component
 (reuse polymorph-iroh host-wasmtime patterns; relay + UDP +
 WebRTC-direct all work natively). Terminal QR (unicode half-blocks) +
 connstring; TOFU store (`known_clients`) + accept prompts; session
 registry; per-session loopback UDP socket, QUIC-datagram↔UDP pump;
-detach semantics (kill vs persist per passkey binding).
+detach semantics (kill vs persist per passkey binding). Forwarder must
+handle stock mosh-server datagrams up to ~1252 B (> the ~1162 B iroh
+ceiling, finding 9): tunnel-layer sub-framing of oversized datagrams,
+or a larger negotiated datagram size on non-UDP paths (#28 design
+input) — decide in M3/M4.
 
 **D — browser client**: static site, minimal tooling, committed jco
 output; bootstrap flows (fragment, qr-scanner, manual entry);
@@ -196,7 +201,7 @@ async export, per finding 3b).
 | # | Deliverable | Gate / status |
 |---|---|---|
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues | **DONE** — D5 PASSED (findings 1–5); D4 → PRF arm (finding 6); #28/#29 filed |
-| M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | wire compatibility; fragment size ≤ ~1162 verified |
+| M1 | engine WIT + Go impl; native harness vs stock C mosh-server over UDP | **DONE** — wire compat incl. multi-fragment paste (findings 7–10); our datagrams ≤ 1138 B; stock server emits up to 1252 B (> ceiling, → M4 forwarder design) |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | engine under jco in a real browser |
 | M3 | A1 datagram PR upstream, native legs green | upstream conformance |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native-driver E2E over iroh | |
@@ -213,7 +218,11 @@ gates that stop the plan stop it into discussion, not silent fallback
 1. **A3 stalls** (external jco hardening) → M5/M7 browser legs slip;
    native path and M0–M4 unaffected by construction; assist upstream.
 2. **mosh-go fidelity edge cases** → M1 conformance harness against the
-   C implementation is the gate; MIT license permits vendored fixes.
+   C implementation is the gate; MIT license permits vendored fixes
+   (exercised: `.deps/mosh-go` fork carries the wasm build-tag and
+   fragment-size patches; client-must-resize-first fixed engine-side;
+   two open observations in finding 10 — leg-b scroll artifact, RTO
+   clamp 10 s vs C mosh's 1 s).
 3. **ssh-in-component** → Go-native-timer trap and jco async-lower gap
    (findings 3–4); contingencies: shim timers via explicit
    `wait-for`-based helpers, russh sidecar component, or defer browser

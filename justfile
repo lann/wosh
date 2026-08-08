@@ -43,3 +43,34 @@ spike-async-browser: spike-async-build
 
 # All spike legs, in gate order.
 spikes: spike-sync-wasmtime spike-sync-jco spike-sync-browser spike-async-wasmtime spike-async-jco spike-async-browser
+
+# --- M1 engine + conformance -------------------------------------------
+
+# Build the mosh engine component (bindings are committed; see below).
+engine-build:
+    cd engine-go && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" componentize-go build
+
+# Regenerate bindings after a wit/mosh.wit change. componentize-go
+# rewrites go.mod, so the .deps replace directive and pins are
+# reapplied afterwards. Commit the result.
+engine-bindings:
+    cd engine-go && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" componentize-go bindings --format && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" go mod edit -replace github.com/unixshells/mosh-go=../.deps/mosh-go -require=github.com/unixshells/mosh-go@v0.5.3-0.20260405220648-8dca5c67ec8e -require=github.com/unixshells/vt-go@v0.1.0 && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" go mod tidy
+
+# Engine instantiation smoke under wasmtime (version probe).
+engine-wasmtime-smoke: engine-build
+    wasmtime run --invoke 'version()' engine-go/main.wasm
+
+# Transpile the engine for the node/browser hosts.
+engine-transpile: engine-build
+    cd host-test && npm run transpile
+
+# Conformance gate: engine (jco/node, loopback UDP) vs stock C mosh-server.
+conformance-c: engine-transpile
+    cd host-test && npm run conformance-c
+
+# Same driver vs mosh-go's native server.
+conformance-go: engine-transpile
+    cd host-test && PATH="$HOME/.local/go/bin:$PATH" npm run conformance-go
+
+# All M1 legs, gate order.
+m1: engine-wasmtime-smoke conformance-c conformance-go

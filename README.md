@@ -6,10 +6,10 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M0 complete (gates resolved).** Local-only experiment: no CI,
-no stability, delete-at-will. If it earns a public repository it gets a
-new name. The full plan lives in [`PLAN.md`](PLAN.md); resumable
-session state in [`TASK.md`](TASK.md).
+**Status: M1 complete (wire-compat gate passed).** Local-only
+experiment: no CI, no stability, delete-at-will. If it earns a public
+repository it gets a new name. The full plan lives in
+[`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
 
 ## Architecture
 
@@ -80,14 +80,19 @@ ssh/mosh layer is the strong security boundary.
 
 ## Layout
 
+- `.deps/mosh-go/` — vendored mosh-go fork at the pinned rev, with the
+  wasm build-tag and fragment-size patches (`DEPS.md` there is the
+  patch ledger).
 - `spikes/componentize-go/` — M0 feasibility spikes (sync exports;
   async/goroutine abstraction probes).
 - `web/prf-probe/` — M0 WebAuthn PRF capability probe page (deploy to
   the target gh-pages origin; run on Firefox mobile Nightly).
-- `wit/` — the `experiment:mosh` engine world (from M1).
-- `engine-go/` — the mosh engine component (from M1).
-- `host-test/` — native conformance harness: engine under wasmtime
-  against stock C `mosh-server` over real UDP (from M1).
+- `wit/` — the `experiment:mosh` engine world.
+- `engine-go/` — the mosh engine component (generated bindings
+  committed; regenerate with `just engine-bindings` after WIT changes).
+- `host-test/` — M1 conformance harness: jco-transpiled engine driven
+  from node over loopback UDP against stock C `mosh-server` (gate) and
+  mosh-go's server (`moshgo-server/`).
 - `proxy/` — the native proxy (from M4).
 - `web/` — the static client site (from M2).
 
@@ -96,7 +101,7 @@ ssh/mosh layer is the strong security boundary.
 | # | Deliverable | Gate |
 |---|---|---|
 | M0 | scaffold; componentize-go spikes; PRF probe; upstream issues filed | componentize-go fails ⇒ stop and discuss; PRF result selects D4 arm |
-| M1 | engine WIT + Go impl; native harness vs C mosh-server over UDP | wire compat |
+| M1 | engine WIT + Go impl; native harness vs C mosh-server over UDP | **DONE** — wire compat (findings 7–10); `just m1` |
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | engine runs under jco in-browser |
 | M3 | polymorph-iroh datagram PR (native legs) | upstream conformance |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | |
@@ -120,7 +125,9 @@ Tested with: componentize-go 0.4.1 (host Go 1.26.5; async builds use the
 auto-downloaded patched `go1.25.5-wasi-on-idle-v2`, upstream PR
 golang/go#76775, arm64 build available), wasmtime 47.0.1, wasm-tools
 1.247.0, node 24.18.0, jco = lann/jco fork @ 30186b2 (via
-polymorph-iroh/.deps), headless Chromium 151.
+polymorph-iroh/.deps), headless Chromium 151. M1 adds: stock
+`mosh-server` 1.4.0 (Debian), mosh-go @ 8dca5c67ec8e (vendored fork,
+see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0.
 
 1. **componentize-go sync path: green everywhere (D5 gate PASSED).**
    Sync function exports and exported *resources* work under wasmtime
@@ -181,3 +188,54 @@ polymorph-iroh/.deps), headless Chromium 151.
    interference; the real client must anticipate wrapped WebAuthn in
    the field. (b) Results hold for the `lann.github.io` origin; rerun
    if the client ships from a different origin.
+
+7. **M1 gate PASSED: the engine is wire-compatible with stock C
+   mosh-server 1.4.0.** Prompt render, echo round-trip, resize
+   propagation (`stty size`), a 4 KB single-feed paste (multi-fragment
+   client diff, reassembled fine by the C server), and server→client
+   bulk all pass, against both the C server (gate) and mosh-go's
+   server — `just m1`. The harness drives the jco-transpiled engine
+   from node (preview2-shim, loopback UDP `dgram`) with the exact
+   sans-I/O contract the browser client will use: feed inbound
+   datagrams, 8 ms tick → send returned datagrams, drain display
+   bytes. Engine component is ~5.1 MB unoptimized (mosh-go + vt-go on
+   top of the ~2.8 MB Go baseline).
+
+8. **mosh-go needed three engine-side accommodations (vendored fork,
+   `.deps/mosh-go`, patches ledgered in its `DEPS.md`).** (a)
+   creack/pty (imported by the server half) does not compile for
+   wasip1/wasip2 — build-tag patch on `server.go`. (b) A mosh client
+   must announce its terminal size as its **first user state**: the C
+   server sends no screen content at all until the client's first
+   state arrives (it has no other way to learn cols×rows), and
+   mosh-go's `DialConnRaw` does not do this — the engine calls
+   `Resize(cols, rows)` at connect; without it the session looks
+   connected but stays visually dead. (c) `maxFragmentPayload`
+   1300 → 1100 (wire = payload + 38 B: 1338 B upstream vs the ~1162 B
+   iroh ceiling; 1138 B patched). Fragment sizing is sender-local in
+   SSP; the paste test confirms the C server reassembles our smaller
+   fragments.
+
+9. **Ceiling risk is now on the server→client direction: stock C
+   mosh-server emits datagrams up to 1252 B observed (fragment payload
+   1214 B), over the ~1162 B iroh application ceiling.** We can size
+   our own datagrams (finding 8c) but not a stock server's. M4's
+   QUIC-datagram↔UDP forwarder must handle it: sub-frame oversized
+   datagrams at the tunnel layer (both tunnel ends are ours), or
+   negotiate a larger datagram size on paths that aren't real UDP
+   (relay websocket, WebRTC data channel) where the 1200 B MTU profile
+   is not a physical constraint — design input for polymorph-iroh#28
+   (`max-datagram-size` is already part of that surface). Decide in
+   M3/M4.
+
+10. **Fidelity observations, non-blocking.** (a) mosh-go's *server*
+    dropped a leading digit mid-scroll in the bulk phase (`99` for
+    `299` at 100 cols); the C leg rendered the same phase correctly,
+    so the conformance assertion pins only the final line — origin
+    (mosh-go server diff engine vs our tracker) not yet attributed;
+    M2's real xterm.js display will add signal. (b) mosh-go clamps RTO
+    to [250 ms, 10 s] where C mosh uses [50 ms, 1 s]; bulk transfers
+    inflate RTT samples (send-side hold time is not subtracted from
+    the timestamp echo) and the engine's RTO was observed pinned at
+    10 s afterwards — sluggish retransmit after bursts. Candidate
+    fork patch if M2/M5 latency measurements show impact.
