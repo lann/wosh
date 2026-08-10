@@ -1,4 +1,4 @@
-# experiment-mosh
+# wosh
 
 A mosh-compatible client and proxy tunneled over iroh: a browser client
 (xterm.js, JSPI, wasm components) speaking real mosh SSP end-to-end to a
@@ -31,7 +31,7 @@ ssh/mosh layer is the strong security boundary.
   and JS-orchestrating the components separately remains a cheap
   fallback (the engine surface is the same either way).
 - Control channel: the first client-opened bi stream on the
-  connection (ALPN `experiment-mosh/0`), length-prefixed CBOR, spoken
+  connection (ALPN `wosh/0`), length-prefixed CBOR, spoken
   by the client-core glue and the proxy-core component through the
   shared `proto/` crate (D8). Pairing token in the QR/connection
   string; unknown peers without a valid token are silently rejected;
@@ -100,7 +100,7 @@ ssh/mosh layer is the strong security boundary.
   stays thin, and the native E2E drives a session with one call
   (`connect-proxy`). M6 WebAuthn ceremonies will surface as
   driver-level exports rather than raw control frames. Consequences:
-  the connection ALPN is plain `experiment-mosh/0` — the plan's
+  the connection ALPN is plain `wosh/0` — the plan's
   separate `ctl` ALPN was a conflation (ALPN is per-connection); the
   control channel is simply the first client-opened bi stream.
 - **D9** *(2026-08-08, M4)* The proxy brain is a **component**:

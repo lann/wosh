@@ -1,7 +1,7 @@
 //! Shared wire protocol between the proxy and the client-core glue.
 //!
 //! Two layers, both versioned by the connection ALPN
-//! (`experiment-mosh/0`):
+//! (`wosh/0`):
 //!
 //! - **Control channel**: the first client-opened bidirectional stream;
 //!   length-prefixed (u32 LE) CBOR messages, [`Client`] and [`Proxy`]

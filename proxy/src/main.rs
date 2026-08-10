@@ -1,4 +1,4 @@
-//! The experiment-mosh proxy (M4/M6, workstream C): a thin native
+//! The wosh proxy (M4/M6, workstream C): a thin native
 //! shell around the composed proxy-core component.
 //!
 //! Architecture (D1 + D9): the proxy's brain — accept loop, control
@@ -76,7 +76,7 @@ struct Cli {
 
 fn usage() -> anyhow::Error {
     anyhow!(
-        "usage: experiment-mosh-proxy --relay <url> [--state-dir <dir>] \
+        "usage: wosh-proxy --relay <url> [--state-dir <dir>] \
          [--qr-base <url>] [--component <composed-proxy.wasm>] \
          [--token <pairing-token>] [--yes] [--no-qr] [--personal] \
          [--shell <cmd…>] [--ssh-target <loopback-ip:port>] \
@@ -127,7 +127,7 @@ fn parse_args() -> Result<Cli> {
     }
     let state_dir = state_dir.unwrap_or_else(|| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".local/state/experiment-mosh-proxy")
+        PathBuf::from(home).join(".local/state/wosh-proxy")
     });
     let component = component.unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("composed-proxy.wasm")
@@ -135,7 +135,7 @@ fn parse_args() -> Result<Cli> {
     Ok(Cli {
         relay: relay.ok_or_else(usage)?,
         state_dir,
-        qr_base: qr_base.unwrap_or_else(|| "https://experiment-mosh.invalid/#".into()),
+        qr_base: qr_base.unwrap_or_else(|| "https://wosh.invalid/#".into()),
         component,
         token,
         yes,
@@ -630,7 +630,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("--rp-origin {}", cli.rp_origin))?;
     let webauthn = WebauthnBuilder::new(&cli.rp_id, &rp_origin)
         .context("webauthn RP")?
-        .rp_name("experiment-mosh")
+        .rp_name("wosh")
         .build()
         .context("webauthn RP")?;
 

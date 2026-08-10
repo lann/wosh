@@ -47,7 +47,7 @@ const waitPort = async (port, tries = 100) => {
 
 // --- relay + proxy (same shape as host-test/proxy-e2e) -----------------------
 
-const dir = await mkdtemp(join(tmpdir(), "experiment-mosh-jco-probe-"));
+const dir = await mkdtemp(join(tmpdir(), "wosh-jco-probe-"));
 const relayCfg = join(dir, "relay.toml");
 await writeFile(relayCfg, `http_bind_addr = "127.0.0.1:${RELAY_PORT}"\nenable_metrics = false\n`);
 const relayBin = join(HERE, "../.deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay");
@@ -55,7 +55,7 @@ children.push(spawn(relayBin, ["--dev", "-c", relayCfg], { stdio: "ignore" }));
 await waitPort(RELAY_PORT);
 log(`relay on :${RELAY_PORT}`);
 
-const proxyBin = join(HERE, "../proxy/target/release/experiment-mosh-proxy");
+const proxyBin = join(HERE, "../proxy/target/release/wosh-proxy");
 const proxy = spawn(
   proxyBin,
   [

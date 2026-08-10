@@ -1,4 +1,4 @@
-//! experiment-mosh client-core glue (D7/B2).
+//! wosh client-core glue (D7/B2).
 //!
 //! The composition seam: imports the pure-sync mosh engine and the
 //! async polymorph-iroh endpoint, owns the two pumps (recv-datagram
@@ -29,7 +29,7 @@ mod bindings {
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use experiment_mosh_proto as proto;
+use wosh_proto as proto;
 
 use bindings::experiment::mosh::engine::Session as EngineSession;
 use bindings::experiment::mosh::ssh::{SshSession, SshStatus};
@@ -45,7 +45,7 @@ use bindings::polymorph::iroh::types::{EndpointAddr, TransportAddr};
 use bindings::wasi::clocks::monotonic_clock::wait_for;
 
 /// v0 connection ALPN: control stream + datagram tunnel share it.
-const ALPN: &[u8] = b"experiment-mosh/0";
+const ALPN: &[u8] = b"wosh/0";
 
 /// Engine tick cadence — mosh's SEND_MINDELAY keystroke batching.
 const TICK_NS: u64 = 8_000_000;

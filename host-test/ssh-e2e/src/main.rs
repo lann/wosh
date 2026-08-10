@@ -102,7 +102,7 @@ fn manifest_path(rel: &str) -> String {
 }
 
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m7");
+    let dir = std::env::temp_dir().join("wosh-m7");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(
@@ -144,9 +144,9 @@ struct ProxyProc {
 /// proxy refuses to spawn sessions itself; the client must go through
 /// inner ssh instead).
 async fn start_proxy(standin_port: u16) -> Result<ProxyProc> {
-    let state = std::env::temp_dir().join(format!("experiment-mosh-m7-state-{}", std::process::id()));
+    let state = std::env::temp_dir().join(format!("wosh-m7-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state);
-    let bin = manifest_path("../../proxy/target/release/experiment-mosh-proxy");
+    let bin = manifest_path("../../proxy/target/release/wosh-proxy");
     let mut child = tokio::process::Command::new(&bin)
         .args([
             "--relay",

@@ -1,4 +1,4 @@
-// experiment-mosh browser client. M2 shape below the M5 bootstrap
+// wosh browser client. M2 shape below the M5 bootstrap
 // panel: xterm.js in front of the jco-transpiled engine component,
 // datagrams over the throwaway websocket dev bridge
 // (host-test/browser-smoke.mjs). The page drives the engine's sans-I/O

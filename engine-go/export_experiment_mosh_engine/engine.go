@@ -217,5 +217,5 @@ func Version() string {
 			}
 		}
 	}
-	return "experiment-mosh engine (" + moshGo + ")"
+	return "wosh engine (" + moshGo + ")"
 }

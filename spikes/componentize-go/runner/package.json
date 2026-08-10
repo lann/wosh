@@ -1,5 +1,5 @@
 {
-  "name": "experiment-mosh-spike-runner",
+  "name": "wosh-spike-runner",
   "version": "0.0.1",
   "private": true,
   "type": "module",

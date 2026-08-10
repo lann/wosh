@@ -1187,7 +1187,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "experiment-mosh-proto"
+name = "wosh-proto"
 version = "0.0.1"
 dependencies = [
  "ciborium",
@@ -1196,12 +1196,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "experiment-mosh-proxy"
+name = "wosh-proxy"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "env_logger",
- "experiment-mosh-proto",
+ "wosh-proto",
  "futures",
  "hex",
  "polymorph-webcrypto-wasmtime",

@@ -93,7 +93,7 @@ fn manifest_path(rel: &str) -> String {
 }
 
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m4");
+    let dir = std::env::temp_dir().join("wosh-m4");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(
@@ -131,9 +131,9 @@ struct ProxyProc {
 }
 
 async fn start_proxy() -> Result<ProxyProc> {
-    let state = std::env::temp_dir().join(format!("experiment-mosh-m4-state-{}", std::process::id()));
+    let state = std::env::temp_dir().join(format!("wosh-m4-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state);
-    let bin = manifest_path("../../proxy/target/release/experiment-mosh-proxy");
+    let bin = manifest_path("../../proxy/target/release/wosh-proxy");
     let mut child = tokio::process::Command::new(&bin)
         .args([
             "--relay",

@@ -16,7 +16,7 @@ check() {
   echo "ok: $expr -> $got"
 }
 
-check 'version-via-engine()' '"experiment-mosh engine (mosh-go v0.5.3-0.20260405220648-8dca5c67ec8e)"'
+check 'version-via-engine()' '"wosh engine (mosh-go v0.5.3-0.20260405220648-8dca5c67ec8e)"'
 check 'session-round-trip("AAAAAAAAAAAAAAAAAAAAAA", 80, 24)' \
   'ok({datagrams: 2, first-datagram-len: 60, sent-num: 1, output-len: 0})'
 check 'session-round-trip("notakey!", 80, 24)' \

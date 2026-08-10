@@ -1,4 +1,4 @@
-# Plan: experiment-mosh
+# Plan: wosh
 
 The full working plan as settled by design discussion (2026-08-07).
 Durable companions: `README.md` (architecture summary, decision log,
@@ -107,7 +107,7 @@ the fallback stays permanently cheap.
 
 Control channel (D8, resolved 2026-08-08): the first client-opened bi
 stream per connection (one ALPN for the whole connection,
-`experiment-mosh/0` — a separate `ctl` ALPN was a conflation),
+`wosh/0` — a separate `ctl` ALPN was a conflation),
 length-prefixed versioned CBOR, implemented in the client-core glue
 and proxy-core against the shared `proto/` crate (ciborium both
 sides). Messages: hello (pairing token), TOFU state, session

@@ -176,7 +176,7 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       // Fresh origin state (the browser context is new, but be explicit).
       localStorage.clear();
       await new Promise((resolve, reject) => {
-        const req = indexedDB.deleteDatabase("experiment-mosh-keys");
+        const req = indexedDB.deleteDatabase("wosh-keys");
         req.onsuccess = req.onblocked = () => resolve();
         req.onerror = () => reject(req.error);
       });
@@ -238,7 +238,7 @@ const PAGE = `<!doctype html><meta charset=utf-8>
 
       const cred = await protoCreate.call(navigator.credentials, {
         publicKey: {
-          rp: { name: "experiment-mosh web-tests" },
+          rp: { name: "wosh web-tests" },
           user: { id: rand(16), name: "m6", displayName: "m6" },
           challenge: rand(32),
           pubKeyCredParams: [

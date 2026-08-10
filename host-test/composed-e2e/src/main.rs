@@ -45,7 +45,7 @@ mod bindings {
     });
 }
 
-const ALPN: &[u8] = b"experiment-mosh/0";
+const ALPN: &[u8] = b"wosh/0";
 const RELAY_PORT: u16 = 3345;
 const HARD_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -147,7 +147,7 @@ impl Drop for MoshServer {
 /// iroh-relay --dev on a fixed local port (the polymorph endpoint's
 /// `bind` requires a home relay even for the UDP-direct path).
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m3");
+    let dir = std::env::temp_dir().join("wosh-m3");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(

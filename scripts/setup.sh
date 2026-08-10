@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent toolchain setup for experiment-mosh. Re-run freely; each step
+# Idempotent toolchain setup for wosh. Re-run freely; each step
 # checks before acting. Mirrors the polymorph family's setup.sh shape but
 # stays experiment-grade (unpinned latest for spike-only tools, pins
 # recorded in README findings once a version is known-good).
@@ -96,7 +96,7 @@ say "polymorph-iroh: $(git -C "$PIROH_DIR" log --oneline -1)"
 # Its own pinned deps (webcrypto/websocket/webrtc shims, upstream iroh,
 # tls); SKIP_NODE: we consume jco from the sibling checkout, not here.
 (cd "$PIROH_DIR" && SKIP_NODE=1 scripts/setup.sh >/dev/null)
-PIROH_STAMP="$PIROH_DIR/.experiment-mosh-built-at"
+PIROH_STAMP="$PIROH_DIR/.wosh-built-at"
 if [ -f "$PIROH_STAMP" ] && [ "$(cat "$PIROH_STAMP")" = "$PIROH_PIN" ]; then
   say "polymorph-iroh artifacts already built"
 else

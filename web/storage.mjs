@@ -20,7 +20,7 @@
 // Pure functions over an injected localStorage-like object; state
 // values are treated as immutable (every mutator returns a new state).
 
-export const STORAGE_KEY = "experiment-mosh/v1";
+export const STORAGE_KEY = "wosh/v1";
 
 export function emptyState() {
   return { v: 1, proxies: [], identityRef: null, sessions: [] };

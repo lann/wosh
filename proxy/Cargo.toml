@@ -1,18 +1,18 @@
 [package]
-name = "experiment-mosh-proxy"
+name = "wosh-proxy"
 version = "0.0.1"
 edition = "2021"
 publish = false
-description = "The experiment-mosh proxy: embeds wasmtime + the polymorph-iroh endpoint component (D1); spawns per-session mosh-server, tunnels datagrams, speaks the control channel, TOFU + QR bootstrap"
+description = "The wosh proxy: embeds wasmtime + the polymorph-iroh endpoint component (D1); spawns per-session mosh-server, tunnels datagrams, speaks the control channel, TOFU + QR bootstrap"
 
 [workspace]
 
 [[bin]]
-name = "experiment-mosh-proxy"
+name = "wosh-proxy"
 path = "src/main.rs"
 
 [dependencies]
-experiment-mosh-proto = { path = "../proto" }
+wosh-proto = { path = "../proto" }
 wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
 wasmtime-wasi = { version = "47", features = ["p3"] }
 wasmtime-webrtc-datachannels = { path = "../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }

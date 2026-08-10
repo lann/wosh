@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Assemble the deployable static tree of the web client into <dest>
-# (e.g. a checkout of lann.github.io, subdir experiment-mosh/). The
+# (e.g. a checkout of lann.github.io, subdir wosh/). The
 # tree is mount-point-agnostic: everything in web/ is referenced
 # relatively, so it serves from / (dev) and from a pages subdir alike.
 #

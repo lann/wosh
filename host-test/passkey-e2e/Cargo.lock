@@ -1209,7 +1209,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "experiment-mosh-proto"
+name = "wosh-proto"
 version = "0.0.1"
 dependencies = [
  "ciborium",
@@ -2190,7 +2190,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "env_logger",
- "experiment-mosh-proto",
+ "wosh-proto",
  "polymorph-webcrypto-wasmtime",
  "serde_json",
  "tokio",
