@@ -19,7 +19,7 @@ use wasmtime::component::{Component, HasData, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{
-    self as webrtc_host, WasiWebrtcCtx, WasiWebrtcCtxView, WasiWebrtcView,
+    self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView,
 };
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 
@@ -42,7 +42,7 @@ const HARD_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct Ctx {
     wasi: WasiCtx,
-    webrtc: WasiWebrtcCtx,
+    webrtc: WebrtcCtx,
     webcrypto: WasiWebcryptoCtx,
     websocket: WasiWebsocketCtx,
     table: ResourceTable,
@@ -61,9 +61,9 @@ impl WasiView for Ctx {
     }
 }
 
-impl WasiWebrtcView for Ctx {
-    fn webrtc(&mut self) -> WasiWebrtcCtxView<'_> {
-        WasiWebrtcCtxView {
+impl WebrtcView for Ctx {
+    fn webrtc(&mut self) -> WebrtcCtxView<'_> {
+        WebrtcCtxView {
             ctx: &mut self.webrtc,
             table: &mut self.table,
         }
@@ -93,7 +93,7 @@ fn manifest_path(rel: &str) -> String {
 }
 
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m4");
+    let dir = std::env::temp_dir().join("wosh-m4");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(
@@ -131,9 +131,9 @@ struct ProxyProc {
 }
 
 async fn start_proxy() -> Result<ProxyProc> {
-    let state = std::env::temp_dir().join(format!("experiment-mosh-m4-state-{}", std::process::id()));
+    let state = std::env::temp_dir().join(format!("wosh-m4-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state);
-    let bin = manifest_path("../../proxy/target/release/experiment-mosh-proxy");
+    let bin = manifest_path("../../proxy/target/release/wosh-proxy");
     let mut child = tokio::process::Command::new(&bin)
         .args([
             "--relay",
@@ -277,7 +277,7 @@ async fn run() -> Result<()> {
         &engine,
         Ctx {
             wasi: wasi.build(),
-            webrtc: WasiWebrtcCtx::new(),
+            webrtc: WebrtcCtx::new(),
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
             table: ResourceTable::new(),

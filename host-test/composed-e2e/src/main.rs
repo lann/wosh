@@ -28,7 +28,7 @@ use wasmtime::component::{Component, HasData, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{
-    self as webrtc_host, WasiWebrtcCtx, WasiWebrtcCtxView, WasiWebrtcView,
+    self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView,
 };
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 
@@ -45,13 +45,13 @@ mod bindings {
     });
 }
 
-const ALPN: &[u8] = b"experiment-mosh/0";
+const ALPN: &[u8] = b"wosh/0";
 const RELAY_PORT: u16 = 3345;
 const HARD_TIMEOUT: Duration = Duration::from_secs(90);
 
 struct Ctx {
     wasi: WasiCtx,
-    webrtc: WasiWebrtcCtx,
+    webrtc: WebrtcCtx,
     webcrypto: WasiWebcryptoCtx,
     websocket: WasiWebsocketCtx,
     table: ResourceTable,
@@ -70,9 +70,9 @@ impl WasiView for Ctx {
     }
 }
 
-impl WasiWebrtcView for Ctx {
-    fn webrtc(&mut self) -> WasiWebrtcCtxView<'_> {
-        WasiWebrtcCtxView {
+impl WebrtcView for Ctx {
+    fn webrtc(&mut self) -> WebrtcCtxView<'_> {
+        WebrtcCtxView {
             ctx: &mut self.webrtc,
             table: &mut self.table,
         }
@@ -147,7 +147,7 @@ impl Drop for MoshServer {
 /// iroh-relay --dev on a fixed local port (the polymorph endpoint's
 /// `bind` requires a home relay even for the UDP-direct path).
 async fn start_relay() -> Result<tokio::process::Child> {
-    let dir = std::env::temp_dir().join("experiment-mosh-m3");
+    let dir = std::env::temp_dir().join("wosh-m3");
     std::fs::create_dir_all(&dir)?;
     let cfg = dir.join("relay.toml");
     std::fs::write(
@@ -305,7 +305,7 @@ async fn run(component_path: &str) -> Result<()> {
         &engine,
         Ctx {
             wasi: wasi.build(),
-            webrtc: WasiWebrtcCtx::new(),
+            webrtc: WebrtcCtx::new(),
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
             table: ResourceTable::new(),

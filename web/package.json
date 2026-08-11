@@ -1,9 +1,9 @@
 {
-  "name": "experiment-mosh-web",
+  "name": "wosh-web",
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Browser client for experiment-mosh. M2: xterm.js + the jco-transpiled engine over a throwaway ws-datagram bridge (host-test/browser-smoke.mjs serves this page).",
+  "description": "Browser client for wosh: xterm.js in front of deltic-hosted components — the M2 dev-bridge mode (bare engine) and the real iroh mode (composed client). Bundle via `just web-bundle`; deploy tree via scripts/web-deploy-tree.sh.",
   "dependencies": {
     "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0"

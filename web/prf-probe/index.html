@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>experiment-mosh: PRF + JSPI capability probe</title>
+<title>wosh: PRF + JSPI capability probe</title>
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 1rem auto; padding: 0 1rem; }
   button { font-size: 1.1rem; padding: .6rem 1.2rem; margin: .3rem .3rem .3rem 0; }
@@ -14,7 +14,7 @@
 </style>
 
 <h1>PRF + JSPI probe</h1>
-<p>Decides experiment-mosh D4 (mosh-key-at-rest design). Run on each
+<p>Decides wosh D4 (mosh-key-at-rest design). Run on each
 target browser/authenticator combination — especially Firefox mobile
 Nightly (with its JSPI flag enabled) against the authenticator you would
 actually use. Requires https (or localhost).</p>
@@ -92,7 +92,7 @@ actually use. Requires https (or localhost).</p>
     try {
       const cred = await doCreate({
         publicKey: {
-          rp: { name: "experiment-mosh prf probe" },
+          rp: { name: "wosh prf probe" },
           user: { id: rand(16), name: "prf-probe", displayName: "prf-probe" },
           challenge: rand(32),
           pubKeyCredParams: [

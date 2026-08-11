@@ -1,22 +1,20 @@
 // Bootstrap panel (M5, workstream D): connection-string entry (URL
-// fragment or manual), explicit save offers, saved-proxy list, and the
-// client identity line. The terminal below stays on the M2 dev bridge
-// when one is present; the in-browser iroh leg is blocked upstream
-// (A3: polymorph-iroh#10 / lann/jco#11) and this panel says so rather
-// than faking it.
+// fragment or manual), explicit save offers, saved-proxy list, the
+// client identity line — and the connect action itself: parsed
+// connection strings carry a pairing token and connect directly; saved
+// proxies (tokens are deliberately not persisted) ask for a token at
+// connect time. The session runs in the terminal below (app.mjs
+// connectIroh: the composed client over real iroh, hosted by deltic).
 
 import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
 import * as store from "./storage.mjs";
 import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
 
-const A3_MESSAGE =
-  "in-browser iroh is pending upstream jco async-scheduler hardening " +
-  "(polymorph-iroh#10, lann/jco#11); native path: just m4";
-
-export async function initBoot(panel, storage = localStorage) {
+export async function initBoot(panel, storage = localStorage, { onConnect } = {}) {
   let state = store.load(storage);
   let pending = null; // parsed-but-unsaved proxy details
   let notice = "";
+  let connecting = false;
 
   const keyStore = await openKeyStore();
   let identity = null;
@@ -71,6 +69,34 @@ export async function initBoot(panel, storage = localStorage) {
     render();
   };
 
+  // Connect through app.mjs (iroh mode). One at a time; failures land
+  // in the notice line, user-legible.
+  const connect = async ({ relayUrl, endpointIdHex, token }) => {
+    if (connecting) return;
+    if (!token) {
+      notice = "pairing token required (tokens are not persisted — get one from the proxy)";
+      render();
+      return;
+    }
+    if (!onConnect) {
+      notice = "connect is not wired on this page";
+      render();
+      return;
+    }
+    connecting = true;
+    notice = `connecting to ${endpointIdHex.slice(0, 8)}…`;
+    render();
+    try {
+      await onConnect({ relayUrl, endpointIdHex, token });
+      notice = "";
+    } catch (e) {
+      notice = `connect failed: ${e.message ?? e}`;
+    } finally {
+      connecting = false;
+      render();
+    }
+  };
+
   const render = () => {
     panel.replaceChildren();
     const idLine = identityError
@@ -100,6 +126,12 @@ export async function initBoot(panel, storage = localStorage) {
           "div",
           { class: "boot-pending" },
           `proxy ${pending.endpointIdHex.slice(0, 16)}… via ${pending.relayUrl} — `,
+          el(
+            "button",
+            { id: "connect-pending-btn", onclick: () => connect(pending) },
+            "connect",
+          ),
+          " ",
           el("button", { id: "save-btn", onclick: saveOffer }, "save"),
           " ",
           el(
@@ -118,19 +150,28 @@ export async function initBoot(panel, storage = localStorage) {
 
     const list = el("div", { class: "boot-proxies" });
     for (const p of state.proxies) {
+      const tokenInput = el("input", {
+        class: "token-input",
+        placeholder: "pairing token",
+        size: "14",
+      });
       list.append(
         el(
           "div",
           { class: "boot-proxy", "data-id": p.endpointIdHex },
           `${p.name} (${p.endpointIdHex.slice(0, 8)}… via ${p.relayUrl}) `,
+          tokenInput,
+          " ",
           el(
             "button",
             {
               class: "connect-btn",
-              onclick: () => {
-                notice = A3_MESSAGE;
-                render();
-              },
+              onclick: () =>
+                connect({
+                  relayUrl: p.relayUrl,
+                  endpointIdHex: p.endpointIdHex,
+                  token: tokenInput.value.trim(),
+                }),
             },
             "connect",
           ),
@@ -155,7 +196,7 @@ export async function initBoot(panel, storage = localStorage) {
   };
 
   // A fragment in the page URL is a bootstrap request (QR scan or
-  // pasted link): parse it and offer the save.
+  // pasted link): parse it and offer connect/save.
   if (location.hash.length > 1) tryParse(location.hash);
   render();
 
@@ -174,6 +215,7 @@ export async function initBoot(panel, storage = localStorage) {
     identityError,
     tryParse,
     saveOffer,
+    connect,
     render,
   };
 }

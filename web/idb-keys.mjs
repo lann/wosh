@@ -10,7 +10,7 @@
 // Browser-only module (IndexedDB, crypto.subtle); exercised headless by
 // host-test/web-tests.mjs.
 
-const DB_NAME = "experiment-mosh-keys";
+const DB_NAME = "wosh-keys";
 const STORE = "keys";
 
 function request(req) {

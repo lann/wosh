@@ -3,7 +3,7 @@ name = "client-core"
 version = "0.0.1"
 edition = "2021"
 publish = false
-description = "experiment-mosh client-core glue: composes the sync mosh engine with the polymorph-iroh endpoint (D7/B2)"
+description = "wosh client-core glue: composes the sync mosh engine with the polymorph-iroh endpoint (D7/B2)"
 
 [workspace]
 
@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn"] }
 hex = "0.4"
-experiment-mosh-proto = { path = "../proto" }
+wosh-proto = { path = "../proto" }
 
 [profile.release]
 lto = true

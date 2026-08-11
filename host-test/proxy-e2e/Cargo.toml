@@ -3,7 +3,7 @@ name = "proxy-e2e"
 version = "0.0.1"
 edition = "2021"
 publish = false
-description = "M4 gate: composed client core -> experiment-mosh-proxy (proxy-core component) -> stock mosh-server, over real iroh with tunnel sub-framing"
+description = "M4 gate: composed client core -> wosh-proxy (proxy-core component) -> stock mosh-server, over real iroh with tunnel sub-framing"
 
 [workspace]
 

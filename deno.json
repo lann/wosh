@@ -1,0 +1,21 @@
+{
+  "//": [
+    "The Deno-lane + browser-bundle config for the deltic host layer (the jco replacement).",
+    "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; this file maps that specifier ONCE for the whole module graph, so `instanceof WitError` holds across every boundary.",
+    "PINS: deltic is a git reference at .deps/deltic and the polymorph modules resolve into the pinned .deps/polymorph-iroh nested checkouts — scripts/setup.sh owns both pins and builds deltic's translator shim (justfile `_translator` prints its path).",
+    "The npm mappings serve the webrtc module's bare specifiers on the Deno lane; in-browser it uses stock RTCPeerConnection (the web bundle marks them external)."
+  ],
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@deltic/runtime/embedder": "./.deps/deltic/runtime/src/embedder/mod.ts",
+    "@deltic/runtime/shim": "./.deps/deltic/runtime/src/shim/mod.ts",
+    "@deltic/wasi-shims": "./.deps/deltic/wasi-shims/src/mod.ts",
+    "@polymorph/webcrypto-deltic": "./.deps/polymorph-iroh/.deps/webcrypto/js/deltic/src/mod.ts",
+    "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
+    "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
+    "@polymorph/iroh-sockets-stubs": "./.deps/polymorph-iroh/host-deltic/src/sockets.ts",
+    "node-datachannel": "npm:node-datachannel@0.32.3",
+    "node-datachannel/polyfill": "npm:node-datachannel@0.32.3/polyfill",
+    "werift": "npm:werift@0.22.2"
+  }
+}

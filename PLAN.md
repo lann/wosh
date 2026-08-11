@@ -1,10 +1,19 @@
-# Plan: experiment-mosh
+# Plan: wosh
 
 The full working plan as settled by design discussion (2026-08-07).
 Durable companions: `README.md` (architecture summary, decision log,
 findings — the experiment record) and `TASK.md` (resumable session
 state). This file is the complete plan; update it when a decision or
 milestone changes shape, not for routine progress.
+
+> **2026-08-10 — deltic cutover.** The JS host moved from the pinned
+> lann/jco fork to [deltic](https://github.com/lann/deltic) (runtime
+> linking, Deno + browsers). Workstream A3 below — the standing
+> external blocker on every browser leg — is retired: its defect
+> family is structurally absent or fixed under deltic, and `just m5`
+> now gates the real in-browser session (README findings 24–25). A3's
+> text is kept as written for the record; browser-side M6/M7 E2Es are
+> ordinary wosh work now.
 
 ## Goal
 
@@ -107,7 +116,7 @@ the fallback stays permanently cheap.
 
 Control channel (D8, resolved 2026-08-08): the first client-opened bi
 stream per connection (one ALPN for the whole connection,
-`experiment-mosh/0` — a separate `ctl` ALPN was a conflation),
+`wosh/0` — a separate `ctl` ALPN was a conflation),
 length-prefixed versioned CBOR, implemented in the client-core glue
 and proxy-core against the shared `proto/` crate (ciborium both
 sides). Messages: hello (pairing token), TOFU state, session
@@ -293,9 +302,9 @@ ssh leg rides the composed client's A3 blockage.)*
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge (no iroh) | **DONE** — engine under jco in Chromium; prediction paints locally under latency (findings 12–13) |
 | M3 | B2 client-core glue against the merged upstream surface (A1/A2 landed upstream, finding 14); engine+glue+endpoint composed, native wasmtime leg green | **DONE** — finding 15; live datagram ceiling 1162 B; composed-async proven on wasmtime |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding incl. 1252 B sub-framing) + native E2E over iroh, driving the **wac-composed client core** under wasmtime | **DONE** — finding 16; wrong-token negative path; sub-framing measured live (6–7 oversized datagrams per bulk run) |
-| M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **unblocked parts DONE** (findings 17–19) — modules+panel gated, native netem matrix green to 10% loss; **composed-core-in-browser blocked on A3 + lann/jco#51**; two-component JS orchestration is the recorded fallback |
-| M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | **DONE** — findings 20–21; `just m6`; state-number adoption + resize dance (fork patches 3–4); no-prf ⇒ refuse persistence; browser ceremony E2E A3-blocked |
-| M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | **DONE** — findings 22–23; `just m7`; sync sans-I/O ssh engine (no patched Go, x/crypto unpatched); host-key gate verified externally (zero auth attempts on mismatch); browser ssh leg A3-blocked |
+| M5 | browser client proper (identity persistence, bootstrap flows); composed core in-browser; relay then WebRTC-direct E2E; netem measurements | **DONE** — findings 17–19 (modules+panel, netem to 10% loss) + 24–25 (deltic cutover: composed core in-browser live, `just m5`); WebRTC-upgrade leg = follow-up (glue never sets `webrtc`) |
+| M6 | passkeys: ceremonies, PRF wrap + escrow, gated reattach; decide no-prf sub-policy | **DONE** — findings 20–21; `just m6`; state-number adoption + resize dance (fork patches 3–4); no-prf ⇒ refuse persistence; browser ceremony E2E: unblocked follow-up |
+| M7 | inner ssh; proxy deprivileged; interim demoted to personal mode | **DONE** — findings 22–23; `just m7`; sync sans-I/O ssh engine (no patched Go, x/crypto unpatched); host-key gate verified externally (zero auth attempts on mismatch); in-page ssh leg: unblocked follow-up |
 
 Every milestone appends findings to README.md (findings-first culture);
 gates that stop the plan stop it into discussion, not silent fallback

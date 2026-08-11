@@ -1,4 +1,4 @@
-//! experiment-mosh proxy-core (M4/M6, workstream C).
+//! wosh proxy-core (M4/M6, workstream C).
 //!
 //! The proxy's brain as a component: accepts iroh connections through
 //! the polymorph-iroh endpoint (fused in by wac), authorizes peers via
@@ -31,7 +31,7 @@ use std::cell::Cell;
 use std::future::Future as _;
 use std::rc::Rc;
 
-use experiment_mosh_proto as proto;
+use wosh_proto as proto;
 
 use bindings::experiment::mosh_proxy::host::{self, CeremonyKind};
 use bindings::exports::experiment::mosh_proxy::proxy::{Guest, Started};
@@ -41,7 +41,7 @@ use bindings::polymorph::iroh::endpoint::{
 use bindings::polymorph::iroh::identity_generate::generate;
 
 /// v0 connection ALPN, shared with the client-core glue.
-const ALPN: &[u8] = b"experiment-mosh/0";
+const ALPN: &[u8] = b"wosh/0";
 
 fn err<E: std::fmt::Debug>(what: &str) -> impl FnOnce(E) -> String + '_ {
     move |e| format!("{what}: {e:?}")

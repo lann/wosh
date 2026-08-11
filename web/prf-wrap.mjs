@@ -33,7 +33,7 @@ const dec = new TextDecoder();
 
 /** Fixed PRF eval salt (v1). Per-credential PRFs need no per-escrow
  * randomness; keeping it in the blob lets a future v2 rotate it. */
-export const PRF_EVAL_SALT = enc.encode("experiment-mosh/prf-salt/v1");
+export const PRF_EVAL_SALT = enc.encode("wosh/prf-salt/v1");
 
 /** Sealed-floor jump applied on every re-seal (see header). */
 export const FLOOR_JUMP = 2 ** 32;
@@ -42,7 +42,7 @@ export const FLOOR_JUMP = 2 ** 32;
  * (matches the native harness SEQ_MARGIN). */
 export const SEQ_MARGIN = 10_000;
 
-const HKDF_INFO = enc.encode("experiment-mosh/escrow-wrap/v1");
+const HKDF_INFO = enc.encode("wosh/escrow-wrap/v1");
 
 export function b64u(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes)))

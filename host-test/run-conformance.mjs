@@ -1,21 +1,29 @@
-// M1 conformance harness: drives the jco-transpiled engine component
-// against a real mosh server over loopback UDP, from node.
+// M1 conformance harness: drives the engine component (runtime-linked by
+// deltic) against a real mosh server over loopback UDP, on Deno.
 //
-//   node run-conformance.mjs --server c    # stock C mosh-server (the gate)
-//   node run-conformance.mjs --server go   # mosh-go's native server
+//   deno run -A run-conformance.mjs --server c    # stock C mosh-server (the gate)
+//   deno run -A run-conformance.mjs --server go   # mosh-go's native server
+//
+// (DELTIC_TRANSLATOR must point at the pinned translator shim; the
+// `just m1` recipes fetch it and set the env.)
 //
 // The engine is sans-I/O: this driver owns the UDP socket and the 8 ms
-// tick, exactly the contract the browser client will implement. Asserts
-// keystroke echo end-to-end (command output round-trip), resize
+// tick, exactly the contract the browser client implements. Every export
+// is Promise-shaped under deltic, so the pump is one async loop — feed
+// inbound datagrams, tick, drain — preserving call order by construction.
+// Asserts keystroke echo end-to-end (command output round-trip), resize
 // propagation (stty size), transport stats sanity, and the outbound
 // datagram size bound (≤ 1162 B, the iroh application ceiling).
 
 import dgram from "node:dgram";
+import process from "node:process";
 import { parseArgs } from "node:util";
 
 import { startServer } from "./mosh-servers.mjs";
+import { deadline, describeError, newEngineInstance, ENGINE_INTERFACE } from "./deltic-host.ts";
 
 const { values: opts } = parseArgs({
+  args: process.argv.slice(2),
   options: {
     server: { type: "string", default: "c" },
     cols: { type: "string", default: "80" },
@@ -45,43 +53,66 @@ const hardTimer = setTimeout(() => {
   process.exit(2);
 }, HARD_TIMEOUT_MS);
 
-const { engine } = await import("./generated/mosh-engine.js");
-log(engine.version());
+const inst = await newEngineInstance("../engine-go/main.wasm", {
+  label: "conformance-engine",
+});
+const engine = inst.exports[ENGINE_INTERFACE];
+log(await engine.version());
 
 const server = await startServer(opts.server);
 log(`server (${opts.server}) on 127.0.0.1:${server.port}`);
 
 const cols = Number(opts.cols);
 const rows = Number(opts.rows);
-const sess = engine.Session.connect(server.key, cols, rows);
+const sess = await deadline(
+  // initial-seq: none — a fresh session starts at 0 (finding 13/20
+  // reattach flows pass a floor; conformance never reattaches).
+  engine.Session.connect(server.key, cols, rows, undefined),
+  10_000,
+  "session connect",
+);
 
 const sock = dgram.createSocket("udp4");
-sock.on("message", (msg) => {
-  sess.handleDatagram(new Uint8Array(msg));
-});
-
-let sentSizes = [];
+let inbound = [];
 let recvMax = 0;
 sock.on("message", (msg) => {
+  inbound.push(new Uint8Array(msg));
   if (msg.length > recvMax) recvMax = msg.length;
 });
 
+let sentSizes = [];
 let visible = ""; // cumulative stripped output
 const decoder = new TextDecoder();
-const pump = setInterval(() => {
-  for (const d of sess.tick()) {
-    sentSizes.push(d.length);
-    sock.send(d, server.port, "127.0.0.1");
+
+// The pump: one async loop so handle-datagram/tick/drain-output never
+// overlap (deltic admits export calls in order, but explicit is better).
+let pumping = true;
+let pumpFailure = null;
+const pump = (async () => {
+  try {
+    while (pumping) {
+      const batch = inbound;
+      inbound = [];
+      for (const d of batch) await sess.handleDatagram(d);
+      for (const d of await sess.tick()) {
+        sentSizes.push(d.length);
+        sock.send(d, server.port, "127.0.0.1");
+      }
+      const out = await sess.drainOutput();
+      if (out.length) visible += stripAnsi(decoder.decode(out));
+      await new Promise((r) => setTimeout(r, 8));
+    }
+  } catch (e) {
+    pumpFailure = e;
   }
-  const out = sess.drainOutput();
-  if (out.length) visible += stripAnsi(decoder.decode(out));
-}, 8);
+})();
 
 const feed = (s) => sess.feedKeys(new TextEncoder().encode(s));
 const waitFor = async (re, label, timeoutMs = 12_000) => {
-  const deadline = Date.now() + timeoutMs;
+  const deadlineAt = Date.now() + timeoutMs;
   while (!re.test(visible)) {
-    if (Date.now() > deadline)
+    if (pumpFailure) throw pumpFailure;
+    if (Date.now() > deadlineAt)
       fail(`timeout waiting for ${label} (${re})\n--- visible tail ---\n${visible.slice(-500)}`);
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -96,13 +127,13 @@ try {
   // Phase 1: keystroke echo — command output round-trip. The typed
   // line never contains the contiguous marker, so a match proves the
   // server executed what we typed and the diff pipeline rendered it.
-  feed("echo m0sh_$(printf conf)_ok\r");
+  await feed("echo m0sh_$(printf conf)_ok\r");
   await waitFor(/m0sh_conf_ok/, "echo marker");
   log("echo round-trip OK");
 
   // Phase 2: resize propagates to the server-side pty.
-  sess.resize(100, 30);
-  feed("stty size\r");
+  await sess.resize(100, 30);
+  await feed("stty size\r");
   await waitFor(/30 100/, "stty size after resize");
   log("resize OK");
 
@@ -121,12 +152,13 @@ try {
       Math.floor(Math.random() * 62),
     ),
   ).join("");
-  feed(`echo ${blob}\r`);
+  await feed(`echo ${blob}\r`);
   {
     const tail = blob.slice(-60);
-    const deadline = Date.now() + 15_000;
+    const deadlineAt = Date.now() + 15_000;
     while (!visible.replace(/\s+/g, "").includes(tail)) {
-      if (Date.now() > deadline)
+      if (pumpFailure) throw pumpFailure;
+      if (Date.now() > deadlineAt)
         fail(`timeout waiting for paste blob tail\n--- visible tail ---\n${visible.slice(-300)}`);
       await new Promise((r) => setTimeout(r, 25));
     }
@@ -139,12 +171,12 @@ try {
   // skipped by mosh. (Leg-b note: mosh-go's server has been seen
   // dropping a leading digit mid-scroll — '99' for '299' — so only
   // the last row is asserted; the C leg is the fidelity gate.)
-  feed("seq 1 300\r");
+  await feed("seq 1 300\r");
   await waitFor(/\b300\b/, "seq output");
   log("server bulk OK");
 
   // Phase 5: transport stats sanity.
-  const st = sess.stats();
+  const st = await sess.stats();
   log(
     `stats: sent=${st.sentNum} acked=${st.ackedNum} recv=${st.recvNum} ` +
       `rto=${st.rtoMs}ms lastRecvAge=${st.lastRecvAgeMs}ms ` +
@@ -166,14 +198,15 @@ try {
 } catch (e) {
   failed = e;
 } finally {
-  clearInterval(pump);
+  pumping = false;
+  await pump.catch(() => {});
   sock.close();
   server.stop();
   clearTimeout(hardTimer);
 }
 
 if (failed) {
-  console.error(`FAIL (${opts.server} leg):`, failed.message);
+  console.error(`FAIL (${opts.server} leg):`, describeError(failed));
   process.exit(1);
 }
 console.log(`conformance (${opts.server} leg): OK`);
