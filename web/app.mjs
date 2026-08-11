@@ -195,7 +195,7 @@ try {
     });
   } catch {
     window.__mosh.noBridge = true;
-    status("no dev bridge — idle; connect to a proxy from the panel above");
+    status("no dev bridge — idle; connect to a proxy from the panel below");
   }
 
   if (hello) await runBridgeSession(ws, hello);
