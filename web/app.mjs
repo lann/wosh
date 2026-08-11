@@ -65,11 +65,23 @@ term.onResize(({ cols, rows }) => overlay.showOverlay(`${cols}×${rows}`, 500));
 let sessionActive = false;
 
 // --- shared plumbing ---------------------------------------------------------
-// rAF-coalesced terminal writes; the pump is the only drainer.
+// rAF-coalesced terminal writes; the pump is the only drainer. The
+// bytes are STATEFUL diffs (the engine assumes everything it emitted
+// reached the screen model), so the queue is flushed, never shed
+// (issue #12): rAF starves in background tabs while the pump keeps
+// draining on throttled timers, so a timer fallback bounds the queue,
+// and hiding the tab flushes synchronously.
 let chunks = [];
 let rafId = null;
-const flush = () => {
+let flushTimer = null;
+const paintStats = { peak: 0, flushes: 0, timerFlushes: 0 }; // test/measure hook
+const flush = (viaTimer = false) => {
+  if (rafId !== null) cancelAnimationFrame(rafId);
+  if (flushTimer !== null) clearTimeout(flushTimer);
   rafId = null;
+  flushTimer = null;
+  paintStats.flushes++;
+  if (viaTimer) paintStats.timerFlushes++;
   const batch = chunks;
   chunks = [];
   for (const c of batch) term.write(c);
@@ -77,8 +89,15 @@ const flush = () => {
 const paint = (out) => {
   if (!out.length) return;
   chunks.push(out);
-  if (rafId === null) rafId = requestAnimationFrame(flush);
+  if (chunks.length > paintStats.peak) paintStats.peak = chunks.length;
+  if (rafId === null) {
+    rafId = requestAnimationFrame(() => flush());
+    flushTimer = setTimeout(() => flush(true), 250);
+  }
 };
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && chunks.length) flush(true);
+});
 
 // A sleep the input path can cut short (prediction paints same-frame).
 let wake = null;
@@ -119,6 +138,7 @@ const installHooks = (mode, session, extra = {}) => {
       return n;
     },
     resize: (cols, rows) => term.resize(cols, rows),
+    paintStats: () => ({ ...paintStats }),
     ...extra,
   };
 };
@@ -129,28 +149,85 @@ const installHooks = (mode, session, extra = {}) => {
 
 let currentSession = null;
 
+// --- session end + reconnect (issue #12) --------------------------------------
+// Transport death was indistinguishable from a programming error: every
+// pump exception funneled to fatal() and the only recovery was a manual
+// reload + re-pair. Now a LIVE session's errors end the session into a
+// reconnectable state instead; fatal() stays for setup and engine-level
+// failures. The reconnect handler is registered by the page glue
+// (boot.reconnect — in-memory connstring/token retry, preferring the
+// assertion-gated reattach); the one-shot key/tap that triggers it is a
+// user gesture, which doubles as the WebAuthn user activation reattach
+// needs — auto-reconnect is impossible by design for persistent
+// sessions, so the gesture IS the mechanism, not a compromise.
+let reconnector = null;
+export function setReconnectHandler(fn) {
+  reconnector = fn;
+}
+
+const sessionEnded = (session, msg) => {
+  if (currentSession !== session || !sessionActive) return; // superseded/duplicate
+  sessionActive = false;
+  currentSession = null;
+  window.__mosh.sessionEnded = String(msg); // test hook
+  status(`disconnected — ${msg}`);
+  if (!reconnector) {
+    overlay.showOverlay("session ended — connect from the panel");
+    return;
+  }
+  overlay.showOverlay("disconnected — tap or key to reconnect");
+  const el = term.element;
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true;
+    keyHook.dispose();
+    el.removeEventListener("pointerdown", go);
+    overlay.hide();
+    Promise.resolve(reconnector()).catch(() => {}); // boot renders its own notice
+  };
+  const keyHook = term.onData(go);
+  el.addEventListener("pointerdown", go, { once: true });
+};
+
+// Input wiring for the live session. Sessions are sequential per tab
+// (connect → disconnect → reattach …), so the previous session's
+// handlers are disposed instead of stacking up and feeding a dead
+// session object; the guard covers the gap where a handler is
+// registered but the session it closed over was superseded.
+let wired = null;
+const wireInput = (session, fail) => {
+  wired?.data.dispose();
+  wired?.resize.dispose();
+  wired = {
+    data: term.onData((s) => {
+      if (currentSession !== session || window.__mosh.failure) return;
+      session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, fail);
+    }),
+    resize: term.onResize(({ cols, rows }) => {
+      if (currentSession !== session) return;
+      session.resize(cols, rows).catch(fail);
+    }),
+  };
+};
+
 // Terminal + pump wiring shared by connect and reattach: the session is
 // live; make the page drive it.
 async function wireSession(session, { relayUrl, endpointIdHex }) {
   sessionActive = true;
   currentSession = session;
 
-  term.onData((s) => {
-    if (window.__mosh.failure) return;
-    session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, (e) => fatal(e.message ?? e));
-  });
-  term.onResize(({ cols, rows }) => {
-    session.resize(cols, rows).catch((e) => fatal(e.message ?? e));
-  });
+  wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
   (async () => {
     try {
       for (;;) {
+        if (currentSession !== session) return; // superseded — stop draining
         paint(await session.drainOutput());
         await tickSleep(8);
       }
     } catch (e) {
-      fatal(`session pump: ${e.message ?? e}`);
+      sessionEnded(session, `session pump: ${e.message ?? e}`);
     }
   })();
 
@@ -303,25 +380,60 @@ export async function reattachIroh({ relayUrl, endpointIdHex, token, sessionId }
 // the page's: an https page may not open ws://, and the constructor
 // throws synchronously if asked — the wss attempt instead fails through
 // the normal no-bridge path.)
+
+// Dial the bridge; resolves { ws, hello } or rejects (no bridge).
+const bridgeDial = () =>
+  new Promise((resolve, reject) => {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${scheme}//${location.host}/ws${location.search}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") resolve({ ws, hello: JSON.parse(ev.data) });
+    };
+    ws.onerror = () => reject(new Error("websocket failed"));
+    ws.onclose = () => reject(new Error("websocket closed before hello"));
+  });
+
+// A dropped bridge auto-redials with backoff (issue #12): each redial
+// is a NEW mosh-server and a fresh shell — that's bridge-mode
+// semantics (dev only), not session resumption; term.reset() makes the
+// break visible instead of interleaving two servers' screens. Gives up
+// (or stands down) if another session takes the terminal meanwhile.
+async function bridgeRedial() {
+  for (const delay of [1000, 2000, 4000, 8000, 8000]) {
+    overlay.showOverlay("reconnecting…");
+    status("reconnecting to dev bridge…");
+    await new Promise((r) => setTimeout(r, delay));
+    if (sessionActive) return; // an iroh session took over — stand down
+    let conn;
+    try {
+      conn = await bridgeDial();
+    } catch {
+      continue; // bridge still down — next attempt
+    }
+    if (sessionActive) {
+      conn.ws.close();
+      return;
+    }
+    term.reset();
+    overlay.showOverlay("reconnected", 600);
+    await runBridgeSession(conn.ws, conn.hello); // engine errors propagate — not a dial retry
+    return;
+  }
+  status("disconnected");
+  overlay.showOverlay("disconnected");
+}
+
 try {
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${scheme}//${location.host}/ws${location.search}`);
-  ws.binaryType = "arraybuffer";
-  let hello = null;
+  let conn = null;
   try {
-    hello = await new Promise((resolve, reject) => {
-      ws.onmessage = (ev) => {
-        if (typeof ev.data === "string") resolve(JSON.parse(ev.data));
-      };
-      ws.onerror = () => reject(new Error("websocket failed"));
-      ws.onclose = () => reject(new Error("websocket closed before hello"));
-    });
+    conn = await bridgeDial();
   } catch {
     window.__mosh.noBridge = true;
     status("no dev bridge — idle; connect to a proxy from the panel below");
   }
 
-  if (hello) await runBridgeSession(ws, hello);
+  if (conn) await runBridgeSession(conn.ws, conn.hello);
 } catch (e) {
   fatal(e.message ?? e);
 }
@@ -331,6 +443,7 @@ async function runBridgeSession(ws, hello) {
   const engine = await loadEngine(DIST.engine, DIST.translator);
   const session = await engine.Session.connect(hello.key, term.cols, term.rows, undefined);
   sessionActive = true;
+  currentSession = session;
 
   // --- datagram path ---------------------------------------------------------
   let inbound = [];
@@ -342,18 +455,17 @@ async function runBridgeSession(ws, hello) {
   let closed = false;
   ws.onclose = () => {
     closed = true;
-    status("disconnected");
-    overlay.showOverlay("disconnected");
+    if (currentSession === session) {
+      sessionActive = false;
+      currentSession = null;
+      status("disconnected");
+      bridgeRedial().catch((e) => fatal(e.message ?? e));
+    }
   };
 
   // --- input path --------------------------------------------------------------
-  term.onData((s) => {
-    // feed-keys then an immediate pump round: predictions paint same-frame.
-    session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, (e) => fatal(e.message ?? e));
-  });
-  term.onResize(({ cols, rows }) => {
-    session.resize(cols, rows).catch((e) => fatal(e.message ?? e));
-  });
+  // feed-keys then an immediate pump round: predictions paint same-frame.
+  wireInput(session, (e) => fatal(e.message ?? e));
 
   // --- the pump: feed inbound, tick, drain — one writer, in order -------------
   (async () => {
@@ -373,8 +485,10 @@ async function runBridgeSession(ws, hello) {
     }
   })();
 
+  const version = await engine.version();
+  if (currentSession !== session) return; // superseded during the awaits above
   status(
-    `${await engine.version()} · ${hello.delayMs ? `bridge delay ${hello.delayMs}ms/way · ` : ""}` +
+    `${version} · ${hello.delayMs ? `bridge delay ${hello.delayMs}ms/way · ` : ""}` +
       `${term.cols}×${term.rows}`,
   );
   overlay.showOverlay("connected", 600);
