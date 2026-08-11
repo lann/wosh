@@ -7,6 +7,14 @@ of each session.
 
 ## Status: DELTIC CUTOVER COMPLETE — browser leg live (2026-08-10)
 
+2026-08-11 addendum: the client now deploys to GitHub Pages on every
+main merge (`.github/workflows/pages.yml`; repo went public), `just
+proxy-personal` runs the proxy against n0's public relays with QR/RP
+defaults pointing at the Pages client, and the **WebRTC upgrade leg
+landed** (finding 27): both sides enable the wire, the glue offers the
+upgrade hint, `client-session.path` observes it, and m5-browser-e2e
+hard-asserts the relay→webrtc move (Deno lane logs it, ~0.8 s).
+
 Post-cutover pin bump (same day, finding 26): deltic @ a18be734
 (includes the hop-atomicity fix lann/deltic#82 our M2 gate found, the
 timer re-arm #78, smoke-c0 path fix #79), polymorph-iroh @ d8fdd039
@@ -54,11 +62,6 @@ wholesale and shipped the previously A3-blocked browser leg:
 
 ## Pending / open (carried)
 
-- **WebRTC upgrade leg**: the glue never sets
-  `endpoint-options.webrtc`, so browser sessions are relay-only.
-  Enable on both sides (client glue + proxy-core bind options, addrs
-  hint) and assert `connection.path` moves, per polymorph-iroh's
-  host-deltic exam scenario 3.
 - **M6 browser ceremony E2E + M7 in-page ssh leg**: unblocked, pure
   wosh work now. The M6 one wants webauthn ceremony wiring from the
   page (CDP virtual authenticator precedent in web-tests phase 3);

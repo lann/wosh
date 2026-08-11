@@ -11,10 +11,12 @@
 //    and says so.
 //
 //  - iroh mode (M5): the composed client core (engine + glue +
-//    endpoint) speaking mosh SSP to a proxy over real iroh — relay
-//    wire, WebRTC upgrade when it lands. The glue owns the pumps and
-//    the tick; the page only feeds keys, drains output, and resizes.
-//    Reached from the bootstrap panel (boot.mjs) via connectIroh().
+//    endpoint) speaking mosh SSP to a proxy over real iroh — dialed on
+//    the relay wire, upgraded to a WebRTC data channel in the
+//    background (the status line's `path` reports the move). The glue
+//    owns the pumps and the tick; the page only feeds keys, drains
+//    output, and resizes. Reached from the bootstrap panel (boot.mjs)
+//    via connectIroh().
 //
 // Every component export is Promise-shaped under deltic, so both modes
 // run one async pump loop with a single writer draining output (two
@@ -160,13 +162,35 @@ export async function connectIroh({ relayUrl, endpointIdHex, token }) {
   })();
 
   const dgramMax = await session.maxDatagramSize();
-  status(
-    `iroh session · proxy ${endpointIdHex.slice(0, 8)}… · relay ${relayUrl} · ` +
-      `dgram ≤${dgramMax ?? "?"}B · ${term.cols}×${term.rows}`,
-  );
+  let path = await session.path();
+  const renderStatus = () =>
+    status(
+      `iroh session · proxy ${endpointIdHex.slice(0, 8)}… · relay ${relayUrl} · ` +
+        `path ${path} · dgram ≤${dgramMax ?? "?"}B · ${term.cols}×${term.rows}`,
+    );
+  renderStatus();
+  // Path watcher (plain sleep — tickSleep's wake slot belongs to the
+  // drain pump): the WebRTC upgrade runs in the background and `path`
+  // is not latched (it can move to the channel and fall back), so
+  // poll and re-render on change.
+  (async () => {
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const p = await session.path();
+        if (p !== path) {
+          path = p;
+          renderStatus();
+        }
+      }
+    } catch {
+      /* session gone (detach/teardown) — stop watching */
+    }
+  })();
   installHooks("iroh", session, {
     detach: () => session.detach(),
     sessionId: () => session.sessionId(),
+    path: () => session.path(),
   });
   return session;
 }

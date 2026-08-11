@@ -270,6 +270,29 @@ try {
   log(`stats: sent=${st.sent} acked=${st.acked} recv=${st.recv}`);
   if (Number(st.acked) < 1) throw new Error("server never acked");
 
+  // Phase 3b: the WebRTC upgrade. The connection was relay-dialed; with
+  // the wire enabled on both sides the packets move to the data channel
+  // in the background. `path` is not latched, so poll for the move —
+  // and echo again afterwards: the session must survive the migration.
+  {
+    const t0 = Date.now();
+    let path = null;
+    while (Date.now() - t0 < 30_000) {
+      path = await page.evaluate(() => window.__mosh.path());
+      if (path === "webrtc") break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (path !== "webrtc") {
+      throw new Error(`connection.path stayed "${path}" (no WebRTC upgrade within 30 s)`);
+    }
+    log(`path upgraded to webrtc in ${Date.now() - t0} ms`);
+
+    await page.keyboard.type("echo p0st_$(printf upgrade)_ok", { delay: 5 });
+    await page.keyboard.press("Enter");
+    await waitText(page, /p0st_upgrade_ok/, "echo after webrtc upgrade");
+    log("echo over the data channel OK");
+  }
+
   await page.screenshot({ path: "/tmp/opencode/m5-browser-e2e.png" });
   log("screenshot: /tmp/opencode/m5-browser-e2e.png");
 

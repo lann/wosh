@@ -51,6 +51,12 @@ interface client {
     /// is 1138 B; the embedder may assert headroom).
     max-datagram-size: async func() -> option<u32>;
 
+    /// The transport currently carrying the connection: "relay",
+    /// "ip", or "webrtc". Not latched: a relay-dialed connection
+    /// upgrades to the data channel in the background once it opens
+    /// (and falls back if it dies) — poll to observe the move.
+    path: async func() -> string;
+
     /// The proxy-assigned session id (none on the `dial` path).
     session-id: async func() -> option<u64>;
 

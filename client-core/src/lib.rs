@@ -41,7 +41,7 @@ use bindings::polymorph::iroh::endpoint::{
     Connection, Endpoint, EndpointOptions, RecvStream, SendStream,
 };
 use bindings::polymorph::iroh::identity_generate::generate;
-use bindings::polymorph::iroh::types::{EndpointAddr, TransportAddr};
+use bindings::polymorph::iroh::types::{EndpointAddr, PathKind, TransportAddr};
 use bindings::wasi::clocks::monotonic_clock::wait_for;
 
 /// v0 connection ALPN: control stream + datagram tunnel share it.
@@ -139,6 +139,12 @@ async fn dial_connection(
     let options = EndpointOptions::new(&identity);
     options.add_alpn(ALPN);
     options.relay_url(relay_url);
+    // The WebRTC wire (M5 follow-up): browsers have no UDP, so the
+    // data channel is their only off-relay path. Enabling it is safe
+    // everywhere — upgrade attempts only run on relay-dialed
+    // connections, and a failed upgrade leaves the connection on the
+    // relay (wit/iroh.wit transport-addr docs).
+    options.webrtc(true);
     // Embedder path policy (guest env, no WIT surface): WOSH_UDP=off
     // skips the UDP direct path — the browser profile, where the
     // `wasi:sockets` providers are honest fail-on-call stubs and a
@@ -154,6 +160,9 @@ async fn dial_connection(
         addrs.push(TransportAddr::Ip(hint));
     }
     addrs.push(TransportAddr::Relay(relay_url.to_string()));
+    // Upgrade hint, not a dial target: the handshake runs on the relay
+    // and the packets move to the data channel once it opens.
+    addrs.push(TransportAddr::Webrtc(relay_url.to_string()));
 
     let conn = endpoint
         .connect(
@@ -554,6 +563,15 @@ impl GuestClientSession for ClientSessionRes {
 
     async fn max_datagram_size(&self) -> Option<u32> {
         self.inner.conn.max_datagram_size()
+    }
+
+    async fn path(&self) -> String {
+        match self.inner.conn.path() {
+            PathKind::Relay => "relay",
+            PathKind::Ip => "ip",
+            PathKind::Webrtc => "webrtc",
+        }
+        .to_string()
     }
 
     async fn session_id(&self) -> Option<u64> {

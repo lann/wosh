@@ -62,6 +62,10 @@ impl Guest for Component {
         options.add_alpn(ALPN);
         options.relay_url(&relay_url);
         options.udp_bind_addr("0.0.0.0:0");
+        // Answer WebRTC signaling from browser clients (their only
+        // off-relay path). Acceptor side: no addr hints to offer —
+        // clients relay-dial and carry the upgrade hint.
+        options.webrtc(true);
 
         let endpoint = Endpoint::bind(options).await.map_err(err("bind"))?;
         let endpoint = Rc::new(endpoint);

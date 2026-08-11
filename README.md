@@ -833,3 +833,27 @@ below reference it as the "jco era").
     add-a-prefix-per-pin-bump rule. Upstream convergence note filed in
     TASK.md — the consumers doc should bless this pattern or the
     sibling modules should drop standalone pins.
+
+27. **WebRTC upgrade leg LIVE (the M5 carried item): browser sessions
+    leave the relay.** One dial site serves every lane, so the enable
+    is a line per side: the glue's `dial_connection` sets
+    `endpoint-options.webrtc` and offers a `webrtc(relay-url)` addr
+    entry (an upgrade hint, not a dial target — the handshake runs on
+    the relay and the packets move to the data channel once it opens,
+    per the endpoint WIT), and proxy-core sets `webrtc` at bind to
+    answer signaling. Upgrade attempts run only on relay-dialed
+    connections, so the native ip-dialed gates never attempt one
+    (m3/m4/m6/m7 swept green). Observation surface:
+    `client-session.path` (additive WIT: "relay" | "ip" | "webrtc";
+    not latched — upgrade and fallback both move it), shown live in
+    the page status line and as the `__mosh.path()` hook.
+    m5-browser-e2e now hard-asserts the upgrade (30 s bound; in
+    practice already upgraded by the time the M1-trio phases finish)
+    and echoes again post-migration — Chromium's RTCPeerConnection
+    interops with the proxy's webrtc-rs shim on loopback; the Deno
+    lane polls bounded and logs where the wire ended up (observed
+    upgraded in ~0.8 s; node-datachannel ↔ webrtc-rs). The per-path
+    datagram-ceiling question stays the recorded upstream courtesy
+    (TASK.md); the tunnel's sub-framing already tolerates a
+    post-upgrade ceiling shrink. Sweep: m2, m3, m4, m5×3, m6, m7
+    green (m1/spikes untouched — engine unchanged).

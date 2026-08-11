@@ -200,6 +200,20 @@ try {
   const dgramMax = await session.maxDatagramSize();
   log(`max-datagram-size: ${dgramMax}B`);
 
+  // Path report, observational on this lane (the browser E2E is the
+  // upgrade gate): node-datachannel answers webrtc-rs on loopback.
+  // Bounded poll — the upgrade runs in the background and may lose the
+  // race to a short-lived session; where the wire ends up is the log.
+  {
+    const t0 = Date.now();
+    let path = await session.path();
+    while (path !== "webrtc" && Date.now() - t0 < 10_000) {
+      await new Promise((r) => setTimeout(r, 250));
+      path = await session.path();
+    }
+    log(`path: ${path}${path === "webrtc" ? ` (upgraded, ${Date.now() - t0} ms)` : " (no upgrade within 10 s)"}`);
+  }
+
   pumping = false;
   await pump;
   await deadline(session.detach(), 15_000, "detach");
