@@ -30,6 +30,8 @@
       font: 12px monospace; padding: 2px 4px;
     }
     #panel .boot-notice { color: #d90; margin-top: 4px; }
+    #panel .ssh-confirm { color: #d90; margin-top: 4px; }
+    #panel .ssh-confirm code { color: #fd5; }
     #panel .boot-proxy, #panel .boot-pending, #panel .boot-entry, #panel .boot-session { margin-top: 4px; }
     #term { flex: 1; min-height: 0; padding: 2px; }
     /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
@@ -68,11 +70,12 @@
     <div id="keys"></div>
   </div>
   <script type="module">
-    import { connectIroh, connectSshIroh, persistCurrent, reattachIroh, setReconnectHandler } from "./app.mjs";
+    import { connectIroh, connectSshIroh, beginSshIroh, persistCurrent, reattachIroh, setReconnectHandler } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
     window.__moshBoot = await initBoot(document.getElementById("panel"), localStorage, {
       onConnect: connectIroh,
       onConnectSsh: connectSshIroh,
+      onBeginSsh: beginSshIroh,
       onPersist: persistCurrent,
       onReattach: reattachIroh,
     });

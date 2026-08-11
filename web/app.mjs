@@ -309,9 +309,10 @@ export async function connectIroh({ relayUrl, endpointIdHex, token }) {
 // authenticate end-to-end over ssh through the forwarded stream, boot a
 // mosh-server via ssh exec, and run mosh over the datagram tunnel. The
 // proxy never sees the mosh key. Host-key policy is the embedder's
-// (boot.mjs pins TOFU-style through storage): `expectedHostKey` some ⇒
-// mismatch fails BEFORE the password is sent; undefined ⇒ first
-// contact, read `hostKey` back and pin it.
+// (boot.mjs pins through storage): `expectedHostKey` some ⇒ mismatch
+// fails BEFORE the password is sent. First contact (no pin) does NOT
+// belong here — boot.mjs routes it through beginSshIroh so the user
+// confirms the fingerprint before any credentials move.
 export async function connectSshIroh({
   relayUrl,
   endpointIdHex,
@@ -347,6 +348,58 @@ export async function connectSshIroh({
   }
   await wireSession(session, { relayUrl, endpointIdHex });
   return { hostKey: await session.sshHostKey() };
+}
+
+// First-contact inner ssh (issue #7): begin dials and runs kex, then
+// PARKS at the host-key gate — the composed client holds no password
+// yet, so it cannot leave before the user rules on the fingerprint
+// (the user NAME rides begin, but is only sent in auth requests,
+// strictly after the gate). Returns { hostKey, confirm, decline }:
+// the panel shows hostKey, then either confirm({ password, command })
+// → live session (pin on success), or decline() → teardown with zero
+// auth attempts.
+export async function beginSshIroh({ relayUrl, endpointIdHex, token, user }) {
+  if (sessionActive) throw new Error("a session is already running in this tab");
+  status(`ssh-connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
+  const { loadClient, WitError } = await import(DIST.bundle);
+  const client = await loadClient(DIST.client, DIST.translator);
+  const witMsg = (e) => (e instanceof WitError ? String(e.payload) : (e.message ?? String(e)));
+
+  let flow;
+  try {
+    flow = await client.SshFlow.begin(relayUrl, endpointIdHex, undefined, token, user);
+  } catch (e) {
+    const msg = witMsg(e);
+    status(`connect failed: ${msg}`);
+    throw new Error(msg);
+  }
+  const hostKey = await flow.hostKey();
+  status(`first contact: ssh host key ${hostKey} — confirm to authenticate`);
+  return {
+    hostKey,
+    confirm: async ({ password, command }) => {
+      // Re-check: another session may have gone live while the
+      // prompt sat open (the park window is user-paced).
+      if (sessionActive) throw new Error("a session is already running in this tab");
+      let session;
+      try {
+        session = await flow.authenticate(password, command ?? undefined, term.cols, term.rows);
+      } catch (e) {
+        const msg = witMsg(e);
+        status(`connect failed: ${msg}`);
+        throw new Error(msg);
+      }
+      await wireSession(session, { relayUrl, endpointIdHex });
+      return { hostKey };
+    },
+    decline: async () => {
+      try {
+        await flow.decline();
+      } finally {
+        status("ssh first contact declined — no credentials were sent");
+      }
+    },
+  };
 }
 
 // --- passkey persistence (M6 browser leg) -------------------------------------

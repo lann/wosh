@@ -32,8 +32,9 @@ interface client {
     /// and start the engine. The proxy never sees the key (D2 end
     /// state). Host-key policy: `expected-host-key` some(fp) must
     /// match the server's base64 SHA-256 or the flow fails before
-    /// authentication; none accepts and reports (TOFU first contact —
-    /// read ssh-host-key and pin it).
+    /// authentication; none accepts and reports (harness/tooling
+    /// path — interactive embedders route first contact through
+    /// ssh-flow so the user confirms the fingerprint first).
     connect-ssh: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, pairing-token: string, user: string, password: string, expected-host-key: option<string>, mosh-command: option<string>, cols: u16, rows: u16) -> result<client-session, string>;
 
     /// Queue keystrokes (prediction overlay surfaces via drain-output).
@@ -109,6 +110,38 @@ interface client {
 
     /// `initial-seq` must be strictly above the escrowed floor.
     attach: async func(key: string, initial-seq: u64, cols: u16, rows: u16) -> result<client-session, string>;
+  }
+
+  /// First-contact inner ssh, two-phase (issue #7): the fingerprint is
+  /// confirmed BEFORE the password exists engine-side. `begin` runs
+  /// kex and PARKS at the host-key gate; the embedder shows
+  /// `host-key` to the user; `authenticate` grants the password and
+  /// resumes (it cannot leave earlier — the engine holds none until
+  /// then); `decline` tears down, zero auth attempts made. The user
+  /// name rides `begin` (x/crypto snapshots its config pre-handshake)
+  /// but is only ever SENT in auth requests, strictly after the gate
+  /// resolves. Pinned reconnects stay on connect-ssh (pin present ⇒
+  /// no prompt).
+  resource ssh-flow {
+    /// Dial, hello, open the ssh-forward stream, run kex, and park
+    /// before any authentication.
+    begin: static async func(relay-url: string, peer-id-hex: string, direct: option<string>, pairing-token: string, user: string) -> result<ssh-flow, string>;
+
+    /// The server's host key fingerprint (base64 SHA-256 over the
+    /// RFC 4253 blob — the format ssh-host-key reports). Pin it on
+    /// authenticate success.
+    host-key: async func() -> string;
+
+    /// The embedder showed the fingerprint and the user said yes:
+    /// authenticate and run the mosh bootstrap (exec, tunnel route,
+    /// engine start). One-shot — on failure drop the flow and begin
+    /// again.
+    authenticate: async func(password: string, mosh-command: option<string>, cols: u16, rows: u16) -> result<client-session, string>;
+
+    /// The user refused the fingerprint: reject the parked host key
+    /// and close the connection (awaits the close reaching the wire,
+    /// like detach). No credentials were ever granted.
+    decline: async func();
   }
 }
 

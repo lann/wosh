@@ -12,10 +12,14 @@
 // (assertion-gated, same token rules — app.mjs reattachIroh).
 //
 // M7: "ssh" connects through the deprivileged proxy path — end-to-end
-// ssh auth through the forwarded stream (app.mjs connectSshIroh). The
-// host-key pin is TOFU: first success stores the fingerprint on the
-// proxy record; later connects pass it as expected-host-key, so a
-// mismatch fails before the password is ever sent.
+// ssh auth through the forwarded stream. The host-key pin gates
+// reconnects: a stored fingerprint rides connect-ssh (app.mjs
+// connectSshIroh) as expected-host-key, so a mismatch fails before
+// the password is ever sent. TRUE first contact (no pin) goes through
+// the two-phase flow (app.mjs beginSshIroh, issue #7): kex parks at
+// the host-key gate, the fingerprint is shown here, and only an
+// explicit confirm releases the credentials — decline tears down with
+// zero auth attempts. The pin lands on confirmed success.
 
 import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
 import * as store from "./storage.mjs";
@@ -24,7 +28,7 @@ import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
 export async function initBoot(
   panel,
   storage = localStorage,
-  { onConnect, onPersist, onReattach, onConnectSsh } = {},
+  { onConnect, onPersist, onReattach, onConnectSsh, onBeginSsh } = {},
 ) {
   let state = store.load(storage);
   let pending = null; // parsed-but-unsaved proxy details
@@ -39,7 +43,7 @@ export async function initBoot(
   // credentials are NOT retained: an ssh reconnect is a full re-auth
   // through the panel, by design (the TOFU pin does its work there).
   let lastConnect = null;
-
+  let sshPrompt = null; // parked first-contact flow awaiting the user's verdict
   const keyStore = await openKeyStore();
   let identity = null;
   let identityError = null;
@@ -212,41 +216,111 @@ export async function initBoot(
     return connected != null;
   };
 
-  // Inner-ssh connect (M7). On success the proxy is saved and the
-  // observed host key pinned — the pin is what makes the NEXT connect
-  // refuse an impostor before sending the password.
+  // Inner-ssh connect (M7). A stored pin rides connect-ssh directly
+  // (mismatch fails before the password leaves); TRUE first contact
+  // parks a two-phase flow at the host-key gate and prompts — the
+  // password stays here, embedder-side, until confirmSsh.
   const connectSsh = async ({ relayUrl, endpointIdHex }, { token, user, password, command }) => {
-    if (connecting || !onConnectSsh) return;
+    if (connecting || sshPrompt || !onConnectSsh) return;
     if (!token || !user || !password) {
       notice = "ssh needs pairing token, user, and password";
       render();
       return;
     }
     const pinned = state.proxies.find((p) => p.endpointIdHex === endpointIdHex)?.sshHostKey;
+    if (!pinned && !onBeginSsh) {
+      notice = "first-contact ssh is not wired on this page";
+      render();
+      return;
+    }
     connecting = true;
     notice = `ssh-connecting to ${endpointIdHex.slice(0, 8)}…`;
     render();
     try {
-      const { hostKey } = await onConnectSsh({
-        relayUrl,
-        endpointIdHex,
-        token,
-        user,
-        password,
-        expectedHostKey: pinned ?? undefined,
-        command: command || undefined,
-      });
-      connected = { relayUrl, endpointIdHex };
-      const { state: withProxy } = store.upsertProxy(state, { endpointIdHex, relayUrl });
-      state = store.pinHostKey(withProxy, endpointIdHex, hostKey);
-      store.save(storage, state);
-      notice = pinned ? "" : `ssh host key pinned (TOFU first contact): ${hostKey}`;
+      if (pinned) {
+        const { hostKey } = await onConnectSsh({
+          relayUrl,
+          endpointIdHex,
+          token,
+          user,
+          password,
+          expectedHostKey: pinned,
+          command: command || undefined,
+        });
+        connected = { relayUrl, endpointIdHex };
+        const { state: withProxy } = store.upsertProxy(state, { endpointIdHex, relayUrl });
+        state = store.pinHostKey(withProxy, endpointIdHex, hostKey);
+        store.save(storage, state);
+        notice = "";
+      } else {
+        // First contact: kex ran, the flow is parked at the host-key
+        // gate, and the password has not left this page. Show the
+        // fingerprint; the user rules.
+        const flow = await onBeginSsh({ relayUrl, endpointIdHex, token, user });
+        sshPrompt = {
+          flow,
+          hostKey: flow.hostKey,
+          relayUrl,
+          endpointIdHex,
+          password,
+          command: command || undefined,
+        };
+        notice = "";
+      }
     } catch (e) {
       notice = `connect failed: ${e.message ?? e}`;
     } finally {
       connecting = false;
       render();
     }
+  };
+
+  // The user confirmed the fingerprint: release the credentials and
+  // finish the bootstrap. Pin lands only here — on confirmed success.
+  const confirmSsh = async () => {
+    if (connecting || !sshPrompt) return;
+    const p = sshPrompt;
+    connecting = true;
+    notice = `ssh-authenticating to ${p.endpointIdHex.slice(0, 8)}…`;
+    render();
+    try {
+      const { hostKey } = await p.flow.confirm({
+        password: p.password,
+        command: p.command,
+      });
+      connected = { relayUrl: p.relayUrl, endpointIdHex: p.endpointIdHex };
+      const { state: withProxy } = store.upsertProxy(state, {
+        endpointIdHex: p.endpointIdHex,
+        relayUrl: p.relayUrl,
+      });
+      state = store.pinHostKey(withProxy, p.endpointIdHex, hostKey);
+      store.save(storage, state);
+      notice = `ssh host key pinned (confirmed first contact): ${hostKey}`;
+    } catch (e) {
+      // The flow is one-shot: a failed authenticate is spent. Start over.
+      notice = `connect failed: ${e.message ?? e}`;
+    } finally {
+      sshPrompt = null;
+      connecting = false;
+      render();
+    }
+  };
+
+  // The user refused the fingerprint: tear down. No pin, no attempt.
+  const declineSsh = async () => {
+    if (connecting || !sshPrompt) return;
+    const p = sshPrompt;
+    connecting = true;
+    render();
+    try {
+      await p.flow.decline();
+    } catch {
+      // Teardown is best-effort; the flow dies with the page otherwise.
+    }
+    sshPrompt = null;
+    connecting = false;
+    notice = "ssh first contact declined — no credentials were sent";
+    render();
   };
 
   const render = () => {
@@ -334,6 +408,21 @@ export async function initBoot(
       );
       if (ssh) row.append(ssh);
       panel.append(row);
+    }
+
+    if (sshPrompt) {
+      panel.append(
+        el(
+          "div",
+          { class: "ssh-confirm" },
+          `first contact with ${sshPrompt.endpointIdHex.slice(0, 8)}… — ssh host key `,
+          el("code", { class: "ssh-confirm-fp" }, sshPrompt.hostKey),
+          " — verify it (ssh-keygen -lf on the host), then ",
+          el("button", { class: "ssh-confirm-btn", onclick: confirmSsh }, "connect"),
+          " ",
+          el("button", { class: "ssh-decline-btn", onclick: declineSsh }, "cancel"),
+        ),
+      );
     }
 
     if (connected && onPersist) {
@@ -437,12 +526,17 @@ export async function initBoot(
     get connected() {
       return connected;
     },
+    get sshPrompt() {
+      return sshPrompt;
+    },
     identityAvailable: !!identity,
     identityError,
     tryParse,
     saveOffer,
     connect,
     connectSsh,
+    confirmSsh,
+    declineSsh,
     persist,
     reattach,
     reconnect,

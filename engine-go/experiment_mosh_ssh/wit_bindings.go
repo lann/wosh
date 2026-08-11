@@ -10,8 +10,10 @@ import ()
 const (
 	SshStatusConnecting uint8 = 0
 	// Parked in the host-key callback: host-key-sha256 is now
-	// available and the handshake will not proceed (password is
-	// never sent to an unapproved host) until host-key-decision.
+	// available and the handshake will not proceed until
+	// host-key-decision. Credentials are granted here too
+	// (authenticate, then accept) — nothing secret exists
+	// engine-side while an unapproved key is on the table.
 	SshStatusHostKeyCheck uint8 = 1
 	SshStatusReady        uint8 = 2
 	SshStatusFailed       uint8 = 3

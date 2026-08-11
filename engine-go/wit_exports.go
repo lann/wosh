@@ -188,13 +188,21 @@ func wasm_export_post_return_experiment_mosh_engine_version(result uintptr) {
 }
 
 //go:wasmexport experiment:mosh/ssh#[static]ssh-session.connect
-func wasm_export_experiment_mosh_ssh_static_ssh_session_connect(arg0 uintptr, arg1 uint32, arg2 uintptr, arg3 uint32) int32 {
+func wasm_export_experiment_mosh_ssh_static_ssh_session_connect(arg0 uintptr, arg1 uint32) int32 {
 
 	value := unsafe.String((*uint8)(unsafe.Pointer(arg0)), arg1)
-	value0 := unsafe.String((*uint8)(unsafe.Pointer(arg2)), arg3)
 	witRuntime.Unpin()
-	result := export_experiment_mosh_ssh.SshSessionConnect(value, value0)
+	result := export_experiment_mosh_ssh.SshSessionConnect(value)
 	return (result).TakeHandle()
+
+}
+
+//go:wasmexport experiment:mosh/ssh#[method]ssh-session.authenticate
+func wasm_export_experiment_mosh_ssh_method_ssh_session_authenticate(arg0 uintptr, arg1 uintptr, arg2 uint32) {
+
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	(export_experiment_mosh_ssh.SshSessionFromBorrowHandle(int32(uintptr(arg0)))).Authenticate(value)
 
 }
 

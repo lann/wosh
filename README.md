@@ -249,7 +249,7 @@ ssh/mosh layer is the strong security boundary.
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **DONE** — findings 17–19 (unblocked parts, jco era) + 24–25 (deltic cutover, browser leg live); `just m5 m5-netem` |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native) + web-tests phase 3 + `just m6-browser` (browser ceremony E2E, finding 28) |
-| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7` (native) + `just m7-browser` (in-page leg, finding 29); proxy deprivileged by default (`--personal` opts back in) |
+| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7` (native) + `just m7-browser` (in-page leg, finding 29); first-contact fingerprint confirm before the password moves (two-phase ssh-flow, finding 30); proxy deprivileged by default (`--personal` opts back in) |
 
 ## Running
 
@@ -907,3 +907,54 @@ below reference it as the "jco era").
     m6-browser, m7 native, m2 (one m2 flake under parallel browser
     load — the prediction-latency budget is timing-sensitive — green
     on rerun).
+
+30. **First contact now confirms the fingerprint BEFORE the password
+    moves (issue #7): a two-phase `ssh-flow` closes the sharpest ssh
+    v0 gap.** The steady state was already gate-proven (a pinned
+    mismatch fails pre-auth), but TRUE first contact auto-accepted:
+    the glue observed the key, sent the password, and the embedder
+    pinned afterwards — one free password capture per new client for
+    a malicious proxy operator, exactly the party inner ssh evicts
+    from the auth TCB (D2). `ssh-flow` mirrors `reattach-flow`:
+    `begin` dials, hellos, opens the ssh-forward stream, runs kex,
+    and PARKS at the finding-22 host-key gate; `host-key` reports the
+    fingerprint; `authenticate(password, mosh-command, cols, rows)`
+    resumes into the mosh bootstrap; `decline` rejects the parked key
+    and closes with detach's wait-closed discipline (zero auth
+    attempts). The engine's credentials went DEFERRED to make the
+    guarantee hold in memory, not just on the wire: `ssh.connect
+    (user)` starts a password-less handshake and `authenticate
+    (password)` feeds a `PasswordCallback` closure, so the engine
+    never even HOLDS a password while an unapproved key is on the
+    table (accepting without credentials fails legibly). The user
+    name must ride `begin` — x/crypto snapshots its ClientConfig by
+    value at NewClientConn, before kex — but it is only ever SENT in
+    auth requests, strictly after the gate resolves, so nothing
+    secret moves early (this is why the issue's sketched
+    `authenticate(user, password, …)` was not implementable without
+    forking x/crypto). `connect-ssh` keeps its shape on the same
+    two-phase driver (pin present ⇒ no prompt; `expected-host-key:
+    none` stays the harness TOFU path); the panel routes no-pin first
+    contact through the flow — fingerprint row with connect/cancel,
+    pin lands only on confirmed success, and the password waits in
+    page memory (not in the engine) while parked. This park → verdict
+    → resume plumbing is the shape keyboard-interactive (#9) rides.
+    Gates: native m7 phases 5–6 (decline with the stand-in's counter
+    still zero after the fingerprint was in hand; confirm → auth →
+    live session), m7-browser first-contact legs (fingerprint
+    DISPLAYED with zero attempts while parked; decline → zero
+    attempts, nothing pinned; confirm → session + pin; the
+    tampered/restored legs additionally assert pinned paths never
+    prompt). Two engine bugs surfaced on the way: (a) the exec-output
+    `bytes.Buffer` was shared by x/crypto's stdout+stderr copier
+    goroutines and the `read-output` export with no lock — Go on wasm
+    yields mid-method at allocation/GC safepoints, and the buffer
+    tore (Len() observed NEGATIVE; `MOSH CONNECT` truncated out of
+    the output while exit-status was visible — a pre-existing race my
+    restructure merely re-timed; now a mutex-guarded `lockedBuf`);
+    (b) componentize-go export args are zero-copy views over
+    transferred cabi memory — anything RETAINED past the export call
+    (the deferred user/password) must be `strings.Clone`d, or later
+    export calls recycle the backing buffer (observed as auth
+    failures with the correct password). Swept: full suite — m1,
+    m3, m4, m5×3, m6, m6-browser, m7 (×5 runs), m7-browser.

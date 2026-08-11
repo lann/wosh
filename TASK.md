@@ -28,6 +28,14 @@ gone). One wosh-side fix rode along: drive_ssh drains to quiescence
 on exit-status (exit can beat the final stdout through the engine's
 buffers under the new arrival coalescing).
 
+2026-08-11, later: issue #7 landed (finding 30) — TRUE first-contact
+ssh now parks at the host-key gate and the page confirms the
+fingerprint BEFORE the password moves (two-phase `ssh-flow`; engine
+password deferred; `just m7` grew flow decline/confirm phases,
+`just m7-browser` grew the prompt/decline/confirm legs). Full gate
+suite swept green. Also fixed en route: a pre-existing torn-buffer
+race on the ssh exec output (engine `lockedBuf`).
+
 This session (owner instruction: "rebuild, replacing jco with
 lann/deltic; update all polymorph dependencies") replaced the JS host
 wholesale and shipped the previously A3-blocked browser leg:
@@ -82,14 +90,18 @@ wholesale and shipped the previously A3-blocked browser leg:
   sessions crossing 2^32 datagrams) needs a retained PRF output or a
   fresh assertion gesture — policy question, not plumbing.
 - ssh v0 gaps (deliberate): password auth only; one exec per session;
-  no interactive shell/stdin surface; hostkey pinning embedder-side.
-  Now triaged into issues: #7 (first-contact fingerprint confirm
-  BEFORE the password — the sharpest edge, two-phase ssh-flow), #8
-  (publickey auth with a non-extractable WebCrypto key over the
+  no interactive shell/stdin surface. Triaged into issues: #7 DONE
+  (finding 30 — first-contact fingerprint confirm BEFORE the password
+  moves: two-phase ssh-flow begin/host-key/authenticate/decline, the
+  engine's password deferred behind the host-key gate, panel prompt
+  UX, native + browser gate legs; the user name rides begin because
+  x/crypto snapshots its config pre-handshake — sent only post-gate),
+  #8 (publickey auth with a non-extractable WebCrypto key over the
   polymorph signing-key handle; the async engine import is the work —
-  unblocked since deltic), #9 (keyboard-interactive, riding #7's
-  prompt plumbing). Interactive-shell fallback and multi-exec stay
-  unfiled: product-scope decisions awaiting a concrete need.
+  unblocked since deltic), #9 (keyboard-interactive, riding #7's now-
+  landed park→verdict→resume prompt plumbing). Interactive-shell
+  fallback and multi-exec stay unfiled: product-scope decisions
+  awaiting a concrete need.
 - Upstream courtesies: ALL FILED 2026-08-11 — deltic module-identity
   convergence (lann/deltic#108); mosh-go wasip build tags
   (unixshells/mosh-go#1), pending-diff races + resume-adoption notes

@@ -161,7 +161,9 @@ async fn run_exec(
             match stdout.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if handle_out.data(channel, buf[..n].to_vec()).await.is_err() {
+                    log::debug!("[standin] exec stdout chunk: {n}B");
+                    if let Err(e) = handle_out.data(channel, buf[..n].to_vec()).await {
+                        log::warn!("[standin] exec stdout send failed after {n}B chunk: {e:?}");
                         break;
                     }
                 }
@@ -182,11 +184,12 @@ async fn run_exec(
                     if let Some(pid) = parse_detached_pid(&line) {
                         spawned_pids.lock().unwrap().push(pid);
                     }
-                    if handle_err
+                    log::debug!("[standin] exec stderr line: {}B", line.len());
+                    if let Err(e) = handle_err
                         .extended_data(channel, 1, line.as_bytes().to_vec())
                         .await
-                        .is_err()
                     {
+                        log::warn!("[standin] exec stderr send failed: {e:?}");
                         break;
                     }
                 }
@@ -200,6 +203,7 @@ async fn run_exec(
     let _ = stderr_task.await;
 
     let code = status.code().unwrap_or(1) as u32;
+    log::debug!("[standin] exec done: exit={code}, sending exit/eof/close");
     let _ = handle.exit_status_request(channel, code).await;
     let _ = handle.eof(channel).await;
     let _ = handle.close(channel).await;
