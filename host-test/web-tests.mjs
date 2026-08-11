@@ -211,6 +211,48 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       const bad = "1.zz." + "a".repeat(62) + ".t.http://h";
       boot.tryParse(bad);
       if (!boot.notice) return "FAIL: bad connstring produced no notice";
+
+      // Reconnect routing (#12): the tab retains the last connect's
+      // token in memory (tokens are never persisted); reconnect()
+      // retries a fresh connect until a persistent session exists for
+      // the proxy, then prefers the assertion-gated reattach.
+      const IDC = "c".repeat(64);
+      const div = document.createElement("div");
+      document.body.append(div);
+      const calls = [];
+      const boot2 = await initBoot(div, localStorage, {
+        onConnect: async (a) => calls.push(["connect", a]),
+        onPersist: async () => ({
+          sessionId: 9,
+          escrow: { prf: { ct: "ct", iv: "iv", credId: "d", seqFloor: 1 } },
+        }),
+        onReattach: async (a) => {
+          calls.push(["reattach", a]);
+          return { escrow: { prf: { ct: "ct2", iv: "iv", credId: "d", seqFloor: 2 } } };
+        },
+      });
+      if (await boot2.reconnect()) return "FAIL: reconnect before any connect succeeded";
+      if (!boot2.notice.includes("no previous")) {
+        return "FAIL: no-previous-connection notice: " + boot2.notice;
+      }
+      await boot2.connect({ relayUrl: "http://r", endpointIdHex: IDC, token: "tok" });
+      if (calls.at(-1)?.[0] !== "connect") return "FAIL: connect stub not called";
+      if (!(await boot2.reconnect())) return "FAIL: pre-persist reconnect failed";
+      if (calls.at(-1)[0] !== "connect") {
+        return "FAIL: pre-persist reconnect used " + calls.at(-1)[0];
+      }
+      if (calls.at(-1)[1].token !== "tok") return "FAIL: in-memory token not retained";
+      await boot2.persist();
+      if (!(await boot2.reconnect())) return "FAIL: post-persist reconnect failed";
+      if (calls.at(-1)[0] !== "reattach") {
+        return "FAIL: post-persist reconnect used " + calls.at(-1)[0];
+      }
+      if (calls.at(-1)[1].sessionId !== 9) {
+        return "FAIL: reattach sessionId " + calls.at(-1)[1].sessionId;
+      }
+      // storage hygiene: phase 2 asserts exactly the ID2 proxy persisted
+      store.save(localStorage, store.removeProxy(store.load(localStorage), IDC));
+
       return "OK phase1";
     }
 
