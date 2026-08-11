@@ -53,7 +53,7 @@ const MIME = {
 
 const ROUTES = [
   [/^\/$/, () => join(WEB, "index.html")],
-  [/^\/(app|boot|connstring|storage|idb-keys|prf-wrap|passkey)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
+  [/^\/(app|boot|connstring|storage|idb-keys|prf-wrap|passkey|mobile)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
   [/^\/xterm\/xterm\.css$/, () => join(WEB, "node_modules/@xterm/xterm/css/xterm.css")],
   [/^\/xterm\/xterm\.js$/, () => join(WEB, "node_modules/@xterm/xterm/lib/xterm.js")],
   [/^\/xterm\/addon-fit\.js$/, () => join(WEB, "node_modules/@xterm/addon-fit/lib/addon-fit.js")],
@@ -163,7 +163,7 @@ const { findChrome } = await import("./chrome.mjs");
 const hardTimer = setTimeout(() => {
   console.error("FAIL: hard timeout");
   process.exit(2);
-}, 90_000);
+}, 120_000);
 
 const executablePath = await findChrome();
 if (!executablePath) throw new Error("no Chromium found; set CHROME_PATH");
@@ -258,6 +258,79 @@ try {
   await page.keyboard.press("Enter");
   await page.screenshot({ path: "/tmp/opencode/m2-smoke.png" });
   log("screenshot: /tmp/opencode/m2-smoke.png");
+
+  // Phase 5: mobile UX (web/mobile.mjs) on a touch-emulated context —
+  // (pointer: coarse) shows the extra-keys bar; keys inject through
+  // the same onData path as typing (cat -v renders the injected ESC as
+  // ^[), sticky Ctrl transforms the NEXT soft-keyboard key (Ctrl+C
+  // kills cat), ↑ recalls history, ⌨ dismisses the keyboard focus.
+  // The desktop context above must keep the bar hidden.
+  if (await page.$eval("#keys", (el) => el.offsetHeight > 0)) {
+    throw new Error("extra-keys bar visible on a fine-pointer context");
+  }
+  const mctx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const mpage = await mctx.newPage();
+  mpage.on("pageerror", (e) => console.error(`[mobile page error] ${e.stack ?? e.message}`));
+  const mtext = () => mpage.evaluate(() => window.__mosh?.text?.() ?? "");
+  const mwait = async (pred, label, timeoutMs = 20_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const failure = await mpage.evaluate(() => window.__mosh?.failure ?? null);
+      if (failure) throw new Error(`mobile page failure while waiting for ${label}: ${failure}`);
+      const t = await mtext();
+      if (pred(t)) return;
+      if (Date.now() > deadline)
+        throw new Error(`timeout waiting for ${label}\n--- screen ---\n${t}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  await mpage.goto(`${base}/`);
+  await mwait((t) => /\$/.test(t), "shell prompt (mobile)");
+  if (!(await mpage.$eval("#keys", (el) => el.offsetHeight > 0))) {
+    throw new Error("extra-keys bar not visible on a coarse-pointer context");
+  }
+
+  await mpage.keyboard.type("cat -v", { delay: 5 });
+  await mpage.keyboard.press("Enter");
+  await mpage.tap('#keys button:text-is("esc")');
+  await mpage.keyboard.press("Enter"); // cat is line-buffered; flush
+  await mwait((t) => t.includes("^["), "bar esc rendered by cat -v");
+  log("mobile bar esc OK");
+
+  await mpage.tap('#keys button:text-is("ctrl")');
+  if (!(await mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed")))) {
+    throw new Error("ctrl did not arm");
+  }
+  await mpage.keyboard.type("c"); // sticky Ctrl ⇒ 0x03 ⇒ SIGINT kills cat
+  await mwait((t) => t.includes("^C"), "sticky ctrl+c killed cat");
+  if (await mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed"))) {
+    throw new Error("ctrl stayed armed after the keystroke (must be one-shot)");
+  }
+  log("mobile sticky ctrl OK");
+
+  await mpage.tap('#keys button:text-is("↑")');
+  await mwait((t) => {
+    const lines = t.trimEnd().split("\n");
+    return /\$\s*cat -v\s*$/.test(lines[lines.length - 1] ?? "");
+  }, "↑ recalled history");
+  log("mobile arrow history OK");
+
+  const focused = () => mpage.evaluate(() => document.activeElement === window.__mosh.term.textarea);
+  if (!(await focused())) throw new Error("terminal not focused before ⌨ toggle");
+  await mpage.tap('#keys button:text-is("⌨")');
+  if (await focused()) throw new Error("⌨ did not blur the terminal");
+  await mpage.tap('#keys button:text-is("⌨")');
+  if (!(await focused())) throw new Error("⌨ did not refocus the terminal");
+  log("mobile ⌨ toggle OK");
+
+  await mpage.screenshot({ path: "/tmp/opencode/m2-smoke-mobile.png" });
+  log("screenshot: /tmp/opencode/m2-smoke-mobile.png");
+  await mctx.close();
 } catch (e) {
   failed = e;
 } finally {

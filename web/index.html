@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- resizes-content: Android shrinks the layout viewport under the
+       soft keyboard (fit() then runs off the resize); iOS ignores the
+       token and mobile.mjs sizes off visualViewport instead. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
   <title>wosh</title>
   <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
@@ -25,6 +28,30 @@
     #panel .boot-notice { color: #d90; margin-top: 4px; }
     #panel .boot-proxy, #panel .boot-pending, #panel .boot-entry, #panel .boot-session { margin-top: 4px; }
     #term { flex: 1; min-height: 0; padding: 2px; }
+    /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
+       keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. */
+    #keys { display: none; }
+    @media (pointer: coarse) {
+      #keys {
+        display: flex; align-items: stretch; flex: none; gap: 4px;
+        padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+        background: #111; border-top: 1px solid #222;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+      }
+      #keys-strip {
+        display: flex; gap: 4px; flex: 1; min-width: 0;
+        overflow-x: auto; scrollbar-width: none;
+      }
+      #keys button {
+        flex: none; min-width: 44px; height: 38px; touch-action: manipulation;
+        font: 14px system-ui, sans-serif; color: #ccc; background: #1c1c1c;
+        border: 1px solid #333; border-radius: 6px; padding: 0 10px;
+      }
+      #keys button.armed { color: #fff; background: #2d5e9e; border-color: #4a7ec0; }
+      /* 16px stops the iOS focus auto-zoom on the connect panel */
+      #panel input { font-size: 16px; }
+      #panel button { font-size: 14px; min-height: 32px; }
+    }
   </style>
   <script src="./xterm/xterm.js"></script>
   <script src="./xterm/addon-fit.js"></script>
@@ -34,6 +61,7 @@
     <div id="status">connecting…</div>
     <div id="panel"></div>
     <div id="term"></div>
+    <div id="keys"></div>
   </div>
   <script type="module">
     import { connectIroh, connectSshIroh, persistCurrent, reattachIroh } from "./app.mjs";

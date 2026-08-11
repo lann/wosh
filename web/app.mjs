@@ -22,6 +22,8 @@
 // run one async pump loop with a single writer draining output (two
 // concurrent drains could interleave screen bytes out of order).
 
+import { initMobile, transformInput } from "./mobile.mjs";
+
 const status = (msg) => {
   document.getElementById("status").textContent = msg;
 };
@@ -50,9 +52,18 @@ const term = new Terminal({
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open(document.getElementById("term"));
-fit.fit();
+fit.fit(); // synchronous: sessions read term.cols/rows at connect time
 term.focus();
-addEventListener("resize", () => fit.fit());
+// Refits beyond the first are owned by the observer: everything that
+// moves the terminal's BOX funnels through it — the boot panel
+// rendering (async, grows #panel), the extra-keys bar filling in,
+// mobile.mjs resizing #wrap to the visual viewport, plain window
+// resizes. A one-shot startup fit alone goes stale on the first of
+// those (seen live: rows fitted before the keys bar filled overflow
+// the flex box and eat the bar's taps).
+new ResizeObserver(() => fit.fit()).observe(document.getElementById("term"));
+addEventListener("resize", () => fit.fit()); // zoom edge cases; harmless overlap
+initMobile(term); // soft-keyboard viewport glue + extra-keys bar
 
 let sessionActive = false;
 
@@ -129,7 +140,9 @@ async function wireSession(session, { relayUrl, endpointIdHex }) {
 
   term.onData((s) => {
     if (window.__mosh.failure) return;
-    session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, (e) => fatal(e.message ?? e));
+    session
+      .feedKeys(new TextEncoder().encode(transformInput(s)))
+      .then(wakeNow, (e) => fatal(e.message ?? e));
   });
   term.onResize(({ cols, rows }) => {
     session.resize(cols, rows).catch((e) => fatal(e.message ?? e));
@@ -338,7 +351,9 @@ async function runBridgeSession(ws, hello) {
   // --- input path --------------------------------------------------------------
   term.onData((s) => {
     // feed-keys then an immediate pump round: predictions paint same-frame.
-    session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, (e) => fatal(e.message ?? e));
+    session
+      .feedKeys(new TextEncoder().encode(transformInput(s)))
+      .then(wakeNow, (e) => fatal(e.message ?? e));
   });
   term.onResize(({ cols, rows }) => {
     session.resize(cols, rows).catch((e) => fatal(e.message ?? e));
