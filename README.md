@@ -742,3 +742,52 @@ below reference it as the "jco era").
     browser follow-ups: M6 ceremony E2E and M7 inner-ssh in-page
     (both now purely wosh-side work). Sizes: page bundle 527 KB,
     translator shim 3.8 MB, composed client 10.5 MB (unchanged).
+
+26. **Pin bump (2026-08-10 late): deltic @ a18be734 + polymorph-iroh @
+    d8fdd039 — three defects surfaced, all fixed, all upstream-first.**
+    The polymorph-iroh bump brings their #40 (jco host retired — deltic
+    is their JS leg too), #43 (parking-kernel adoption), and #44
+    (event-driven endpoint wakeups replace the jco-era bounded-polling
+    pump); no WIT changes, endpoint surface stable. What the bump
+    shook loose: (a) deltic's always-on parking kernel marks
+    `wasi:io` block/poll as suspension-capable, which auto-detects our
+    plain sync ENGINE into jspi mode — its exports now settle a
+    microtask after the guest turn (the "entry hop") — and deltic
+    released the instance's reentrance bracket during that hop, so a
+    concurrent host call's guest turn could reuse the still-unlifted
+    return area: `tick`'s `list<list<u8>>` lift read reallocated
+    memory (`Trap: list too long`), poisoning the instance. Fixed
+    upstream (lann/deltic#82): host calls gate on hop quiescence —
+    the reference's core+lift atomicity restored — with a
+    deterministic tick/clobber wat fixture; found by `just m2` within
+    minutes of the bump. (b) The poisoned instance's parked segments
+    then died on an enterability assert, burying the real trap under
+    an assert cascade — same PR retires poisoned late-settles quietly.
+    (c) A latent WOSH race in `drive_ssh` (M7): exit-status can beat
+    the final stdout through the engine's goroutine buffers when one
+    network flight carries data + exit together (the new upstream
+    arrival coalescing does exactly that) — `MOSH CONNECT` sat
+    undrained while the glue concluded "exited without MOSH CONNECT".
+    The glue now drains to quiescence on exit before concluding
+    (strictly convergent: no further input exists after exit). Also
+    upstream this session: deltic#78 (timer pollable re-arm + chunking
+    below the setTimeout ceiling — review finding on their #71) and
+    deltic#79 (smoke-c0 follows our rename, legs 1/3 revived).
+    Sweep at the final pins: proto, m1×2, spikes×6, m2, m3, m4,
+    m5×3, m6, m7 — all green.
+    Post-sweep addendum, same bump: the deno.lock grew FOUR pinned
+    raw-URL deltic trees — each polymorph sibling package carries its
+    own deno.json (for standalone use) whose import map pins @deltic/*
+    to its own prerelease URL, and Deno applies a package's own config
+    to that package's files. The graph (and the browser bundle: esbuild
+    `WitError2` renames) carried MULTIPLE deltic runtimes — a latent
+    module-identity break (`instanceof WitError` fails across the
+    webcrypto/websocket module boundary, so their first real error
+    would have become a spurious "unbranded throw" trap; never fired
+    only because the happy paths never threw). Fixed with URL-prefix
+    import-map keys collapsing every sibling-pinned deltic tree onto
+    .deps/deltic (bundle 563 → 490 KB, zero remote content, zero
+    collision renames); the deno.json header documents the
+    add-a-prefix-per-pin-bump rule. Upstream convergence note filed in
+    TASK.md — the consumers doc should bless this pattern or the
+    sibling modules should drop standalone pins.

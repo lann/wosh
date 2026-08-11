@@ -58,7 +58,7 @@ say "deno: $(deno --version | head -1)"
 # deno.json maps @deltic/* into this checkout, and the translator shim
 # (the wasm build of its wasmtime-frontend translator) is built here.
 DELTIC_REPO=https://github.com/lann/deltic
-DELTIC_PIN=d25551c208cfb3eb995f8f471b60bf408cc3121d
+DELTIC_PIN=a18be734a55667c8a5d371649fd125629e665a0f
 DELTIC_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/deltic"
 if [ ! -d "$DELTIC_DIR/.git" ]; then
   say "cloning deltic @ ${DELTIC_PIN:0:12}"
@@ -100,10 +100,10 @@ if [ -f "$WEB/package.json" ] && [ ! -d "$WEB/node_modules" ]; then
 fi
 
 # --- polymorph-iroh (pinned): endpoint component, host shims, relay --------
-# First rev with the merged deltic leg (host-deltic/, PR #36): the sibling
-# .deps pins carry the deltic host modules our harnesses import.
+# Post-#44: event-driven endpoint wakeups (the jco-era polling pump is
+# gone); #40 retired their jco host, #43 adopted deltic's parking kernel.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=f46a80df41676cb3db1de50159101de2b5fa88ea
+PIROH_PIN=d8fdd039f5f78daef519985d484f546845555b7a
 PIROH_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/polymorph-iroh"
 if [ ! -d "$PIROH_DIR/.git" ]; then
   say "cloning polymorph-iroh @ ${PIROH_PIN:0:12}"
@@ -114,9 +114,8 @@ if [ "$(git -C "$PIROH_DIR" rev-parse HEAD)" != "$PIROH_PIN" ]; then
   git -C "$PIROH_DIR" checkout --quiet "$PIROH_PIN"
 fi
 say "polymorph-iroh: $(git -C "$PIROH_DIR" log --oneline -1)"
-# Its own pinned deps (webcrypto/websocket/webrtc shims, upstream iroh,
-# tls); SKIP_NODE: the jco spike legs' npm trees are theirs, not ours.
-(cd "$PIROH_DIR" && SKIP_NODE=1 scripts/setup.sh >/dev/null)
+# Its own pinned deps (webcrypto/websocket/webrtc shims, upstream iroh, tls).
+(cd "$PIROH_DIR" && scripts/setup.sh >/dev/null)
 PIROH_STAMP="$PIROH_DIR/.wosh-built-at"
 if [ -f "$PIROH_STAMP" ] && [ "$(cat "$PIROH_STAMP")" = "$PIROH_PIN" ]; then
   say "polymorph-iroh artifacts already built"

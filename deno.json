@@ -3,6 +3,7 @@
     "The Deno-lane + browser-bundle config for the deltic host layer (the jco replacement).",
     "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; this file maps that specifier ONCE for the whole module graph, so `instanceof WitError` holds across every boundary.",
     "PINS: deltic is a git reference at .deps/deltic and the polymorph modules resolve into the pinned .deps/polymorph-iroh nested checkouts — scripts/setup.sh owns both pins and builds deltic's translator shim (justfile `_translator` prints its path).",
+    "MODULE-IDENTITY, second front: the sibling packages carry their own deno.json configs whose import maps pin @deltic/* to raw.githubusercontent URLs for STANDALONE use; Deno applies a package's own config to its files, so without the URL-prefix mappings below the graph (and the browser bundle) carried MULTIPLE deltic runtimes and `instanceof WitError` broke across the webcrypto/websocket boundaries (latent unbranded-throw traps). The prefix keys collapse every sibling-pinned deltic tree onto the local checkout; deno.lock must contain NO raw deltic URLs after `deno install` — when a sibling pin bump adds a new prefix, add it here (upstream convergence note in TASK.md).",
     "The npm mappings serve the webrtc module's bare specifiers on the Deno lane; in-browser it uses stock RTCPeerConnection (the web bundle marks them external)."
   ],
   "nodeModulesDir": "auto",
@@ -14,6 +15,10 @@
     "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
     "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
     "@polymorph/iroh-sockets-stubs": "./.deps/polymorph-iroh/host-deltic/src/sockets.ts",
+    "https://raw.githubusercontent.com/lann/deltic/pre-10cc776/": "./.deps/deltic/",
+    "https://raw.githubusercontent.com/lann/deltic/pre-58b2404/": "./.deps/deltic/",
+    "https://raw.githubusercontent.com/lann/deltic/pre-66a6b8c/": "./.deps/deltic/",
+    "https://raw.githubusercontent.com/lann/deltic/pre-a67ee83/": "./.deps/deltic/",
     "node-datachannel": "npm:node-datachannel@0.32.3",
     "node-datachannel/polyfill": "npm:node-datachannel@0.32.3/polyfill",
     "werift": "npm:werift@0.22.2"

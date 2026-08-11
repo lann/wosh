@@ -7,6 +7,15 @@ of each session.
 
 ## Status: DELTIC CUTOVER COMPLETE — browser leg live (2026-08-10)
 
+Post-cutover pin bump (same day, finding 26): deltic @ a18be734
+(includes the hop-atomicity fix lann/deltic#82 our M2 gate found, the
+timer re-arm #78, smoke-c0 path fix #79), polymorph-iroh @ d8fdd039
+(their jco host retired #40, parking kernel adopted #43, event-driven
+endpoint wakeups #44 — the jco-era polling latency workaround is
+gone). One wosh-side fix rode along: drive_ssh drains to quiescence
+on exit-status (exit can beat the final stdout through the engine's
+buffers under the new arrival coalescing).
+
 This session (owner instruction: "rebuild, replacing jco with
 lann/deltic; update all polymorph dependencies") replaced the JS host
 wholesale and shipped the previously A3-blocked browser leg:
@@ -72,7 +81,11 @@ wholesale and shipped the previously A3-blocked browser leg:
   no interactive shell/stdin surface; hostkey pinning embedder-side.
   The unextractable-WebCrypto-ssh-key step needs an async engine
   export — no longer blocked (deltic), just unbuilt.
-- Upstream courtesies: mosh-go wasip build-tag patch; per-path
+- Upstream courtesies: deltic/polymorph module-identity convergence
+  (finding 26 addendum: sibling deltic modules' standalone URL pins
+  vs consumer import maps — bless the prefix-mapping pattern in
+  deltic docs/consumers.md or drop standalone pins); mosh-go wasip
+  build-tag patch; per-path
   datagram-ceiling issue on polymorph-iroh; mosh-go fork patch 4 +
   resume-adoption learning; connection close-reason accessor on the
   endpoint WIT (the Error-then-close race).

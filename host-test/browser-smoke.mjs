@@ -177,7 +177,7 @@ const browser = await chromium.launch({
 let failed = null;
 try {
   const page = await browser.newPage();
-  page.on("pageerror", (e) => console.error(`[page error] ${e.message}`));
+  page.on("pageerror", (e) => console.error(`[page error] ${e.stack ?? e.message}`));
   page.on("console", (m) => {
     if (m.type() === "error") console.error(`[page console] ${m.text()}`);
   });
