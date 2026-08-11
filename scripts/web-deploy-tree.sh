@@ -26,9 +26,11 @@ for f in "$bundle" "$client" "$translator"; do
   [ -f "$f" ] || { echo "missing $f — run: just web-bundle compose-client (and scripts/setup.sh for the translator)" >&2; exit 1; }
 done
 
-mkdir -p "$dest/xterm" "$dest/dist"
+mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons"
 
 cp index.html app.mjs boot.mjs connstring.mjs storage.mjs idb-keys.mjs prf-wrap.mjs passkey.mjs overlay.mjs mobile.mjs "$dest/"
+cp manifest.json "$dest/"
+cp icons/*.png "$dest/icons/"
 cp node_modules/@xterm/xterm/css/xterm.css "$dest/xterm/"
 cp node_modules/@xterm/xterm/lib/xterm.js "$dest/xterm/"
 cp node_modules/@xterm/addon-fit/lib/addon-fit.js "$dest/xterm/"
@@ -36,4 +38,16 @@ cp "$bundle" "$dest/dist/"
 cp "$client" "$dest/dist/composed-client.wasm"
 cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 
-echo "web client tree -> $dest"
+# PWA service worker (issue #10): the precache manifest is generated
+# FROM the assembled tree, so it can never drift from what ships — new
+# files (from any branch) are picked up here without touching sw.js.
+# The version keys the cache: one deploy = one complete cache, so a
+# client can never mix files from two deploys (deltic runtime-links the
+# wasm set against the page bundle; coherency is load-bearing).
+version="${WOSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
+files=$(cd "$dest" && find . -type f ! -name sw.js | LC_ALL=C sort | sed 's|^\./||')
+precache=$(printf '"%s",' $files)
+precache="[${precache%,}]"
+sed -e "s|__WOSH_VERSION__|$version|" -e "s|__WOSH_PRECACHE__|$precache|" sw.js > "$dest/sw.js"
+
+echo "web client tree -> $dest (sw version $version, $(wc -w <<<"$files") precached)"

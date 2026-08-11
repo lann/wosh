@@ -152,6 +152,7 @@ const MIME = {
 };
 const ROUTES = [
   [/^\/$/, () => join(WEB, "index.html")],
+  [/^\/(manifest\.json|icons\/[a-z0-9.-]+\.png)$/, (m) => join(WEB, m[1])],
   [
     /^\/(app|boot|connstring|storage|idb-keys|prf-wrap|passkey|mobile|overlay)\.mjs$/,
     (m) => join(WEB, `${m[1]}.mjs`),

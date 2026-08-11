@@ -53,6 +53,7 @@ const MIME = {
 
 const ROUTES = [
   [/^\/$/, () => join(WEB, "index.html")],
+  [/^\/(manifest\.json|icons\/[a-z0-9.-]+\.png)$/, (m) => join(WEB, m[1])],
   [/^\/(app|boot|connstring|storage|idb-keys|prf-wrap|passkey|mobile|overlay)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
   [/^\/xterm\/xterm\.css$/, () => join(WEB, "node_modules/@xterm/xterm/css/xterm.css")],
   [/^\/xterm\/xterm\.js$/, () => join(WEB, "node_modules/@xterm/xterm/lib/xterm.js")],
