@@ -21,21 +21,27 @@ the only CI is the Pages deploy of the browser client
 ## Running the server
 
 The browser client is deployed to <https://lann.github.io/wosh/> on
-every merge to `main`. The part you run yourself is the server side —
-an iroh relay and the wosh proxy — on the machine you want a shell on:
+every merge to `main`. The part you run yourself is the proxy, on the
+machine you want a shell on:
 
 ```sh
-scripts/setup.sh                 # toolchain + pinned deps (idempotent)
-just compose-proxy proxy-build   # composed-proxy.wasm + the wosh-proxy binary
-
-# 1. an iroh relay (setup.sh built the stock one; any reachable relay works)
-printf 'http_bind_addr = "127.0.0.1:3347"\nenable_metrics = false\n' > /tmp/relay.toml
-.deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay --dev -c /tmp/relay.toml &
-
-# 2. the proxy — personal mode: it spawns mosh-server as you on connect
-proxy/target/release/wosh-proxy --relay http://127.0.0.1:3347 \
-  --qr-base 'https://lann.github.io/wosh/#' --personal
+scripts/setup.sh     # toolchain + pinned deps (idempotent)
+just proxy-personal  # build + run the proxy in personal mode
 ```
+
+`proxy-personal` builds (`compose-proxy proxy-build`) and runs
+
+```sh
+proxy/target/release/wosh-proxy --relay https://use1-1.relay.n0.iroh.link \
+  --qr-base 'https://lann.github.io/wosh/#' \
+  --rp-id lann.github.io --rp-origin https://lann.github.io \
+  --personal   # spawns mosh-server as you on connect
+```
+
+— the home relay defaults to one of n0's public iroh relays (the same
+ones stock iroh uses; `RELAY=<url>` selects another region or your own
+relay), and extra `just proxy-personal <flags>` pass through to
+`wosh-proxy`, later flags winning.
 
 The proxy prints a connection string and a QR code. Open the QR link
 (or open the client and paste the connstring), then accept the pairing
@@ -45,10 +51,12 @@ forwards an inner ssh stream to `--ssh-target` (default
 `127.0.0.1:22`); the client authenticates end-to-end over ssh and
 boots its own `mosh-server` (M7).
 
-Remote-server caveat: the browser itself must reach the relay, and a
-secure (https) page may only use `wss:` relays — loopback excepted —
-so front the relay with TLS for anything non-local, or serve the
-client tree from the server (`scripts/web-deploy-tree.sh <dir>` + any
+The browser reaches the proxy through the same relay URL the
+connstring carries, so the relay must be reachable from the browser
+too — the public relays are. If `RELAY` points at your own plain-http
+relay (as the e2e gates spawn on loopback), a secure page can only
+open `ws:` to loopback: anything non-local needs `wss:`/TLS, or serve
+the client tree next to it (`scripts/web-deploy-tree.sh <dir>` + any
 static file server) instead of the Pages build.
 
 ## Architecture
