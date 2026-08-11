@@ -33,15 +33,15 @@ just proxy-personal  # build + run the proxy in personal mode
 
 ```sh
 proxy/target/release/wosh-proxy --relay https://use1-1.relay.n0.iroh.link \
-  --qr-base 'https://lann.github.io/wosh/#' \
   --rp-id lann.github.io --rp-origin https://lann.github.io \
   --personal   # spawns mosh-server as you on connect
 ```
 
 — the home relay defaults to one of n0's public iroh relays (the same
 ones stock iroh uses; `RELAY=<url>` selects another region or your own
-relay), and extra `just proxy-personal <flags>` pass through to
-`wosh-proxy`, later flags winning.
+relay), the QR base defaults to the Pages client, and extra
+`just proxy-personal <flags>` pass through to `wosh-proxy`, later
+flags winning.
 
 The proxy prints a connection string and a QR code. Open the QR link
 (or open the client and paste the connstring), then accept the pairing

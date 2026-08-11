@@ -211,6 +211,5 @@ m7: compose-client compose-proxy proxy-build
 # later flags win (e.g. `just proxy-personal --yes --no-qr`).
 proxy-personal *args: compose-proxy proxy-build
     proxy/target/release/wosh-proxy --relay "${RELAY:-https://use1-1.relay.n0.iroh.link}" \
-        --qr-base 'https://lann.github.io/wosh/#' \
         --rp-id lann.github.io --rp-origin https://lann.github.io \
         --personal {{args}}
