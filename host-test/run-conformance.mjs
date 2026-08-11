@@ -166,13 +166,17 @@ try {
   log("bulk paste round-trip OK");
 
   // Phase 4: server→client bulk (its fragment sizing is its own
-  // business — recorded, not asserted). The assertion is on the final
-  // screen state: fast-scrolling intermediate rows are legitimately
-  // skipped by mosh. (Leg-b note: mosh-go's server has been seen
-  // dropping a leading digit mid-scroll — '99' for '299' — so only
-  // the last row is asserted; the C leg is the fidelity gate.)
-  await feed("seq 1 300\r");
-  await waitFor(/\b300\b/, "seq output");
+  // business — recorded, not asserted). The assertion is a marker
+  // echoed AFTER the flood: fast-scrolling intermediate rows are
+  // legitimately skipped by mosh, and mosh-go's server drops leading
+  // characters mid-scroll (finding 10a: '99' for '299' — and in CI
+  // the run-together '…99300' defeated the previous /\b300\b/
+  // final-row assert by erasing its word boundary). No assertion on
+  // the numbers themselves — the C leg is the fidelity gate; the
+  // marker regex tolerates the artifact eating leading characters,
+  // and the $(printf …) split keeps the typed echo from self-matching.
+  await feed("seq 1 300; echo seq_$(printf do)ne\r");
+  await waitFor(/q_done/, "post-flood marker");
   log("server bulk OK");
 
   // Phase 5: transport stats sanity.
