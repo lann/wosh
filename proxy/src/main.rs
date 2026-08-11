@@ -135,7 +135,7 @@ fn parse_args() -> Result<Cli> {
     Ok(Cli {
         relay: relay.ok_or_else(usage)?,
         state_dir,
-        qr_base: qr_base.unwrap_or_else(|| "https://wosh.invalid/#".into()),
+        qr_base: qr_base.unwrap_or_else(|| "https://lann.github.io/wosh/#".into()),
         component,
         token,
         yes,
