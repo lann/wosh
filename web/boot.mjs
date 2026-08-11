@@ -24,6 +24,7 @@
 import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
 import * as store from "./storage.mjs";
 import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
+import { probePrfCapability } from "./prf-wrap.mjs";
 
 export async function initBoot(
   panel,
@@ -44,6 +45,16 @@ export async function initBoot(
   // through the panel, by design (the TOFU pin does its work there).
   let lastConnect = null;
   let sshPrompt = null; // parked first-contact flow awaiting the user's verdict
+  // Client PRF capability (issue #13): "no" suppresses the persist and
+  // reattach OFFERS up front — on such a client each flow would fail
+  // only after a completed ceremony gesture (and persist would orphan
+  // a credential on the authenticator). "yes"/"unknown" offer as
+  // always; the per-credential D4 gate in the ceremony stays
+  // authoritative either way.
+  const prfCap = await probePrfCapability();
+  const prfUnsupportedNotice =
+    "this browser cannot passkey-protect persistent sessions (no WebAuthn " +
+    "PRF) — a persistent session stays reattachable from a capable browser";
   const keyStore = await openKeyStore();
   let identity = null;
   let identityError = null;
@@ -131,6 +142,11 @@ export async function initBoot(
   // proxy entry is saved implicitly (a persistent session without its
   // proxy row would be unreachable after reload).
   const persist = async () => {
+    if (prfCap === "no") {
+      notice = prfUnsupportedNotice;
+      render();
+      return;
+    }
     if (connecting || !connected || !onPersist) return;
     connecting = true;
     notice = "persisting session (passkey ceremony)…";
@@ -156,6 +172,11 @@ export async function initBoot(
   // Assertion-gated reattach to a recorded session; the fresh escrow
   // (re-sealed at a jumped floor) replaces the stored arm.
   const reattach = async (proxy, session, token) => {
+    if (prfCap === "no") {
+      notice = prfUnsupportedNotice;
+      render();
+      return;
+    }
     if (connecting || !onReattach) return;
     if (!token) {
       notice = "pairing token required (tokens are not persisted — get one from the proxy)";
@@ -208,7 +229,9 @@ export async function initBoot(
     const session = state.sessions.find(
       (s) => s.proxyId === endpointIdHex && s.sessionId != null && s.key.prf,
     );
-    if (session && onReattach) {
+    // A "no" PRF client cannot unwrap the escrow — retry as a fresh
+    // connect instead of stranding the gesture on the reattach guard.
+    if (session && onReattach && prfCap !== "no") {
       await reattach({ relayUrl, endpointIdHex }, session, token);
     } else {
       await connect({ relayUrl, endpointIdHex, token });
@@ -431,7 +454,9 @@ export async function initBoot(
           "div",
           { class: "boot-session" },
           `live session on ${connected.endpointIdHex.slice(0, 8)}… — `,
-          el("button", { id: "persist-btn", onclick: persist }, "persist session"),
+          prfCap === "no"
+            ? el("span", { class: "prf-unavailable" }, prfUnsupportedNotice)
+            : el("button", { id: "persist-btn", onclick: persist }, "persist session"),
         ),
       );
     }
@@ -471,14 +496,20 @@ export async function initBoot(
       if (session && onReattach) {
         row.append(
           " ",
-          el(
-            "button",
-            {
-              class: "reattach-btn",
-              onclick: () => reattach(p, session, tokenInput.value.trim()),
-            },
-            `reattach #${session.sessionId}`,
-          ),
+          prfCap === "no"
+            ? el(
+                "span",
+                { class: "prf-unavailable" },
+                `session #${session.sessionId} needs a PRF-capable browser to reattach`,
+              )
+            : el(
+                "button",
+                {
+                  class: "reattach-btn",
+                  onclick: () => reattach(p, session, tokenInput.value.trim()),
+                },
+                `reattach #${session.sessionId}`,
+              ),
         );
       }
       const ssh = sshCluster(
@@ -531,6 +562,7 @@ export async function initBoot(
     },
     identityAvailable: !!identity,
     identityError,
+    prfCap,
     tryParse,
     saveOffer,
     connect,

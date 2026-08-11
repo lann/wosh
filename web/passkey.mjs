@@ -23,6 +23,7 @@ import {
   assertPersistencePermitted,
   prfExtensionForCreate,
   prfExtensionForGet,
+  probePrfCapability,
   unwrapEscrow,
   wrapEscrow,
 } from "./prf-wrap.mjs";
@@ -52,7 +53,13 @@ async function registerPasskey(session) {
   const options = PublicKeyCredential.parseCreationOptionsFromJSON(ccr.publicKey);
   options.extensions = { ...options.extensions, ...prfExtensionForCreate() };
   const cred = await create({ publicKey: options });
-  assertPersistencePermitted(cred.getClientExtensionResults().prf?.enabled === true);
+  // The authoritative per-credential gate (D4); the client-capability
+  // probe only shades the error copy (issue #13 — on a PRF-capable
+  // browser the actionable retry is "pick a different authenticator").
+  assertPersistencePermitted(
+    cred.getClientExtensionResults().prf?.enabled === true,
+    await probePrfCapability(),
+  );
   await session.registerFinish(responseJson(cred));
   return new Uint8Array(cred.rawId);
 }
@@ -121,7 +128,15 @@ export async function reattachSession(client, { relayUrl, endpointIdHex, token, 
   const assertion = await get({ publicKey: options });
   const prfOut = assertion.getClientExtensionResults().prf?.results?.first;
   if (!prfOut || prfOut.byteLength !== 32) {
-    throw new Error("PRF evaluation failed at reattach (different authenticator?)");
+    // Name the actual cause (issue #13): "different authenticator?"
+    // was misleading on a browser that can never return PRF output.
+    throw new Error(
+      (await probePrfCapability()) === "yes"
+        ? "no PRF output at reattach (different authenticator than the one " +
+          "that persisted this session?)"
+        : "no PRF output at reattach — this browser may not support the " +
+          "WebAuthn prf extension (reattach from a PRF-capable browser)",
+    );
   }
   const escrowBack = await flow.finish(responseJson(assertion));
   const returned = JSON.parse(dec.decode(new Uint8Array(escrowBack)));

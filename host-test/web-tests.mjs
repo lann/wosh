@@ -158,6 +158,33 @@ const prf = await import("../web/prf-wrap.mjs");
   assert.throws(() => prf.assertPersistencePermitted(false), /refusing to persist/);
   assert.throws(() => prf.assertPersistencePermitted(undefined), /refusing to persist/);
   prf.assertPersistencePermitted(true);
+
+  // Copy shading (issue #13): a "yes" client names the chosen
+  // authenticator as the limitation (the retry is actionable);
+  // otherwise the browser is a candidate cause too.
+  assert.throws(() => prf.assertPersistencePermitted(false, "yes"), /chosen authenticator/);
+  assert.throws(() => prf.assertPersistencePermitted(false, "yes"), /refusing to persist/);
+  assert.throws(() => prf.assertPersistencePermitted(false, "unknown"), /or this browser/);
+
+  // issue #13: the client-capability probe, three-state. Node has no
+  // PublicKeyCredential ⇒ "unknown" (offer; the per-credential gate
+  // stays authoritative).
+  assert.equal(await prf.probePrfCapability(), "unknown");
+  globalThis.PublicKeyCredential = {
+    getClientCapabilities: async () => ({ "extension:prf": true }),
+  };
+  assert.equal(await prf.probePrfCapability(), "yes");
+  globalThis.PublicKeyCredential.getClientCapabilities = async () => ({
+    "extension:prf": false,
+  });
+  assert.equal(await prf.probePrfCapability(), "no");
+  globalThis.PublicKeyCredential.getClientCapabilities = async () => ({});
+  assert.equal(await prf.probePrfCapability(), "unknown");
+  globalThis.PublicKeyCredential.getClientCapabilities = async () => {
+    throw new Error("capability query broke");
+  };
+  assert.equal(await prf.probePrfCapability(), "unknown");
+  delete globalThis.PublicKeyCredential;
 }
 
 console.log("[web-tests] node phase OK (prf-wrap crypto, D4 policy guard)");
@@ -332,6 +359,66 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       }
       return "OK phase3 (prf supported; wrap survives a fresh assertion)";
     }
+    if (phase === "4") {
+      // issue #13: an explicit "extension:prf: false" client (e.g.
+      // Firefox for Android) suppresses the persist/reattach OFFERS —
+      // no ceremony gesture can start, no credential can be orphaned —
+      // and reconnect falls back to a fresh connect.
+      PublicKeyCredential.getClientCapabilities = async () => ({ "extension:prf": false });
+      const IDP = "e".repeat(64);
+      localStorage.clear();
+      let st = store.upsertProxy(store.emptyState(), {
+        endpointIdHex: IDP,
+        relayUrl: "http://r",
+      }).state;
+      st = store.recordSession(st, {
+        proxyId: IDP,
+        sessionId: 5,
+        key: { prf: { ct: "ct", iv: "iv", credId: "d", seqFloor: 1 } },
+      });
+      store.save(localStorage, st);
+      const calls = [];
+      const boot = await initBoot(document.getElementById("panel"), localStorage, {
+        onConnect: async (a) => calls.push(["connect", a]),
+        onPersist: async () => calls.push(["persist"]),
+        onReattach: async (a) => calls.push(["reattach", a]),
+      });
+      if (boot.prfCap !== "no") return "FAIL: probe not surfaced: " + boot.prfCap;
+      if (document.querySelector(".reattach-btn")) {
+        return "FAIL: reattach offered on a prf-less client";
+      }
+      const note = document.querySelector(".prf-unavailable");
+      if (!note || !note.textContent.includes("PRF-capable browser")) {
+        return "FAIL: no suppression note rendered";
+      }
+      await boot.reattach({ relayUrl: "http://r", endpointIdHex: IDP }, { sessionId: 5 }, "tok");
+      if (calls.length) return "FAIL: reattach guard let the ceremony start";
+      if (!boot.notice.includes("cannot passkey-protect")) {
+        return "FAIL: reattach guard notice: " + boot.notice;
+      }
+      await boot.persist();
+      if (calls.length) return "FAIL: persist guard let the ceremony start";
+      if (!boot.notice.includes("cannot passkey-protect")) {
+        return "FAIL: persist guard notice: " + boot.notice;
+      }
+      // With a live session the persist button itself is withheld.
+      await boot.connect({ relayUrl: "http://r", endpointIdHex: IDP, token: "tok" });
+      if (document.querySelector("#persist-btn")) {
+        return "FAIL: persist button offered on a prf-less client";
+      }
+      if (!document.querySelector(".boot-session .prf-unavailable")) {
+        return "FAIL: live-session row has no suppression note";
+      }
+      // reconnect must not strand the retry gesture on the reattach
+      // guard: prf-less clients retry as a fresh connect.
+      calls.length = 0;
+      if (!(await boot.reconnect())) return "FAIL: reconnect failed on prf-less client";
+      if (calls.at(-1)?.[0] !== "connect") {
+        return "FAIL: prf-less reconnect used " + calls.at(-1)?.[0];
+      }
+      localStorage.clear();
+      return "OK phase4";
+    }
     return "FAIL: unknown phase";
   })().catch((e) => "FAIL: " + (e.message ?? e));
 </script>`;
@@ -386,6 +473,13 @@ try {
   const r2 = await page.evaluate(() => window.__result);
   console.log(`[web-tests] browser phase 2: ${r2}`);
   if (r2 !== "OK phase2") process.exit(1);
+
+  // Phase 4 (issue #13): affordance suppression on an explicit
+  // prf-less client (getClientCapabilities stubbed in-page).
+  await page.goto(`${base}/?phase=4`);
+  const r4 = await page.evaluate(() => window.__result);
+  console.log(`[web-tests] browser phase 4: ${r4}`);
+  if (r4 !== "OK phase4") process.exit(1);
 
   // Phase 3: real WebAuthn ceremonies against the CDP virtual
   // authenticator (the finding is the capability report either way;
