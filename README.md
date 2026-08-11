@@ -14,15 +14,18 @@ real in-browser mosh session (composed client in headless Chromium ↔
 proxy over iroh). M0–M7 native milestones unchanged and green.
 Every remaining browser leg has landed (findings 27–29): the WebRTC
 upgrade, the M6 ceremony E2E, and the M7 inner-ssh E2E all run
-in-page. Experiment-grade: no stability, delete-at-will;
-the only CI is the Pages deploy of the browser client
-(`.github/workflows/pages.yml`). The full plan lives in
+in-page. Experiment-grade: no stability, delete-at-will.
+CI (`.github/workflows/ci.yml`) runs the gate matrix (spikes,
+m1–m7 including the browser legs; netem excluded) on PRs and main,
+and the Pages deploy of the browser client only ships from a green
+main run. The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
 
 ## Running the server
 
 The browser client is deployed to <https://lann.github.io/wosh/> on
-every merge to `main`. The part you run yourself is the proxy, on the
+every green merge to `main` (the CI gates gate the deploy). The part
+you run yourself is the proxy, on the
 machine you want a shell on:
 
 ```sh
