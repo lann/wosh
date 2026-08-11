@@ -13,9 +13,43 @@ browsers); the A3 blocker family is retired, and `just m5` now gates a
 real in-browser mosh session (composed client in headless Chromium ↔
 proxy over iroh). M0–M7 native milestones unchanged and green.
 Remaining browser legs (M6 ceremony E2E, M7 inner-ssh E2E in-page) are
-unblocked follow-ups. Local-only experiment: no CI, no stability,
-delete-at-will. The full plan lives in [`PLAN.md`](PLAN.md); resumable
-session state in [`TASK.md`](TASK.md).
+unblocked follow-ups. Experiment-grade: no stability, delete-at-will;
+the only CI is the Pages deploy of the browser client
+(`.github/workflows/pages.yml`). The full plan lives in
+[`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
+
+## Running the server
+
+The browser client is deployed to <https://lann.github.io/wosh/> on
+every merge to `main`. The part you run yourself is the server side —
+an iroh relay and the wosh proxy — on the machine you want a shell on:
+
+```sh
+scripts/setup.sh                 # toolchain + pinned deps (idempotent)
+just compose-proxy proxy-build   # composed-proxy.wasm + the wosh-proxy binary
+
+# 1. an iroh relay (setup.sh built the stock one; any reachable relay works)
+printf 'http_bind_addr = "127.0.0.1:3347"\nenable_metrics = false\n' > /tmp/relay.toml
+.deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay --dev -c /tmp/relay.toml &
+
+# 2. the proxy — personal mode: it spawns mosh-server as you on connect
+proxy/target/release/wosh-proxy --relay http://127.0.0.1:3347 \
+  --qr-base 'https://lann.github.io/wosh/#' --personal
+```
+
+The proxy prints a connection string and a QR code. Open the QR link
+(or open the client and paste the connstring), then accept the pairing
+prompt (TOFU) in the proxy's terminal — or pass `--yes`. Without
+`--personal` the proxy runs deprivileged: it spawns nothing and only
+forwards an inner ssh stream to `--ssh-target` (default
+`127.0.0.1:22`); the client authenticates end-to-end over ssh and
+boots its own `mosh-server` (M7).
+
+Remote-server caveat: the browser itself must reach the relay, and a
+secure (https) page may only use `wss:` relays — loopback excepted —
+so front the relay with TLS for anything non-local, or serve the
+client tree from the server (`scripts/web-deploy-tree.sh <dir>` + any
+static file server) instead of the Pages build.
 
 ## Architecture
 
