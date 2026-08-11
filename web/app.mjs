@@ -22,6 +22,8 @@
 // run one async pump loop with a single writer draining output (two
 // concurrent drains could interleave screen bytes out of order).
 
+import { OverlayAddon } from "./overlay.mjs";
+
 const status = (msg) => {
   document.getElementById("status").textContent = msg;
 };
@@ -49,10 +51,16 @@ const term = new Terminal({
 });
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
+const overlay = new OverlayAddon();
+term.loadAddon(overlay);
 term.open(document.getElementById("term"));
 fit.fit();
 term.focus();
 addEventListener("resize", () => fit.fit());
+// Registered after the initial fit so page load doesn't flash a size.
+// The status line renders cols×rows once at session wire-up and goes
+// stale on later resizes; this is the live feedback (issue #11).
+term.onResize(({ cols, rows }) => overlay.showOverlay(`${cols}×${rows}`, 500));
 
 let sessionActive = false;
 
@@ -154,6 +162,7 @@ async function wireSession(session, { relayUrl, endpointIdHex }) {
         `path ${path} · dgram ≤${dgramMax ?? "?"}B · ${term.cols}×${term.rows}`,
     );
   renderStatus();
+  overlay.showOverlay("connected", 600);
   // Path watcher (plain sleep — tickSleep's wake slot belongs to the
   // drain pump): the WebRTC upgrade runs in the background and `path`
   // is not latched (it can move to the channel and fall back), so
@@ -166,6 +175,7 @@ async function wireSession(session, { relayUrl, endpointIdHex }) {
         if (p !== path) {
           path = p;
           renderStatus();
+          overlay.showOverlay(`path ${path}`, 1200);
         }
       }
     } catch {
@@ -333,6 +343,7 @@ async function runBridgeSession(ws, hello) {
   ws.onclose = () => {
     closed = true;
     status("disconnected");
+    overlay.showOverlay("disconnected");
   };
 
   // --- input path --------------------------------------------------------------
@@ -366,5 +377,6 @@ async function runBridgeSession(ws, hello) {
     `${await engine.version()} · ${hello.delayMs ? `bridge delay ${hello.delayMs}ms/way · ` : ""}` +
       `${term.cols}×${term.rows}`,
   );
+  overlay.showOverlay("connected", 600);
   installHooks("bridge", session);
 }
