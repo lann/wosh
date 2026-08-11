@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	witTypes "go.bytecodealliance.org/pkg/wit/types"
@@ -97,6 +99,35 @@ func (c *shuttleConn) Close() error {
 	return nil
 }
 
+// lockedBuf synchronizes the exec output accumulation. Three
+// goroutines touch it: x/crypto's stdout and stderr copiers (Session
+// Stdout/Stderr both point here) and the ReadOutput export draining
+// it. Even under wasm's single-threaded scheduler goroutines can
+// yield MID-METHOD (allocation → GC safepoints), and an unguarded
+// bytes.Buffer tears: observed as Len() going negative and truncated
+// output racing the exit status.
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) drain() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.buf.Len() == 0 {
+		return nil
+	}
+	out := make([]byte, b.buf.Len())
+	b.buf.Read(out)
+	return out
+}
+
 type shuttleAddr struct{}
 
 func (shuttleAddr) Network() string { return "shuttle" }
@@ -127,31 +158,53 @@ type SshSession struct {
 	hostFP string // base64 SHA-256, set during kex
 
 	// The host-key callback goroutine parks here until the embedder
-	// rules on the fingerprint; the password is only ever sent to an
-	// approved host (x/crypto/ssh authenticates strictly after a
-	// successful host-key callback).
+	// rules on the fingerprint; authentication only starts after an
+	// accept (x/crypto/ssh authenticates strictly after a successful
+	// host-key callback).
 	hostKeyDecision chan bool
+
+	// Deferred password (Authenticate): the config is built with the
+	// user but NO password; the embedder grants it while the host-key
+	// callback is parked, BEFORE releasing it with accept. The user
+	// name must be known up front — NewClientConn snapshots the
+	// config by value (fullConf := *config) before the handshake, so
+	// late User mutation never reaches the copy — but it is only ever
+	// SENT in auth requests, which start strictly after the host-key
+	// callback returns. The password flows through the callback
+	// closure below, so it IS late-bound: the engine never holds a
+	// password while an unapproved key is on the table.
+	password string
+	credsSet bool
 
 	client *ssh.Client
 
 	execStarted bool
-	execOut     bytes.Buffer
+	execOut     lockedBuf
 	exitStatus  *int32
 }
 
-// SshSessionConnect backs `connect: static func(user, password)`.
-// Spawns the handshake goroutines and returns immediately; progress
-// happens on feed/pump.
-func SshSessionConnect(user string, password string) *SshSession {
+// SshSessionConnect backs `connect: static func(user)` (password
+// deferred — see Authenticate). Spawns the handshake goroutines and
+// returns immediately; progress happens on feed/pump.
+func SshSessionConnect(user string) *SshSession {
 	s := &SshSession{
 		conn:            newShuttleConn(),
 		state:           stateConnecting,
 		hostKeyDecision: make(chan bool),
 	}
+	// Clone: the bindings pass a zero-copy view over transferred cabi
+	// memory, and the handshake reads it well after this export
+	// returns (recycled-buffer corruption otherwise).
+	user = strings.Clone(user)
 	go func() {
 		cfg := &ssh.ClientConfig{
 			User: user,
-			Auth: []ssh.AuthMethod{ssh.Password(password)},
+			Auth: []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
+				if !s.credsSet {
+					return "", fmt.Errorf("host key accepted without credentials (authenticate was never called)")
+				}
+				return s.password, nil
+			})},
 			HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 				sum := sha256.Sum256(key.Marshal())
 				s.hostFP = base64.StdEncoding.EncodeToString(sum[:])
@@ -174,6 +227,20 @@ func SshSessionConnect(user string, password string) *SshSession {
 	}()
 	gosched(8) // let the goroutine emit the client version banner
 	return s
+}
+
+// Authenticate grants the deferred password (password auth v0).
+// Called while the host-key callback is parked, before
+// HostKeyDecision(true) releases it — nothing here yields, so the
+// handshake goroutine cannot observe a half-set state.
+//
+// The string MUST be cloned: the generated bindings pass a zero-copy
+// view over transferred cabi memory, and it outlives this export call
+// by many feed/drain rounds (whose allocations recycle that memory —
+// observed as auth failures with the correct password).
+func (s *SshSession) Authenticate(password string) {
+	s.password = strings.Clone(password)
+	s.credsSet = true
 }
 
 func (s *SshSession) Feed(data []uint8) {
@@ -264,12 +331,7 @@ func asExitError(err error, target **ssh.ExitError) bool {
 
 func (s *SshSession) ReadOutput() []uint8 {
 	gosched(4)
-	if s.execOut.Len() == 0 {
-		return nil
-	}
-	out := make([]uint8, s.execOut.Len())
-	s.execOut.Read(out)
-	return out
+	return s.execOut.drain()
 }
 
 func (s *SshSession) ExitStatus() witTypes.Option[int32] {

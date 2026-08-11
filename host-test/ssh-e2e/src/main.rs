@@ -453,7 +453,11 @@ async fn run() -> Result<()> {
             println!("[ssh-e2e] ssh-host-key matches stand-in fingerprint: {observed_fp}");
 
             let mut visible = String::new();
-            let wait_for = async |visible: &mut String, needle: &str, label: &str| -> Result<()> {
+            let wait_for = async |session: wasmtime::component::ResourceAny,
+                                  visible: &mut String,
+                                  needle: &str,
+                                  label: &str|
+                   -> Result<()> {
                 for _ in 0..800 {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                     let out = guest.call_drain_output(accessor, session).await?;
@@ -467,20 +471,20 @@ async fn run() -> Result<()> {
                 bail!("timeout waiting for {label} ({needle:?})\n--- visible ---\n{visible}")
             };
 
-            wait_for(&mut visible, "$", "shell prompt").await?;
+            wait_for(session, &mut visible, "$", "shell prompt").await?;
             println!("[ssh-e2e] prompt OK");
 
             guest
                 .call_feed_keys(accessor, session, b"echo m0sh_$(printf ssh)_ok\r".to_vec())
                 .await?;
-            wait_for(&mut visible, "m0sh_ssh_ok", "echo marker").await?;
+            wait_for(session, &mut visible, "m0sh_ssh_ok", "echo marker").await?;
             println!("[ssh-e2e] echo round-trip OK");
 
             guest.call_resize(accessor, session, 100, 30).await?;
             guest
                 .call_feed_keys(accessor, session, b"stty size\r".to_vec())
                 .await?;
-            wait_for(&mut visible, "30 100", "stty size after resize").await?;
+            wait_for(session, &mut visible, "30 100", "stty size after resize").await?;
             println!("[ssh-e2e] resize OK");
 
             let stats = guest.call_stats(accessor, session).await?;
@@ -493,6 +497,95 @@ async fn run() -> Result<()> {
             }
 
             guest.call_detach(accessor, session).await?;
+
+            // --- Phase 5: first-contact flow, declined ----------------------
+            // The two-phase ssh-flow (issue #7): begin parks at the
+            // host-key gate with ZERO credentials engine-side; the
+            // fingerprint is available; decline tears down without a
+            // single auth attempt reaching the stand-in.
+            let flow_guest = client.experiment_mosh_client_client().ssh_flow();
+            let attempts_before = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            let flow = flow_guest
+                .call_begin(
+                    accessor,
+                    relay_url.clone(),
+                    peer_hex.clone(),
+                    Some(direct.clone()),
+                    TOKEN.into(),
+                    TEST_USER.into(),
+                )
+                .await?
+                .map_err(|e| anyhow!("ssh-flow begin (decline leg): {e}"))?;
+            let fp = flow_guest.call_host_key(accessor, flow).await?;
+            if fp != standin_fp {
+                bail!("ssh-flow host-key mismatch: flow reported {fp}, stand-in computed {standin_fp}");
+            }
+            flow_guest.call_decline(accessor, flow).await?;
+            let attempts_after = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            if attempts_after != attempts_before {
+                bail!(
+                    "declined first contact still sent credentials (attempts {attempts_before} -> {attempts_after})"
+                );
+            }
+            println!(
+                "[ssh-e2e] phase 5: first-contact flow declined OK (fp shown, zero auth attempts)"
+            );
+
+            // --- Phase 6: first-contact flow, confirmed ---------------------
+            // begin → fingerprint verified out-of-band (here: against
+            // the stand-in's own computation) → authenticate releases
+            // the credentials and finishes the mosh bootstrap.
+            let attempts_before = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            let flow = flow_guest
+                .call_begin(
+                    accessor,
+                    relay_url.clone(),
+                    peer_hex.clone(),
+                    Some(direct.clone()),
+                    TOKEN.into(),
+                    TEST_USER.into(),
+                )
+                .await?
+                .map_err(|e| anyhow!("ssh-flow begin (confirm leg): {e}"))?;
+            let fp = flow_guest.call_host_key(accessor, flow).await?;
+            if fp != standin_fp {
+                bail!("ssh-flow host-key mismatch: flow reported {fp}, stand-in computed {standin_fp}");
+            }
+            let attempts_parked = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            if attempts_parked != attempts_before {
+                bail!(
+                    "credentials moved while the flow was parked (attempts {attempts_before} -> {attempts_parked})"
+                );
+            }
+            let session = flow_guest
+                .call_authenticate(
+                    accessor,
+                    flow,
+                    TEST_PASSWORD.into(),
+                    Some(
+                        "mosh-server new -i 127.0.0.1 -c 256 -- bash --noprofile --norc -i"
+                            .into(),
+                    ),
+                    80,
+                    24,
+                )
+                .await?
+                .map_err(|e| anyhow!("ssh-flow authenticate: {e}"))?;
+            let attempts_final = password_attempts.load(std::sync::atomic::Ordering::SeqCst);
+            if attempts_final <= attempts_before {
+                bail!("confirmed flow never authenticated (attempts unchanged)");
+            }
+            let mut visible = String::new();
+            wait_for(session, &mut visible, "$", "shell prompt (flow session)").await?;
+            guest
+                .call_feed_keys(accessor, session, b"echo fl0w_$(printf ssh)_ok\r".to_vec())
+                .await?;
+            wait_for(session, &mut visible, "fl0w_ssh_ok", "flow-session echo marker").await?;
+            println!(
+                "[ssh-e2e] phase 6: first-contact flow confirmed OK (parked kex, then auth + session)"
+            );
+            guest.call_detach(accessor, session).await?;
+
             Ok(())
         })
         .await?;

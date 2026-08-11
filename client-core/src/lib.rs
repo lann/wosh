@@ -17,6 +17,11 @@
 //! channel (the embedder owns the authenticator), the session key +
 //! sequence-floor accessors for embedder-side persistence (D4,
 //! finding 13), and the two-phase reattach flow.
+//!
+//! M7's first-contact hardening (issue #7) adds the two-phase
+//! ssh-flow: kex parks at the host-key gate with credentials still
+//! embedder-side; nothing secret moves until the fingerprint is
+//! confirmed.
 
 mod bindings {
     wit_bindgen::generate!({
@@ -34,7 +39,8 @@ use wosh_proto as proto;
 use bindings::experiment::mosh::engine::Session as EngineSession;
 use bindings::experiment::mosh::ssh::{SshSession, SshStatus};
 use bindings::exports::experiment::mosh_client::client::{
-    ClientSession, Guest, GuestClientSession, GuestReattachFlow, ReattachFlow, SessionStats,
+    ClientSession, Guest, GuestClientSession, GuestReattachFlow, GuestSshFlow, ReattachFlow,
+    SessionStats, SshFlow,
 };
 use bindings::exports::experiment::mosh_client::embed::Guest as EmbedGuest;
 use bindings::polymorph::iroh::endpoint::{
@@ -215,11 +221,14 @@ fn parse_mosh_connect(output: &[u8]) -> Option<(u16, String)> {
     None
 }
 
-/// Drive the sans-I/O ssh engine over the forwarded stream until the
-/// mosh bootstrap completes: handshake (with the host-key gate — the
-/// password is never sent to an unapproved host), exec the mosh-server
-/// command, and parse `MOSH CONNECT` from its output. Returns
-/// `(udp-port, mosh-key, host-fingerprint)`.
+/// Drive the sans-I/O ssh engine over the forwarded stream, split in
+/// two phases at the host-key gate (issue #7): `run-to-host-key`
+/// parks the handshake with the fingerprint in hand and no password
+/// anywhere engine-side (the user name is bound at open — x/crypto
+/// snapshots its config pre-handshake — but only ever SENT in auth
+/// requests, after the gate resolves), then `authenticate` grants the
+/// password, resumes through auth, execs the mosh-server command, and
+/// parses `MOSH CONNECT` from its output.
 ///
 /// Loop order matters (no starvation, no read-deadlock): flush the
 /// engine's outbound bytes first — pumping and re-draining until quiet
@@ -227,102 +236,166 @@ fn parse_mosh_connect(output: &[u8]) -> Option<(u16, String)> {
 /// nothing in flight, so it must be handled *before* awaiting a read),
 /// then park on the stream read and feed. Awaiting the read while quiet
 /// is safe mid-handshake: ssh is strict request-response.
-async fn drive_ssh(
-    send: &SendStream,
-    recv: &RecvStream,
-    user: &str,
-    password: &str,
-    expected_host_key: Option<&str>,
-    command: &str,
-) -> Result<(u16, String, String), String> {
-    let ssh = SshSession::connect(user, password);
-    let mut host_fp: Option<String> = None;
-    let mut exec_started = false;
-    let mut output: Vec<u8> = Vec::new();
+struct SshDrive {
+    ssh: SshSession,
+    send: SendStream,
+    recv: RecvStream,
+}
 
-    loop {
-        // 1. Flush outbound: drain → write, pump, repeat until quiet.
-        let bytes = ssh.drain();
-        if !bytes.is_empty() {
-            send.write(bytes).await.map_err(err("ssh write"))?;
-            ssh.pump();
-            continue;
+impl SshDrive {
+    /// Open the forwarded ssh stream on `conn` (tag byte first — the
+    /// control stream needs no tag; every later stream names its
+    /// purpose up front) and start the password-less handshake.
+    async fn open(conn: &Connection, user: &str) -> Result<Self, String> {
+        let (send, recv) = conn.open_bi().await.map_err(err("open-bi (ssh)"))?;
+        send.write(vec![proto::stream_tag::SSH_FORWARD])
+            .await
+            .map_err(err("ssh tag"))?;
+        Ok(Self {
+            ssh: SshSession::connect(user),
+            send,
+            recv,
+        })
+    }
+
+    /// Flush outbound: drain → write, pump, repeat until quiet.
+    async fn flush(&self) -> Result<(), String> {
+        loop {
+            let bytes = self.ssh.drain();
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            self.send.write(bytes).await.map_err(err("ssh write"))?;
+            self.ssh.pump();
         }
+    }
 
-        // 2. Status gate (before any read-await).
-        match ssh.status() {
-            SshStatus::Connecting => {}
-            SshStatus::HostKeyCheck => {
-                let fp = ssh
-                    .host_key_sha256()
-                    .ok_or("host-key-check without a fingerprint")?;
-                if let Some(expected) = expected_host_key {
-                    if expected != fp {
-                        ssh.host_key_decision(false);
+    /// Feed inbound: park on the stream, then run the scheduler.
+    async fn feed(&self) -> Result<(), String> {
+        match self.recv.read(4096).await.map_err(err("ssh read"))? {
+            Some(bytes) => {
+                self.ssh.feed(&bytes);
+                self.ssh.pump();
+                Ok(())
+            }
+            None => Err("ssh stream closed by proxy".into()),
+        }
+    }
+
+    /// Phase 1: run the handshake to the host-key gate and return the
+    /// fingerprint; the engine parks there (nothing in flight) until
+    /// `authenticate` or `reject_host_key`.
+    async fn run_to_host_key(&self) -> Result<String, String> {
+        loop {
+            self.flush().await?;
+            match self.ssh.status() {
+                SshStatus::Connecting => {}
+                SshStatus::HostKeyCheck => {
+                    return self
+                        .ssh
+                        .host_key_sha256()
+                        .ok_or_else(|| "host-key-check without a fingerprint".to_string());
+                }
+                SshStatus::Ready => {
+                    return Err("ssh reached ready without a host-key gate".into())
+                }
+                SshStatus::Failed(e) => return Err(format!("ssh: {e}")),
+            }
+            self.feed().await?;
+        }
+    }
+
+    /// Refuse the parked host key: the handshake fails without
+    /// credentials ever having existed engine-side.
+    fn reject_host_key(&self) {
+        self.ssh.host_key_decision(false);
+    }
+
+    /// Phase 2: grant the password, accept the (already-approved)
+    /// key, and drive the mosh bootstrap: authenticate → exec
+    /// `command` → parse `MOSH CONNECT`. Returns `(udp-port, mosh-key)`.
+    async fn authenticate(
+        &self,
+        password: &str,
+        approved_fp: &str,
+        command: &str,
+    ) -> Result<(u16, String), String> {
+        // Order matters: the password BEFORE the decision releases the
+        // parked callback — auth starts the moment it returns.
+        self.ssh.authenticate(password);
+        self.ssh.host_key_decision(true);
+        self.ssh.pump();
+
+        let mut exec_started = false;
+        let mut output: Vec<u8> = Vec::new();
+
+        loop {
+            self.flush().await?;
+            match self.ssh.status() {
+                SshStatus::Connecting => {}
+                SshStatus::HostKeyCheck => {
+                    // A re-key re-fires the gate (never seen in a
+                    // bootstrap-length session, but correctness is
+                    // cheap): the approved key proceeds, any other is
+                    // a mid-session substitution.
+                    let fp = self
+                        .ssh
+                        .host_key_sha256()
+                        .ok_or("host-key-check without a fingerprint")?;
+                    if fp != approved_fp {
+                        self.ssh.host_key_decision(false);
                         return Err(format!(
-                            "ssh host key mismatch: expected {expected}, server presented {fp} \
-                             — refusing before authentication"
+                            "ssh host key changed mid-session: approved {approved_fp}, \
+                             server now presents {fp}"
+                        ));
+                    }
+                    self.ssh.host_key_decision(true);
+                    self.ssh.pump();
+                }
+                SshStatus::Ready => {
+                    if !exec_started {
+                        self.ssh.exec(command)?;
+                        exec_started = true;
+                        self.ssh.pump();
+                        continue;
+                    }
+                    output.extend_from_slice(&self.ssh.read_output());
+                    if let Some((port, key)) = parse_mosh_connect(&output) {
+                        return Ok((port, key));
+                    }
+                    if let Some(code) = self.ssh.exit_status() {
+                        // Exit-status can beat the last output through the
+                        // engine's internal buffers: stdout rides a separate
+                        // goroutine reader, and one network flight can carry
+                        // data + exit together (first seen when the upstream
+                        // endpoint moved to event-driven wakeups and arrival
+                        // coalescing changed). No further input exists after
+                        // exit, so the drain strictly converges: pump
+                        // scheduler rounds until read-output stays quiet a
+                        // few consecutive rounds, then parse once more.
+                        let mut quiet = 0;
+                        while quiet < 4 {
+                            self.ssh.pump();
+                            let more = self.ssh.read_output();
+                            if more.is_empty() {
+                                quiet += 1;
+                            } else {
+                                quiet = 0;
+                                output.extend_from_slice(&more);
+                            }
+                        }
+                        if let Some((port, key)) = parse_mosh_connect(&output) {
+                            return Ok((port, key));
+                        }
+                        return Err(format!(
+                            "'{command}' exited with status {code} without MOSH CONNECT: {}",
+                            String::from_utf8_lossy(&output).trim()
                         ));
                     }
                 }
-                host_fp = Some(fp);
-                ssh.host_key_decision(true);
-                ssh.pump();
-                continue;
+                SshStatus::Failed(e) => return Err(format!("ssh: {e}")),
             }
-            SshStatus::Ready => {
-                if !exec_started {
-                    ssh.exec(command)?;
-                    exec_started = true;
-                    ssh.pump();
-                    continue;
-                }
-                output.extend_from_slice(&ssh.read_output());
-                if let Some((port, key)) = parse_mosh_connect(&output) {
-                    let fp = host_fp.ok_or("ready without a host key")?;
-                    return Ok((port, key, fp));
-                }
-                if let Some(code) = ssh.exit_status() {
-                    // Exit-status can beat the last output through the
-                    // engine's internal buffers: stdout rides a separate
-                    // goroutine reader, and one network flight can carry
-                    // data + exit together (first seen when the upstream
-                    // endpoint moved to event-driven wakeups and arrival
-                    // coalescing changed). No further input exists after
-                    // exit, so the drain strictly converges: pump
-                    // scheduler rounds until read-output stays quiet a
-                    // few consecutive rounds, then parse once more.
-                    let mut quiet = 0;
-                    while quiet < 4 {
-                        ssh.pump();
-                        let more = ssh.read_output();
-                        if more.is_empty() {
-                            quiet += 1;
-                        } else {
-                            quiet = 0;
-                            output.extend_from_slice(&more);
-                        }
-                    }
-                    if let Some((port, key)) = parse_mosh_connect(&output) {
-                        let fp = host_fp.ok_or("ready without a host key")?;
-                        return Ok((port, key, fp));
-                    }
-                    return Err(format!(
-                        "'{command}' exited with status {code} without MOSH CONNECT: {}",
-                        String::from_utf8_lossy(&output).trim()
-                    ));
-                }
-            }
-            SshStatus::Failed(e) => return Err(format!("ssh: {e}")),
-        }
-
-        // 3. Feed inbound: park on the stream, then run the scheduler.
-        match recv.read(4096).await.map_err(err("ssh read"))? {
-            Some(bytes) => {
-                ssh.feed(&bytes);
-                ssh.pump();
-            }
-            None => return Err("ssh stream closed by proxy".into()),
+            self.feed().await?;
         }
     }
 }
@@ -499,29 +572,24 @@ impl GuestClientSession for ClientSessionRes {
         let (endpoint, conn) = dial_connection(&relay_url, &peer_id_hex, direct).await?;
         let control = control_hello(&conn, &pairing_token).await?;
 
-        // The forwarded ssh stream: tag byte first (the control stream
-        // needs no tag — it is the first stream; every later one names
-        // its purpose up front).
-        let (send, recv) = conn.open_bi().await.map_err(err("open-bi (ssh)"))?;
-        send.write(vec![proto::stream_tag::SSH_FORWARD])
-            .await
-            .map_err(err("ssh tag"))?;
+        let drive = SshDrive::open(&conn, &user).await?;
+        let host_fp = drive.run_to_host_key().await?;
+        if let Some(expected) = expected_host_key.as_deref() {
+            if expected != host_fp {
+                drive.reject_host_key();
+                return Err(format!(
+                    "ssh host key mismatch: expected {expected}, server presented {host_fp} \
+                     — refusing before authentication"
+                ));
+            }
+        }
 
         let command = mosh_command
             .unwrap_or_else(|| "mosh-server new -i 127.0.0.1 -c 256".to_string());
-        let (port, key, host_fp) = drive_ssh(
-            &send,
-            &recv,
-            &user,
-            &password,
-            expected_host_key.as_deref(),
-            &command,
-        )
-        .await?;
+        let (port, key) = drive.authenticate(&password, &host_fp, &command).await?;
         // mosh-server has detached; the ssh session and its stream are
         // done. Dropping them closes the proxy's TCP leg to sshd.
-        drop(send);
-        drop(recv);
+        drop(drive);
 
         let session_id = match control
             .request(&proto::Client::ForwardDatagrams { port })
@@ -722,6 +790,110 @@ struct Component;
 impl Guest for Component {
     type ClientSession = ClientSessionRes;
     type ReattachFlow = ReattachFlowRes;
+    type SshFlow = SshFlowRes;
+}
+
+/// The two-phase first-contact ssh (issue #7): connection, control,
+/// and the parked ssh drive live here between `begin` (kex done,
+/// host-key gate parked, no credentials anywhere) and the embedder's
+/// verdict — `authenticate` hands everything to a client session,
+/// `decline` tears the connection down.
+struct SshFlowRes {
+    endpoint: RefCell<Option<Endpoint>>,
+    conn: RefCell<Option<Connection>>,
+    control: RefCell<Option<Control>>,
+    drive: RefCell<Option<SshDrive>>,
+    host_key: String,
+}
+
+impl GuestSshFlow for SshFlowRes {
+    async fn begin(
+        relay_url: String,
+        peer_id_hex: String,
+        direct: Option<String>,
+        pairing_token: String,
+        user: String,
+    ) -> Result<SshFlow, String> {
+        let (endpoint, conn) = dial_connection(&relay_url, &peer_id_hex, direct).await?;
+        let control = control_hello(&conn, &pairing_token).await?;
+        let drive = SshDrive::open(&conn, &user).await?;
+        let host_key = drive.run_to_host_key().await?;
+        Ok(SshFlow::new(SshFlowRes {
+            endpoint: RefCell::new(Some(endpoint)),
+            conn: RefCell::new(Some(conn)),
+            control: RefCell::new(Some(control)),
+            drive: RefCell::new(Some(drive)),
+            host_key,
+        }))
+    }
+
+    async fn host_key(&self) -> String {
+        self.host_key.clone()
+    }
+
+    async fn authenticate(
+        &self,
+        password: String,
+        mosh_command: Option<String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<ClientSession, String> {
+        let drive = self
+            .drive
+            .borrow_mut()
+            .take()
+            .ok_or("flow already used (authenticate/decline are one-shot)")?;
+        let command = mosh_command
+            .unwrap_or_else(|| "mosh-server new -i 127.0.0.1 -c 256".to_string());
+        let (port, key) = drive
+            .authenticate(&password, &self.host_key, &command)
+            .await?;
+        // mosh-server has detached; dropping the drive closes the
+        // proxy's TCP leg to sshd.
+        drop(drive);
+
+        let control = self.control.borrow_mut().take().ok_or("flow already used")?;
+        let session_id = match control
+            .request(&proto::Client::ForwardDatagrams { port })
+            .await?
+        {
+            proto::Proxy::ForwardOk { session_id } => session_id,
+            other => return Err(format!("unexpected control message: {other:?}")),
+        };
+
+        let endpoint = self.endpoint.borrow_mut().take();
+        let conn = self.conn.borrow_mut().take().ok_or("flow already used")?;
+        ClientSessionRes::start(
+            endpoint,
+            conn,
+            Some(control),
+            true,
+            Some(session_id),
+            key,
+            None,
+            cols,
+            rows,
+            Some(self.host_key.clone()),
+        )
+    }
+
+    async fn decline(&self) {
+        if let Some(drive) = self.drive.borrow_mut().take() {
+            // Unpark the engine's host-key callback with a rejection
+            // (the handshake unwinds; no credentials ever existed),
+            // then drop the stream halves.
+            drive.reject_host_key();
+        }
+        let _ = self.control.borrow_mut().take();
+        // Mirror detach: closing + wait-closed keeps this export call
+        // alive until the CONNECTION_CLOSE reaches the wire, so the
+        // proxy (and sshd behind it) observe the teardown promptly.
+        if let Some(conn) = self.conn.borrow_mut().take() {
+            conn.close(0, "ssh first contact declined");
+            conn.wait_closed().await;
+        }
+        let _ = self.endpoint.borrow_mut().take();
+    }
 }
 
 impl EmbedGuest for Component {

@@ -72,24 +72,37 @@ interface engine {
 /// calls, and Go-native timers fire once wall time passes and the
 /// scheduler is pumped — x/crypto/ssh's client path is timer-free
 /// anyway). v0 surface is the mosh bootstrap: handshake, one exec,
-/// output. Host-key policy v0: accept and report — the embedder pins
-/// fingerprints (TOFU in client storage).
+/// output. Host-key policy: the embedder rules on the reported
+/// fingerprint (stored pin or interactive confirmation) BEFORE
+/// granting credentials — the engine holds no password until then.
 interface ssh {
   variant ssh-status {
     connecting,
     /// Parked in the host-key callback: host-key-sha256 is now
-    /// available and the handshake will not proceed (password is
-    /// never sent to an unapproved host) until host-key-decision.
+    /// available and the handshake will not proceed until
+    /// host-key-decision. Credentials are granted here too
+    /// (authenticate, then accept) — nothing secret exists
+    /// engine-side while an unapproved key is on the table.
     host-key-check,
     ready,
     failed(string),
   }
 
   resource ssh-session {
-    /// Start an ssh client handshake (password auth v0) over the
-    /// external byte stream. Never fails synchronously — watch
-    /// status.
-    connect: static func(user: string, password: string) -> ssh-session;
+    /// Start an ssh client handshake over the external byte stream,
+    /// password deferred: kex runs, the host-key gate parks, and
+    /// authentication proceeds only after `authenticate` provided the
+    /// password and host-key-decision approved the key — in that
+    /// order. The user name is needed up front (x/crypto snapshots
+    /// its config before the handshake) but is only ever SENT in auth
+    /// requests, which cannot start before the gate resolves. Never
+    /// fails synchronously — watch status.
+    connect: static func(user: string) -> ssh-session;
+
+    /// Grant the deferred password (password auth v0). Call while
+    /// parked at host-key-check, BEFORE host-key-decision(true);
+    /// accepting without credentials fails the handshake legibly.
+    authenticate: func(password: string);
 
     /// Bytes that arrived from the forwarded stream.
     feed: func(data: list<u8>);
@@ -107,7 +120,8 @@ interface ssh {
     host-key-sha256: func() -> option<string>;
 
     /// Resolve a host-key-check: accept continues the handshake
-    /// (authentication starts), reject fails it.
+    /// (authentication starts, using the credentials granted via
+    /// authenticate), reject fails it.
     host-key-decision: func(accept: bool);
 
     /// Run one command on the server (session channel + exec).

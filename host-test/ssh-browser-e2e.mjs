@@ -11,12 +11,16 @@
 // --ssh-target = the russh sshd stand-in, spawned as the ssh-e2e
 // crate's sshd-standin bin) ← relay websocket ← the page.
 //
-// Host-key UX under test (the M7 in-page piece): first ssh connect
-// pins the observed fingerprint (TOFU) on the saved proxy record; a
-// TAMPERED pin makes the next connect fail "host key mismatch" BEFORE
-// the password is sent (the stand-in's password-attempts counter
-// proves it); restoring the pin connects again. Auth negatives beyond
-// that stay native-gate territory (ssh-e2e).
+// Host-key UX under test (the M7 in-page piece, issue #7): TRUE first
+// contact parks a two-phase flow at the host-key gate — the page
+// DISPLAYS the fingerprint while the stand-in has seen zero password
+// attempts, a DECLINE tears down with the counter still at zero and no
+// pin stored, and only an explicit CONFIRM releases the password
+// (success pins the fingerprint on the saved proxy record). A TAMPERED
+// pin then makes the next connect fail "host key mismatch" BEFORE the
+// password is sent (no prompt — pinned reconnects never ask); restoring
+// the pin connects again. Auth negatives beyond that stay native-gate
+// territory (ssh-e2e).
 
 import http from "node:http";
 import { readFile, mkdtemp, writeFile } from "node:fs/promises";
@@ -243,12 +247,40 @@ const waitSshOutcome = async (page, label, timeoutMs = 60_000) => {
   }
 };
 
+/** Drive an ssh cluster to the first-contact prompt (parked flow). */
+const sshToPrompt = async (page, scope, label, timeoutMs = 30_000) => {
+  await fillAndSsh(page, scope);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const prompt = await page.evaluate(() => window.__moshBoot?.sshPrompt?.hostKey ?? null);
+    if (prompt) return prompt;
+    const notice = await page.evaluate(() => window.__moshBoot?.notice ?? "");
+    if (notice.startsWith("connect failed")) throw new Error(`${label}: ${notice}`);
+    if (Date.now() > deadline) throw new Error(`${label}: no host-key prompt appeared`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+
+/** Wait for the boot panel notice to match `re`. */
+const waitBootNotice = async (page, re, label, timeoutMs = 20_000) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const notice = await page.evaluate(() => window.__moshBoot?.notice ?? "");
+    if (re.test(notice)) return notice;
+    if (Date.now() > deadline)
+      throw new Error(`timeout waiting for ${label}; notice: "${notice}"`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+
 let failed = null;
 try {
   const context = await browser.newContext();
 
-  // Phase 1: first-contact ssh connect from the pending row (bounded
-  // retries over the RefCell hazard — fresh page per attempt).
+  // Phase 1a: first contact PARKS at the host-key gate (bounded
+  // retries over the RefCell hazard — fresh page per attempt): the
+  // flow ran kex against the stand-in, and the page shows the
+  // fingerprint while zero password attempts exist anywhere.
   let page = null;
   let attempts = 0;
   let lastErr = null;
@@ -261,9 +293,7 @@ try {
     try {
       await p.goto(`${base}/#${connstring}`);
       await p.waitForSelector(".boot-pending .ssh-btn", { timeout: 10_000 });
-      await fillAndSsh(p, ".boot-pending");
-      const r = await waitSshOutcome(p, `attempt ${attempts}`);
-      if (!r.ok) throw new Error(r.notice);
+      await sshToPrompt(p, ".boot-pending", `attempt ${attempts}`);
       page = p;
     } catch (e) {
       lastErr = e;
@@ -271,8 +301,48 @@ try {
       await p.close();
     }
   }
-  if (!page) throw new Error(`no ssh attempt succeeded; last: ${lastErr?.message}`);
-  log(`ssh connected (attempt ${attempts}/${CONNECT_ATTEMPTS})`);
+  if (!page) throw new Error(`no ssh attempt reached the prompt; last: ${lastErr?.message}`);
+  log(`first-contact flow parked at the host-key gate (attempt ${attempts}/${CONNECT_ATTEMPTS})`);
+
+  // The fingerprint is DISPLAYED, verbatim, before any credentials move.
+  const shownFp = (await page.textContent(".ssh-confirm-fp"))?.trim();
+  if (shownFp !== standinFp) {
+    throw new Error(`displayed fp ${shownFp} != stand-in fp ${standinFp}`);
+  }
+  if (passwordAttempts() !== 0) {
+    throw new Error(`password moved while parked (attempts ${passwordAttempts()})`);
+  }
+  log("fingerprint displayed; zero password attempts while parked");
+
+  // Phase 1b: DECLINE tears down — still zero attempts, and no pin.
+  await page.click(".ssh-decline-btn");
+  await waitBootNotice(page, /declined/, "decline notice");
+  await new Promise((r) => setTimeout(r, 300)); // let the counter line flush
+  if (passwordAttempts() !== 0) {
+    throw new Error(`decline still sent credentials (attempts ${passwordAttempts()})`);
+  }
+  const pinAfterDecline = await page.evaluate(
+    () => window.__moshBoot.state.proxies[0]?.sshHostKey ?? null,
+  );
+  if (pinAfterDecline !== null) throw new Error(`decline left a pin: ${pinAfterDecline}`);
+  log("declined: torn down with zero attempts, nothing pinned");
+
+  // Phase 1c: ssh again on the same pending row → prompt → CONFIRM →
+  // the password is finally released and the session goes live.
+  let prompted = false;
+  for (let i = 1; i <= CONNECT_ATTEMPTS && !prompted; i++) {
+    try {
+      await sshToPrompt(page, ".boot-pending", `confirm leg attempt ${i}`);
+      prompted = true;
+    } catch (e) {
+      log(`confirm-leg attempt ${i}/${CONNECT_ATTEMPTS} failed: ${e.message.slice(0, 140)}`);
+    }
+  }
+  if (!prompted) throw new Error("confirm leg never reached the prompt");
+  await page.click(".ssh-confirm-btn");
+  const confirmed = await waitSshOutcome(page, "confirmed first contact");
+  if (!confirmed.ok) throw new Error(`confirmed connect failed: ${confirmed.notice}`);
+  log("confirmed: password released only after the prompt; session live");
 
   await waitText(page, /\$/, "shell prompt");
   await page.click("#term");
@@ -281,7 +351,7 @@ try {
   await waitText(page, /in_page_ssh_ok/, "echo marker");
   log("prompt + echo over inner ssh OK");
 
-  // The pin landed (TOFU first contact) and matches the stand-in.
+  // The pin landed (confirmed first contact) and matches the stand-in.
   const pinned = await page.evaluate(
     () => window.__moshBoot.state.proxies[0]?.sshHostKey ?? null,
   );
@@ -290,7 +360,7 @@ try {
   }
   const noticeAfter = await page.evaluate(() => window.__moshBoot.notice);
   if (!/pinned/.test(noticeAfter)) throw new Error(`no pin notice: "${noticeAfter}"`);
-  log("host key pinned on first contact");
+  log("host key pinned on confirmed first contact");
 
   await page.evaluate(() => window.__mosh.detach());
   log("detach OK");
@@ -313,6 +383,11 @@ try {
   if (!/host key mismatch/i.test(refused.notice)) {
     throw new Error(`refusal didn't name the mismatch: ${refused.notice}`);
   }
+  // Pinned reconnects never prompt — the mismatch must have come from
+  // the pin check, not a user decision.
+  if (await page.evaluate(() => window.__moshBoot.sshPrompt !== null)) {
+    throw new Error("pinned (tampered) path showed a first-contact prompt");
+  }
   await new Promise((r) => setTimeout(r, 300)); // let the counter line flush
   const attemptsAfter = passwordAttempts();
   if (attemptsAfter !== attemptsBefore) {
@@ -334,6 +409,9 @@ try {
   await fillAndSsh(page, ".boot-proxy");
   const again = await waitSshOutcome(page, "restored-pin ssh");
   if (!again.ok) throw new Error(`restored-pin ssh failed: ${again.notice}`);
+  if (await page.evaluate(() => window.__moshBoot.sshPrompt !== null)) {
+    throw new Error("pinned (restored) path showed a first-contact prompt");
+  }
   await waitText(page, /\$/, "shell prompt (second session)");
   await page.click("#term");
   await page.keyboard.type("echo again_$(printf ssh)_ok", { delay: 5 });
