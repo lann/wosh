@@ -1,9 +1,10 @@
-// M5 gate for the unblocked browser-client parts: connection-string
-// parsing and the storage schema in node (pure modules), then the
-// IndexedDB CryptoKey persistence and the bootstrap panel in headless
-// Chromium — including identity survival across a page reload, which
-// is the property the whole module exists for. The in-browser iroh
-// leg is NOT here: blocked on A3 (see jco-probe.mjs).
+// M5 gate for the browser-client modules: connection-string parsing
+// and the storage schema in node (pure modules), then the IndexedDB
+// CryptoKey persistence and the bootstrap panel in headless Chromium —
+// including identity survival across a page reload, which is the
+// property the whole module exists for. The in-browser iroh session
+// itself is NOT here: it has its own gates (client-e2e-deno.mjs on the
+// Deno lane, browser-e2e.mjs for the full in-page leg).
 import assert from "node:assert/strict";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
@@ -195,16 +196,17 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       const ok = await crypto.subtle.verify("Ed25519", kp.publicKey, sig, msg);
       if (!ok) return "FAIL: sign/verify with persisted key";
 
-      // Bootstrap panel: fragment parsed, explicit save, honest A3
-      // notice on connect, forget removes.
+      // Bootstrap panel: fragment parsed, explicit save, connect
+      // policy (pairing tokens are deliberately not persisted, so a
+      // saved-proxy connect without one asks for it), forget removes.
       const boot = await initBoot(document.getElementById("panel"));
       if (!boot.identityAvailable) return "FAIL: boot identity " + boot.identityError;
       if (!boot.pending) return "FAIL: fragment not parsed (" + boot.notice + ")";
       boot.saveOffer();
       if (boot.state.proxies.length !== 1) return "FAIL: save offer did not persist";
       document.querySelector(".connect-btn").click();
-      if (!boot.notice.includes("polymorph-iroh#10")) {
-        return "FAIL: connect did not surface the A3 block";
+      if (!boot.notice.includes("pairing token required")) {
+        return "FAIL: tokenless connect did not ask for a token (" + boot.notice + ")";
       }
       const bad = "1.zz." + "a".repeat(62) + ".t.http://h";
       boot.tryParse(bad);

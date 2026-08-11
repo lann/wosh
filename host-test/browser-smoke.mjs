@@ -1,8 +1,12 @@
-// M2 browser smoke: xterm.js + the jco-transpiled engine in a real
-// (headless) browser, datagrams over a throwaway ws↔UDP bridge.
+// M2 browser smoke: xterm.js + the engine component (runtime-linked by
+// deltic, in-page) in a real (headless) browser, datagrams over a
+// throwaway ws↔UDP bridge.
 //
 //   node browser-smoke.mjs             # headless assertions (the M2 gate)
 //   node browser-smoke.mjs --serve     # manual mode: prints a URL, ^C to stop
+//
+// (DELTIC_TRANSLATOR must point at the pinned translator shim; the
+// `just m2` / `just web-serve` recipes fetch it and set the env.)
 //
 // Bridge contract (deliberately dumb, replaced by iroh from M3/M5):
 // each ws connection spawns its own mosh-server; the first frame is a
@@ -11,9 +15,9 @@
 // (prediction observation; keep RTT well under the predictor's 500 ms
 // expiry).
 //
-// Serves: / and /app.mjs from ../web, /xterm/* from web's node_modules,
-// /generated/* (the transpiled engine) and /shim/* (preview2-shim
-// browser dist) from this package.
+// Serves: / and the page modules from ../web, /xterm/* from web's
+// node_modules, and /dist/* — the deltic page bundle (just web-bundle)
+// plus the wasm artifacts (engine, composed client, translator shim).
 
 import dgram from "node:dgram";
 import http from "node:http";
@@ -49,15 +53,21 @@ const MIME = {
 
 const ROUTES = [
   [/^\/$/, () => join(WEB, "index.html")],
-  [/^\/(app|boot|connstring|storage|idb-keys)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
+  [/^\/(app|boot|connstring|storage|idb-keys|prf-wrap)\.mjs$/, (m) => join(WEB, `${m[1]}.mjs`)],
   [/^\/xterm\/xterm\.css$/, () => join(WEB, "node_modules/@xterm/xterm/css/xterm.css")],
   [/^\/xterm\/xterm\.js$/, () => join(WEB, "node_modules/@xterm/xterm/lib/xterm.js")],
   [/^\/xterm\/addon-fit\.js$/, () => join(WEB, "node_modules/@xterm/addon-fit/lib/addon-fit.js")],
-  [/^\/generated\/([A-Za-z0-9._-]+)$/, (m) => join(HERE, "generated", m[1])],
-  [/^\/generated\/interfaces\/([A-Za-z0-9._-]+)$/, (m) => join(HERE, "generated", "interfaces", m[1])],
+  [/^\/dist\/deltic\.js$/, () => join(WEB, "dist/deltic.js")],
+  [/^\/dist\/main\.wasm$/, () => join(HERE, "../engine-go/main.wasm")],
+  [/^\/dist\/composed-client\.wasm$/, () => join(HERE, "../client-core/composed-client.wasm")],
   [
-    /^\/shim\/([A-Za-z0-9._-]+)$/,
-    (m) => join(HERE, "node_modules/@bytecodealliance/preview2-shim/dist/browser", m[1]),
+    /^\/dist\/deltic-translator-shim\.wasm$/,
+    () => {
+      if (!process.env.DELTIC_TRANSLATOR) {
+        throw new Error("DELTIC_TRANSLATOR unset (run via the justfile recipes)");
+      }
+      return process.env.DELTIC_TRANSLATOR;
+    },
   ],
 ];
 
@@ -104,10 +114,13 @@ wss.on("connection", async (sock, req) => {
   );
 
   const udp = dgram.createSocket("udp4");
+  let closed = false;
   const later = (fn) => {
     if (loss && Math.random() < loss) return;
-    if (delayMs) setTimeout(fn, delayMs);
-    else fn();
+    // Delayed sends may outlive the sockets (page navigations close
+    // mid-flight); a closed bridge drops like the lossy pipe it is.
+    if (delayMs) setTimeout(() => closed || fn(), delayMs);
+    else closed || fn();
   };
   udp.on("message", (m) => later(() => sock.readyState === sock.OPEN && sock.send(m)));
   sock.on("message", (m, isBinary) => {
@@ -115,6 +128,7 @@ wss.on("connection", async (sock, req) => {
     later(() => udp.send(m, srv.port, "127.0.0.1"));
   });
   sock.on("close", () => {
+    closed = true;
     udp.close();
     srv.stop();
     liveSessions.delete(srv);
@@ -211,8 +225,10 @@ try {
     () =>
       new Promise((resolve) => {
         const t0 = Date.now();
-        const iv = setInterval(() => {
-          if (window.__mosh?.stats?.().predictorActive) {
+        const iv = setInterval(async () => {
+          // stats() is Promise-shaped under deltic.
+          const s = await window.__mosh?.stats?.();
+          if (s?.predictorActive) {
             clearInterval(iv);
             resolve(true);
           } else if (Date.now() - t0 > 4000) {

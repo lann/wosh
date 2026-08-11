@@ -139,7 +139,13 @@ async fn dial_connection(
     let options = EndpointOptions::new(&identity);
     options.add_alpn(ALPN);
     options.relay_url(relay_url);
-    options.udp_bind_addr("0.0.0.0:0");
+    // Embedder path policy (guest env, no WIT surface): WOSH_UDP=off
+    // skips the UDP direct path — the browser profile, where the
+    // `wasi:sockets` providers are honest fail-on-call stubs and a
+    // socket bind would fail the whole dial. Default: on (native).
+    if std::env::var("WOSH_UDP").map(|v| v != "off").unwrap_or(true) {
+        options.udp_bind_addr("0.0.0.0:0");
+    }
 
     let endpoint = Endpoint::bind(options).await.map_err(err("bind"))?;
 

@@ -17,13 +17,9 @@ spike-sync-build:
 spike-sync-wasmtime: spike-sync-build
     spikes/componentize-go/run-wasmtime-sync.sh
 
-# Transpile the sync spike with the pinned jco fork and run under node.
-spike-sync-jco: spike-sync-build
-    cd spikes/componentize-go/runner && npm run transpile-sync && node run-sync-node.mjs
-
-# Same transpiled module inside headless Chromium.
-spike-sync-browser: spike-sync-build
-    cd spikes/componentize-go/runner && npm run transpile-sync && node run-sync-browser.mjs
+# Run the sync spike's exports under deltic (runtime-linked, Deno).
+spike-sync-deltic: spike-sync-build
+    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../../../deno.json --frozen -A run-sync-deltic.mjs
 
 # Build the async/goroutine-abstraction spike component.
 spike-async-build:
@@ -33,16 +29,13 @@ spike-async-build:
 spike-async-wasmtime: spike-async-build
     spikes/componentize-go/run-wasmtime-async.sh
 
-# Transpile the async spike (JSPI) and run under node.
-spike-async-jco: spike-async-build
-    cd spikes/componentize-go/runner && npm run transpile-async && node --experimental-wasm-jspi run-async-node.mjs
-
-# Same transpiled module inside headless Chromium (JSPI).
-spike-async-browser: spike-async-build
-    cd spikes/componentize-go/runner && npm run transpile-async && node run-async-browser.mjs
+# Run the async spike under deltic (component-model async; no engine
+# flags needed — asyncness comes from the binary, not JSPI).
+spike-async-deltic: spike-async-build
+    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../../../deno.json --frozen -A run-async-deltic.mjs
 
 # All spike legs, in gate order.
-spikes: spike-sync-wasmtime spike-sync-jco spike-sync-browser spike-async-wasmtime spike-async-jco spike-async-browser spike-compose-wasmtime spike-compose-jco spike-compose-browser
+spikes: spike-sync-wasmtime spike-sync-deltic spike-async-wasmtime spike-async-deltic spike-compose-wasmtime spike-compose-deltic
 
 # --- composition spike (D7) ----------------------------------------------
 
@@ -55,13 +48,9 @@ spike-compose-build: engine-build
 spike-compose-wasmtime: spike-compose-build
     spikes/compose/run-wasmtime.sh
 
-# Composed component transpiled by the pinned jco fork, node leg.
-spike-compose-jco: spike-compose-build
-    cd spikes/componentize-go/runner && npm run transpile-compose && node run-compose-node.mjs
-
-# Same transpiled composition inside headless Chromium.
-spike-compose-browser: spike-compose-build
-    cd spikes/componentize-go/runner && npm run transpile-compose && node run-compose-browser.mjs
+# Composed component runtime-linked by deltic, Deno leg.
+spike-compose-deltic: spike-compose-build
+    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../../../deno.json --frozen -A run-compose-deltic.mjs
 
 # --- M1 engine + conformance -------------------------------------------
 
@@ -75,35 +64,46 @@ engine-build:
 engine-bindings:
     cd engine-go && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" componentize-go bindings --format && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" go mod edit -replace github.com/unixshells/mosh-go=../.deps/mosh-go -require=github.com/unixshells/mosh-go@v0.5.3-0.20260405220648-8dca5c67ec8e -require=github.com/unixshells/vt-go@v0.1.0 && PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH" go mod tidy
 
+# --- deltic host lane (the jco replacement) -------------------------------
+
+# The deltic translator shim (built by scripts/setup.sh from the pinned
+# .deps/deltic checkout); prints its path. Recipes capture it as
+# DELTIC_TRANSLATOR for the Deno-lane drivers and the /dist route.
+_translator:
+    @test -f .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm || { echo ".deps/deltic translator shim missing — run scripts/setup.sh" >&2; exit 1; }
+    @realpath .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm
+
 # Engine instantiation smoke under wasmtime (version probe).
 engine-wasmtime-smoke: engine-build
     wasmtime run --invoke 'version()' engine-go/main.wasm
 
-# Transpile the engine for the node/browser hosts.
-engine-transpile: engine-build
-    cd host-test && npm run transpile
-
-# Conformance gate: engine (jco/node, loopback UDP) vs stock C mosh-server.
-conformance-c: engine-transpile
-    cd host-test && npm run conformance-c
+# Conformance gate: engine (deltic/Deno, loopback UDP) vs stock C mosh-server.
+conformance-c: engine-build
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../deno.json --frozen -A run-conformance.mjs --server c
 
 # Same driver vs mosh-go's native server.
-conformance-go: engine-transpile
-    cd host-test && PATH="$HOME/.local/go/bin:$PATH" npm run conformance-go
+conformance-go: engine-build
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) PATH="$HOME/.local/go/bin:$PATH" deno run --config ../deno.json --frozen -A run-conformance.mjs --server go
 
 # All M1 legs, gate order.
 m1: engine-wasmtime-smoke conformance-c conformance-go
 
 # --- M2 browser mosh ------------------------------------------------------
 
+# Bundle the deltic host layer for the page (web/dist/deltic.js). The
+# Deno-only WebRTC backends stay external: in-browser the module uses the
+# platform RTCPeerConnection and those dynamic imports never execute.
+web-bundle:
+    deno bundle --platform browser --format esm --config deno.json --external node-datachannel --external node-datachannel/polyfill --external werift -o web/dist/deltic.js web/deltic-entry.ts
+
 # The M2 gate: xterm.js + engine in headless Chromium over the ws bridge
 # (prompt, echo, resize, prediction-under-latency).
-m2: engine-transpile
-    cd host-test && node browser-smoke.mjs
+m2: engine-build web-bundle
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) node browser-smoke.mjs
 
 # Manual browser mosh: prints a URL; every tab gets its own shell.
-web-serve: engine-transpile
-    cd host-test && node browser-smoke.mjs --serve
+web-serve: engine-build web-bundle
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) node browser-smoke.mjs --serve
 
 # --- M3 composed client core (D7/B2) ---------------------------------------
 
@@ -149,20 +149,27 @@ m4: compose-client compose-proxy proxy-build
 m5-web:
     cd host-test && npm run web-tests
 
-# Probe the A3-blocked leg: the composed client transpiled by the
-# pinned jco fork (JSPI) against a real proxy. Prints a classification;
-# currently THROWS AT INSTANTIATION (composed-resource TDZ,
-# lann/jco#51 — minimal repro in spikes/compose-async-tdz/).
-m5-jco-probe: compose-client compose-proxy proxy-build
-    cd host-test && npm run jco-probe
+# The composed client on the Deno lane: the SAME artifact + deltic host
+# modules the browser uses (relay wire, no UDP), against a real proxy —
+# connect-proxy, M1 trio, stats, detach. The fast diagnostic between
+# "components broke" and "the browser page broke".
+m5-client-deno: compose-client compose-proxy proxy-build
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../deno.json --frozen -A client-e2e-deno.mjs
+
+# The M5 browser E2E — the leg jco could never run (A3): the composed
+# client runtime-linked by deltic IN THE PAGE speaks real mosh through a
+# live proxy over iroh from headless Chromium; negative token path,
+# M1 trio, stats, detach. Relay port :3352.
+m5-browser-e2e: compose-client compose-proxy proxy-build web-bundle
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) node browser-e2e.mjs
 
 # The loopback netem matrix over the M3 gate (needs passwordless sudo
 # for tc): delay/loss cells, per-phase timings as the measurement.
 m5-netem:
     scripts/netem-matrix.sh
 
-# The unblocked-parts gate.
-m5: m5-web
+# The full M5 gate: web modules + both composed-client legs.
+m5: m5-web m5-client-deno m5-browser-e2e
 
 # --- M6 passkeys (E) ---------------------------------------------------------
 

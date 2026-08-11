@@ -6,6 +6,8 @@ node_modules/
 generated/
 generated-*/
 main.wasm
+# deltic page bundle (just web-bundle)
+web/dist/
 
 # Go
 # engine-go: generated bindings are COMMITTED (wit_exports.go,

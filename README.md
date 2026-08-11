@@ -6,12 +6,16 @@ stock `mosh-server`, through a native proxy that embeds the
 [polymorph-iroh](https://github.com/polymorph-components/polymorph-iroh)
 endpoint component.
 
-**Status: M7 complete (inner ssh; the proxy is deprivileged by
-default and never sees mosh keys — the D2 end state; browser legs
-A3-blocked).** Local-only experiment: no CI, no stability,
-delete-at-will. If it earns a public repository it gets a new name.
-The full plan lives in [`PLAN.md`](PLAN.md); resumable session state
-in [`TASK.md`](TASK.md).
+**Status: deltic cutover complete — the browser leg is LIVE.** All
+JS hosting moved from jco (AOT transpilation, node) to
+[deltic](https://github.com/lann/deltic) (runtime linking, Deno +
+browsers); the A3 blocker family is retired, and `just m5` now gates a
+real in-browser mosh session (composed client in headless Chromium ↔
+proxy over iroh). M0–M7 native milestones unchanged and green.
+Remaining browser legs (M6 ceremony E2E, M7 inner-ssh E2E in-page) are
+unblocked follow-ups. Local-only experiment: no CI, no stability,
+delete-at-will. The full plan lives in [`PLAN.md`](PLAN.md); resumable
+session state in [`TASK.md`](TASK.md).
 
 ## Architecture
 
@@ -26,10 +30,10 @@ ssh/mosh layer is the strong security boundary.
   goroutines, no timers); a small Rust glue component owns the async
   parts (datagram recv loop, `wait-for` tick) and exports the driver
   surface JS talks to; the polymorph-iroh endpoint completes the
-  composition. Sync-only engine exports keep every pre-M5 milestone
-  independent of the jco async-scheduler defect (polymorph-iroh#10),
-  and JS-orchestrating the components separately remains a cheap
-  fallback (the engine surface is the same either way).
+  composition. On JS hosts the composed artifact is runtime-linked by
+  deltic (no transpile step); JS-orchestrating the components
+  separately remains a cheap fallback (the engine surface is the same
+  either way).
 - Control channel: the first client-opened bi stream on the
   connection (ALPN `wosh/0`), length-prefixed CBOR, spoken
   by the client-core glue and the proxy-core component through the
@@ -86,8 +90,9 @@ ssh/mosh layer is the strong security boundary.
   engine unchanged (pure sync, zero non-wasi imports) + a small Rust
   glue component holding the only async parts (recv loop, tick) +
   the endpoint. Composition mechanics validated sync-only the same day
-  (finding 11); composed *async* under jco rides A3 exactly like the
-  endpoint's browser leg (no new blocker). Recorded fallback if
+  (finding 11); composed *async* under jco rode A3 exactly like the
+  endpoint's browser leg *(resolved 2026-08-10: deltic runs composed
+  async on every JS host — findings 24–25)*. Recorded fallback if
   composed-async stalls: JS orchestrates engine and endpoint
   separately — kept permanently cheap because the engine surface is
   identical in both shapes. WebAuthn, UI, storage, bootstrap, and (for
@@ -123,18 +128,23 @@ ssh/mosh layer is the strong security boundary.
 
 - `.deps/mosh-go/` — vendored mosh-go fork at the pinned rev, with the
   wasm build-tag and fragment-size patches (`DEPS.md` there is the
-  patch ledger). Other `.deps/` entries (polymorph-iroh at the
-  finding-14 pin) are cloned by `scripts/setup.sh`, not committed.
+  patch ledger). Other `.deps/` entries — polymorph-iroh and deltic at
+  the pins in `scripts/setup.sh` — are cloned by that script, not
+  committed. deltic is the JS component host (runtime linker): the
+  root `deno.json` maps `@deltic/*` and the polymorph deltic host
+  modules into these checkouts, and setup builds deltic's translator
+  shim (`just _translator` prints its path).
 - `client-core/` — the D7/B2 glue component (Rust): async pumps
   between the sync engine and the endpoint; `composed-client.wasm` is
   the wac-fused artifact (engine+glue+endpoint).
 - `spikes/componentize-go/` — M0 feasibility spikes (sync exports;
   async/goroutine abstraction probes).
 - `spikes/compose/` — D7 composition spike: sync Rust adapter
-  wac-plugged with the engine; wasmtime/node/browser legs
-  (`just spike-compose-wasmtime spike-compose-jco
-  spike-compose-browser`). `spikes/compose-async-tdz/` — the minimal
-  repro for lann/jco#51 (finding 18).
+  wac-plugged with the engine; wasmtime/deltic legs
+  (`just spike-compose-wasmtime spike-compose-deltic`).
+  `spikes/compose-async-tdz/` — the minimal repro for lann/jco#51
+  (finding 18; historical — the defect class cannot exist in a
+  runtime linker).
 - `web/prf-probe/` — M0 WebAuthn PRF capability probe page (deploy to
   the target gh-pages origin; run on Firefox mobile Nightly).
 - `wit/` — the `experiment:mosh` engine world.
@@ -143,16 +153,21 @@ ssh/mosh layer is the strong security boundary.
 - `proto/` — control-channel messages + datagram tunnel framing
   shared by the client-core glue and proxy-core (D8; unit tests:
   `cargo test --lib`).
-- `host-test/` — M1 conformance harness: jco-transpiled engine driven
-  from node over loopback UDP against stock C `mosh-server` (gate) and
-  mosh-go's server (`moshgo-server/`); `composed-e2e/` — the M3 native
-  gate (composed core under wasmtime vs upstream iroh + mosh-server);
-  `proxy-e2e/` — the M4 native gate (composed core ↔ real proxy ↔
-  proxy-spawned mosh-server over iroh); `passkey-e2e/` — the M6 native
-  gate (ceremonies, escrow, persistent detach, fresh-process reattach;
-  webauthn-authenticator-rs soft passkey as the user); `ssh-e2e/` —
-  the M7 native gate (deprivileged proxy, russh sshd stand-in,
-  inner-ssh flow with host-key/auth negatives).
+- `host-test/` — M1 conformance harness: the engine component
+  runtime-linked by deltic on Deno, driven over loopback UDP against
+  stock C `mosh-server` (gate) and mosh-go's server
+  (`moshgo-server/`); `deltic-host.ts` — the shared deltic layer
+  (translate once, instantiate with WASI shims + polymorph host
+  modules); `client-e2e-deno.mjs` — the composed client on the Deno
+  lane vs a real proxy (`just m5-client-deno`); `browser-e2e.mjs` —
+  the M5 browser gate (`just m5-browser-e2e`); `composed-e2e/` — the
+  M3 native gate (composed core under wasmtime vs upstream iroh +
+  mosh-server); `proxy-e2e/` — the M4 native gate (composed core ↔
+  real proxy ↔ proxy-spawned mosh-server over iroh); `passkey-e2e/` —
+  the M6 native gate (ceremonies, escrow, persistent detach,
+  fresh-process reattach; webauthn-authenticator-rs soft passkey as
+  the user); `ssh-e2e/` — the M7 native gate (deprivileged proxy,
+  russh sshd stand-in, inner-ssh flow with host-key/auth negatives).
 - `proxy-core/` — the D9 proxy-brain component (accept loop, control
   channel, TOFU via host import, sub-framed datagram pumps,
   `wasi:sockets` UDP to mosh-server, and the M7 SSH_FORWARD
@@ -165,15 +180,20 @@ ssh/mosh layer is the strong security boundary.
   sessions; `--ssh-target` names the loopback sshd for forwarded
   streams).
 - `web/` — the static client site: `index.html` + `app.mjs` (xterm.js
-  + engine over the M2 dev bridge; idles honestly without one) +
-  the M5 bootstrap modules — `boot.mjs` (panel: fragment/manual
-  entry, explicit save offers, saved proxies, A3 notice),
+  in front of two session modes: the M2 dev bridge, and the real iroh
+  mode — the composed client runtime-linked by deltic in-page,
+  `connectIroh`) + `deltic-entry.ts` (the page's deltic host layer,
+  bundled to `web/dist/deltic.js` by `just web-bundle`) + the M5
+  bootstrap modules — `boot.mjs` (panel: fragment/manual entry,
+  explicit save offers, saved proxies, connect with token policy),
   `connstring.mjs`, `storage.mjs`, `idb-keys.mjs` (non-extractable
   CryptoKey persistence) — and the M6 escrow crypto: `prf-wrap.mjs`
   (PRF→HKDF→AES-GCM wrap/unwrap of `{key, seqFloor}`, D4 policy
-  guard). Gates: `just m5-web` (includes the phase-3 ceremony tests
-  against the CDP virtual authenticator); the in-browser iroh leg
-  waits on A3/lann/jco#51 (`just m5-jco-probe` is the detector).
+  guard). Gates: `just m5` = `m5-web` (modules incl. the phase-3
+  ceremony tests against the CDP virtual authenticator) +
+  `m5-client-deno` + `m5-browser-e2e` (the in-browser session,
+  finding 25). `scripts/web-deploy-tree.sh` assembles the static
+  deploy tree including `dist/` (bundle, composed client, translator).
 
 ## Milestones
 
@@ -184,9 +204,9 @@ ssh/mosh layer is the strong security boundary.
 | M2 | browser mosh: xterm.js + engine + throwaway ws-datagram bridge | **DONE** — findings 12–13; `just m2` / `just web-serve` |
 | M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
-| M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **unblocked parts DONE** (findings 17–19; `just m5 m5-jco-probe m5-netem`); browser endpoint leg **blocked on A3** + new lann/jco#51 |
-| M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native gate) + web-tests phase 3; browser↔proxy ceremony E2E A3-blocked |
-| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7`; proxy deprivileged by default (`--personal` opts back in); browser ssh leg A3-blocked |
+| M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **DONE** — findings 17–19 (unblocked parts, jco era) + 24–25 (deltic cutover, browser leg live); `just m5 m5-netem` |
+| M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native gate) + web-tests phase 3; browser↔proxy ceremony E2E: unblocked follow-up (finding 24) |
+| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7`; proxy deprivileged by default (`--personal` opts back in); in-page ssh leg: unblocked follow-up (finding 24) |
 
 ## Running
 
@@ -203,15 +223,18 @@ Numbered, append-only. Each spike/milestone writes what it found here.
 Tested with: componentize-go 0.4.1 (host Go 1.26.5; async builds use the
 auto-downloaded patched `go1.25.5-wasi-on-idle-v2`, upstream PR
 golang/go#76775, arm64 build available), wasmtime 47.0.1, wasm-tools
-1.247.0, node 24.18.0, jco = lann/jco fork @ 30186b2 (via
-polymorph-iroh/.deps), headless Chromium 151. M1 adds: stock
-`mosh-server` 1.4.0 (Debian), mosh-go @ 8dca5c67ec8e (vendored fork,
-see `.deps/mosh-go/DEPS.md`), vt-go v0.1.0. The D7 compose spike adds:
-wac 0.10.1, Rust 1.96.0 with the `wasm32-wasip2` target, wit-bindgen
-0.59. M6 adds: webauthn-rs 0.5 (proxy RP), webauthn-authenticator-rs
-0.5.5 SoftPasskey + webauthn-rs-proto 0.5 (harness). M7 adds:
-golang.org/x/crypto v0.49.0 (engine, unpatched) and russh 0.62.5
-(the ssh-e2e sshd stand-in).
+1.247.0, node 24.18.0 (harness scripts only), deno 2.9.5, deltic @ the
+`scripts/setup.sh` pin (consumed as a git reference per its
+docs/consumers.md; translator shim built locally), headless
+Chromium 151. M1 adds: stock `mosh-server` 1.4.0 (Debian), mosh-go @
+8dca5c67ec8e (vendored fork, see `.deps/mosh-go/DEPS.md`), vt-go
+v0.1.0. The D7 compose spike adds: wac 0.10.1, Rust 1.96.0 with the
+`wasm32-wasip2` target, wit-bindgen 0.59. M6 adds: webauthn-rs 0.5
+(proxy RP), webauthn-authenticator-rs 0.5.5 SoftPasskey +
+webauthn-rs-proto 0.5 (harness). M7 adds: golang.org/x/crypto v0.49.0
+(engine, unpatched) and russh 0.62.5 (the ssh-e2e sshd stand-in).
+The deltic cutover retires the lann/jco fork pin (historical findings
+below reference it as the "jco era").
 
 1. **componentize-go sync path: green everywhere (D5 gate PASSED).**
    Sync function exports and exported *resources* work under wasmtime
@@ -659,3 +682,63 @@ golang.org/x/crypto v0.49.0 (engine, unpatched) and russh 0.62.5
     `just m5-jco-probe` remains the unblock detector. Sizes:
     proxy-core 496 KB, composed proxy 2.5 MB, composed client
     10.5 MB.
+
+24. **deltic cutover (2026-08-10): jco is fully replaced; every gate
+    that existed is green on the new host, and the finding-4/A3 defect
+    family is gone.** deltic is a runtime linker (wasmtime-frontend
+    translation in-process, CM 0.3 task model native to the JS event
+    loop): no transpile step, no generated trees, no `--map` flags, no
+    fork pin, no `--experimental-wasm-jspi` (the callback ABI needs no
+    JSPI; the stackful forms light up via JSPI where the engine has
+    it). The node harness lanes moved to stock Deno (`deno.json` at
+    the root is the one import map; polymorph deltic host modules come
+    from the pinned `.deps/polymorph-iroh` nested checkouts; the
+    browser gets one bundled ESM via `just web-bundle`, Deno-only
+    WebRTC backends marked external). Cutover evidence: M1
+    conformance (both legs), M2 browser smoke incl. prediction, all
+    three spikes — and the async spike's `[async-lower]` import shape,
+    broken under every jco pin we ever tested (finding 4), completes
+    in ~10 ms under deltic. Composed sync AND async cross-component
+    shapes work; lann/jco#51's TDZ class cannot exist (nothing is
+    emitted). Two wosh-side accommodations: every export call is
+    Promise-shaped on JS hosts (drivers became single-writer async
+    pump loops — two concurrent `drain-output`s could interleave
+    screen bytes), and trailing `option<T>` params need an explicit
+    `undefined` (exact arity). Embedder path policy rides guest env,
+    not WIT: `WOSH_UDP=off` skips the endpoint's UDP bind where
+    `wasi:sockets` is stubbed (browser profile) — a socket-create
+    failure would otherwise fail the whole dial (the endpoint treats
+    a provided-but-unbindable addr as an error, correctly).
+
+25. **The browser leg is LIVE (`just m5`), and it found a real deltic
+    scheduler-periphery defect on the way — fixed upstream the same
+    day (lann/deltic#70).** The defect: a FACT cross-component call
+    promising-wrapped only the callee's *initial* entry; the
+    callback-loop *re-entries* went in unwrapped, so a composed
+    callback-ABI callee that parks (WAIT) and later blocks
+    synchronously mid-activation — wit-bindgen's `block_on` shape,
+    here the fused endpoint signing its TLS CertificateVerify via
+    `block_on(webcrypto sign)` inside packet processing — died with
+    `SuspendError: trying to suspend without WebAssembly.promising`.
+    Invisible to the official CM suite (its callees only block via
+    WAIT codes, which unwind the frame first); found by this repo's
+    composed client within an hour of it first running under deltic,
+    exactly the consumer-workload class deltic's docs predicted.
+    Upstream fix mirrors the lift path (`enterWasm` on the callback,
+    per-callee `canBlock`), with a hand-written composed-wat
+    regression fixture; deltic gates green (conformance 1254/0).
+    With the fix: `just m5-client-deno` (Deno lane, ~230 ms
+    connect-proxy) and `just m5-browser-e2e` (headless Chromium
+    drives the real page: QR-shaped `/#connstring` navigation, panel
+    connect, prompt/echo/resize through xterm.js, stats, clean
+    detach; wrong pairing token refused with a legible notice
+    first). Both connect on attempt 1 — the endpoint's RefCell
+    borrow hazard (documented upstream, host-deltic README) never
+    fired here, but the browser gate keeps a bounded retry budget
+    (8) against it. Paths are relay-only for now: the glue never
+    sets `endpoint-options.webrtc`, so the WebRTC upgrade is an
+    unexercised follow-up (enable both sides + assert
+    `connection.path` moves, per the upstream exam). Remaining
+    browser follow-ups: M6 ceremony E2E and M7 inner-ssh in-page
+    (both now purely wosh-side work). Sizes: page bundle 527 KB,
+    translator shim 3.8 MB, composed client 10.5 MB (unchanged).

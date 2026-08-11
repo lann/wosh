@@ -38,7 +38,7 @@ for t in wasmtime wasm-tools wac node just cargo; do
   command -v "$t" >/dev/null 2>&1 || { echo "missing: $t (install per polymorph family setup)"; exit 1; }
 done
 say "wasmtime: $(wasmtime --version)"
-say "node: $(node --version) (need >=24 for JSPI)"
+say "node: $(node --version) (harness scripts: playwright/ws)"
 
 # --- rust wasm target (composition spike, client-core glue) ---------------
 if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -q wasm32-wasip2; then
@@ -46,21 +46,41 @@ if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep 
   rustup target add wasm32-wasip2
 fi
 
-# --- jco fork (transpiler) -----------------------------------------------
-# The pinned lann/jco fork build is consumed from the polymorph-iroh
-# sibling checkout; runner/package.json references it as a file: dep.
-JCO_PKG="$(cd "$(dirname "$0")/.." && pwd)/../polymorph-iroh/.deps/jco/packages/jco-transpile"
-if [ -d "$JCO_PKG/dist" ]; then
-  say "jco-transpile: $JCO_PKG"
-else
-  echo "warning: built jco-transpile not found at $JCO_PKG (run polymorph-iroh/scripts/setup.sh)"
-fi
+# --- deno (deltic host lane) ----------------------------------------------
+# deltic (the JS component host that replaced jco) runs on Deno; the repo
+# itself is pinned below and consumed as source through the root
+# deno.json import map.
+command -v deno >/dev/null 2>&1 || { echo "missing: deno (>=2.9; https://deno.com)"; exit 1; }
+say "deno: $(deno --version | head -1)"
 
-# --- runner npm deps ------------------------------------------------------
-RUNNER="$(cd "$(dirname "$0")/.." && pwd)/spikes/componentize-go/runner"
-if [ -f "$RUNNER/package.json" ] && [ ! -d "$RUNNER/node_modules" ]; then
-  say "npm install (spike runner)"
-  (cd "$RUNNER" && npm install --no-fund --no-audit)
+# --- deltic (pinned): the JS component host + its translator shim -----------
+# Consumed as a git reference per deltic docs/consumers.md: the root
+# deno.json maps @deltic/* into this checkout, and the translator shim
+# (the wasm build of its wasmtime-frontend translator) is built here.
+DELTIC_REPO=https://github.com/lann/deltic
+DELTIC_PIN=d25551c208cfb3eb995f8f471b60bf408cc3121d
+DELTIC_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/deltic"
+if [ ! -d "$DELTIC_DIR/.git" ]; then
+  say "cloning deltic @ ${DELTIC_PIN:0:12}"
+  git clone "$DELTIC_REPO" "$DELTIC_DIR"
+fi
+if [ "$(git -C "$DELTIC_DIR" rev-parse HEAD)" != "$DELTIC_PIN" ]; then
+  git -C "$DELTIC_DIR" fetch --quiet origin
+  git -C "$DELTIC_DIR" checkout --quiet "$DELTIC_PIN"
+fi
+say "deltic: $(git -C "$DELTIC_DIR" log --oneline -1)"
+if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -q wasm32-unknown-unknown; then
+  say "rustup target add wasm32-unknown-unknown (deltic translator shim)"
+  rustup target add wasm32-unknown-unknown
+fi
+TRANSLATOR="$DELTIC_DIR/target/wasm32-unknown-unknown/release/translator_shim.wasm"
+DELTIC_STAMP="$DELTIC_DIR/.wosh-built-at"
+if [ -f "$TRANSLATOR" ] && [ -f "$DELTIC_STAMP" ] && [ "$(cat "$DELTIC_STAMP")" = "$DELTIC_PIN" ]; then
+  say "deltic translator shim already built"
+else
+  say "building the deltic translator shim"
+  (cd "$DELTIC_DIR" && cargo build -p translator-shim --target wasm32-unknown-unknown --release)
+  echo "$DELTIC_PIN" > "$DELTIC_STAMP"
 fi
 
 # --- M1 conformance harness -----------------------------------------------
@@ -80,9 +100,10 @@ if [ -f "$WEB/package.json" ] && [ ! -d "$WEB/node_modules" ]; then
 fi
 
 # --- polymorph-iroh (pinned): endpoint component, host shims, relay --------
-# The rev evaluated in finding 14 (datagram + identity surfaces merged).
+# First rev with the merged deltic leg (host-deltic/, PR #36): the sibling
+# .deps pins carry the deltic host modules our harnesses import.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=bcaed0f2b98ef72ab5acbbc543a8bb78bb921a56
+PIROH_PIN=f46a80df41676cb3db1de50159101de2b5fa88ea
 PIROH_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/polymorph-iroh"
 if [ ! -d "$PIROH_DIR/.git" ]; then
   say "cloning polymorph-iroh @ ${PIROH_PIN:0:12}"
@@ -94,7 +115,7 @@ if [ "$(git -C "$PIROH_DIR" rev-parse HEAD)" != "$PIROH_PIN" ]; then
 fi
 say "polymorph-iroh: $(git -C "$PIROH_DIR" log --oneline -1)"
 # Its own pinned deps (webcrypto/websocket/webrtc shims, upstream iroh,
-# tls); SKIP_NODE: we consume jco from the sibling checkout, not here.
+# tls); SKIP_NODE: the jco spike legs' npm trees are theirs, not ours.
 (cd "$PIROH_DIR" && SKIP_NODE=1 scripts/setup.sh >/dev/null)
 PIROH_STAMP="$PIROH_DIR/.wosh-built-at"
 if [ -f "$PIROH_STAMP" ] && [ "$(cat "$PIROH_STAMP")" = "$PIROH_PIN" ]; then
@@ -104,6 +125,14 @@ else
   (cd "$PIROH_DIR" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
   (cd "$PIROH_DIR/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
   echo "$PIROH_PIN" > "$PIROH_STAMP"
+fi
+
+# --- deno module graph + npm deps (root deno.json/deno.lock) ---------------
+# Last: the import map's local paths point into the .deps checkouts above.
+WOSH_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -d "$WOSH_ROOT/node_modules" ]; then
+  say "deno install (import map + npm deps)"
+  (cd "$WOSH_ROOT" && deno install --frozen --allow-scripts=npm:node-datachannel)
 fi
 
 say "setup complete"
