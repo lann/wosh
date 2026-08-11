@@ -8,7 +8,8 @@ of each session.
 ## Status: DELTIC CUTOVER COMPLETE — browser leg live (2026-08-10)
 
 2026-08-11 addendum: the client now deploys to GitHub Pages on every
-main merge (`.github/workflows/pages.yml`; repo went public), `just
+main merge (since gated on the CI gates; `.github/workflows/ci.yml`;
+repo went public), `just
 proxy-personal` runs the proxy against n0's public relays with QR/RP
 defaults pointing at the Pages client, and every finding-24 browser
 follow-up landed: the **WebRTC upgrade leg** (finding 27,
