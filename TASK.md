@@ -83,8 +83,13 @@ wholesale and shipped the previously A3-blocked browser leg:
   fresh assertion gesture — policy question, not plumbing.
 - ssh v0 gaps (deliberate): password auth only; one exec per session;
   no interactive shell/stdin surface; hostkey pinning embedder-side.
-  The unextractable-WebCrypto-ssh-key step needs an async engine
-  export — no longer blocked (deltic), just unbuilt.
+  Now triaged into issues: #7 (first-contact fingerprint confirm
+  BEFORE the password — the sharpest edge, two-phase ssh-flow), #8
+  (publickey auth with a non-extractable WebCrypto key over the
+  polymorph signing-key handle; the async engine import is the work —
+  unblocked since deltic), #9 (keyboard-interactive, riding #7's
+  prompt plumbing). Interactive-shell fallback and multi-exec stay
+  unfiled: product-scope decisions awaiting a concrete need.
 - Upstream courtesies: ALL FILED 2026-08-11 — deltic module-identity
   convergence (lann/deltic#108); mosh-go wasip build tags
   (unixshells/mosh-go#1), pending-diff races + resume-adoption notes
