@@ -198,3 +198,19 @@ m6: compose-client compose-proxy proxy-build
 # password is ever sent (stand-in observes zero auth attempts).
 m7: compose-client compose-proxy proxy-build
     cd host-test/ssh-e2e && cargo run --release
+
+# --- running it (see README "Running the server") -----------------------------
+
+# Build everything and run the proxy in personal mode (it spawns
+# mosh-server as you on connect; needs mosh-server on PATH). The home
+# relay defaults to n0's public NA-east iroh relay — the same relays
+# stock iroh uses; RELAY=<url> overrides (other regions:
+# usw1-1/euc1-1/aps1-1.relay.n0.iroh.link, or a self-hosted/loopback
+# one as the e2e gates spawn). QR and passkey-RP defaults point at the
+# deployed Pages client; extra args pass through to wosh-proxy, and
+# later flags win (e.g. `just proxy-personal --yes --no-qr`).
+proxy-personal *args: compose-proxy proxy-build
+    proxy/target/release/wosh-proxy --relay "${RELAY:-https://use1-1.relay.n0.iroh.link}" \
+        --qr-base 'https://lann.github.io/wosh/#' \
+        --rp-id lann.github.io --rp-origin https://lann.github.io \
+        --personal {{args}}
