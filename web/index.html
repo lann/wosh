@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#000000" />
   <title>wosh</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
     html, body { height: 100%; margin: 0; background: #000; }
@@ -44,6 +48,13 @@
       onPersist: persistCurrent,
       onReattach: reattachIroh,
     });
+    // PWA shell (issue #10): https only — dev/test serving (localhost
+    // is a secure context but stays http) never installs the SW, so
+    // caching can't confuse local iteration or the browser gates. The
+    // deployed sw.js is version-keyed by web-deploy-tree.sh.
+    if (location.protocol === "https:" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("sw:", e));
+    }
   </script>
 </body>
 </html>
