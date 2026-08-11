@@ -196,6 +196,18 @@ try {
       await new Promise((r) => setTimeout(r, 25));
     }
   };
+  // Poll-until for non-screen state (DOM classes, focus, layout):
+  // input events and Runtime.evaluate travel different pipelines into
+  // the renderer, so a single sample right after tap()/type() races
+  // the page's own handler (observed as CI-only flakes).
+  const until = async (fn, label, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await fn()) return;
+      if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
 
   // Phase 1: engine + prompt through the full browser stack.
   await page.goto(`${base}/`);
@@ -241,8 +253,20 @@ try {
   );
   const typeStarted = Date.now();
   await page.keyboard.type("predictme", { delay: 10 });
-  const paintedAt = Date.now() - typeStarted;
-  const screenNow = await text();
+  // The proof of LOCAL paint is the full string appearing strictly
+  // before the earliest possible server echo (typeStarted + RTT).
+  // Poll up to that window instead of sampling once: the paint of the
+  // final keystroke races a single immediate evaluate on slow runners
+  // (observed in CI: 8 of 9 chars at 108 ms). The assert below keeps
+  // the original lenience — if the window is already spent, locality
+  // is unprovable this run and only predictorActive is asserted.
+  let screenNow = await text();
+  let paintedAt = Date.now() - typeStarted;
+  while (!screenNow.includes("predictme") && Date.now() - typeStarted < 2 * delayMs - 40) {
+    await new Promise((r) => setTimeout(r, 10));
+    screenNow = await text();
+    paintedAt = Date.now() - typeStarted;
+  }
   const underlined = await page.evaluate(() => window.__mosh.underlinedCells());
   if (paintedAt < 2 * delayMs && !screenNow.includes("predictme")) {
     throw new Error(
@@ -292,9 +316,10 @@ try {
 
   await mpage.goto(`${base}/`);
   await mwait((t) => /\$/.test(t), "shell prompt (mobile)");
-  if (!(await mpage.$eval("#keys", (el) => el.offsetHeight > 0))) {
-    throw new Error("extra-keys bar not visible on a coarse-pointer context");
-  }
+  await until(
+    () => mpage.$eval("#keys", (el) => el.offsetHeight > 0),
+    "extra-keys bar on a coarse-pointer context",
+  );
 
   await mpage.keyboard.type("cat -v", { delay: 5 });
   await mpage.keyboard.press("Enter");
@@ -304,14 +329,17 @@ try {
   log("mobile bar esc OK");
 
   await mpage.tap('#keys button:text-is("ctrl")');
-  if (!(await mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed")))) {
-    throw new Error("ctrl did not arm");
-  }
+  await until(
+    () => mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed")),
+    "ctrl to arm",
+  );
   await mpage.keyboard.type("c"); // sticky Ctrl ⇒ 0x03 ⇒ SIGINT kills cat
   await mwait((t) => t.includes("^C"), "sticky ctrl+c killed cat");
-  if (await mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed"))) {
-    throw new Error("ctrl stayed armed after the keystroke (must be one-shot)");
-  }
+  await until(
+    async () =>
+      !(await mpage.$eval('#keys button:text-is("ctrl")', (el) => el.classList.contains("armed"))),
+    "ctrl to disarm (one-shot)",
+  );
   log("mobile sticky ctrl OK");
 
   await mpage.tap('#keys button:text-is("↑")');
@@ -322,11 +350,11 @@ try {
   log("mobile arrow history OK");
 
   const focused = () => mpage.evaluate(() => document.activeElement === window.__mosh.term.textarea);
-  if (!(await focused())) throw new Error("terminal not focused before ⌨ toggle");
+  await until(focused, "terminal focus before ⌨ toggle");
   await mpage.tap('#keys button:text-is("⌨")');
-  if (await focused()) throw new Error("⌨ did not blur the terminal");
+  await until(async () => !(await focused()), "⌨ to blur the terminal");
   await mpage.tap('#keys button:text-is("⌨")');
-  if (!(await focused())) throw new Error("⌨ did not refocus the terminal");
+  await until(focused, "⌨ to refocus the terminal");
   log("mobile ⌨ toggle OK");
 
   await mpage.screenshot({ path: "/tmp/opencode/m2-smoke-mobile.png" });
