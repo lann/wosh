@@ -5,16 +5,22 @@
 // proxies (tokens are deliberately not persisted) ask for a token at
 // connect time. The session runs in the terminal below (app.mjs
 // connectIroh: the composed client over real iroh, hosted by deltic).
+//
+// M6: a live session can be made persistent ("persist session":
+// passkey registration + PRF-wrapped escrow, app.mjs persistCurrent),
+// and a saved proxy with a recorded session offers "reattach"
+// (assertion-gated, same token rules — app.mjs reattachIroh).
 
 import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
 import * as store from "./storage.mjs";
 import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
 
-export async function initBoot(panel, storage = localStorage, { onConnect } = {}) {
+export async function initBoot(panel, storage = localStorage, { onConnect, onPersist, onReattach } = {}) {
   let state = store.load(storage);
   let pending = null; // parsed-but-unsaved proxy details
   let notice = "";
   let connecting = false;
+  let connected = null; // { relayUrl, endpointIdHex } of the live session
 
   const keyStore = await openKeyStore();
   let identity = null;
@@ -88,9 +94,71 @@ export async function initBoot(panel, storage = localStorage, { onConnect } = {}
     render();
     try {
       await onConnect({ relayUrl, endpointIdHex, token });
+      connected = { relayUrl, endpointIdHex };
       notice = "";
     } catch (e) {
       notice = `connect failed: ${e.message ?? e}`;
+    } finally {
+      connecting = false;
+      render();
+    }
+  };
+
+  // Make the live session persistent (M6): ceremony in app.mjs; the
+  // proxy entry is saved implicitly (a persistent session without its
+  // proxy row would be unreachable after reload).
+  const persist = async () => {
+    if (connecting || !connected || !onPersist) return;
+    connecting = true;
+    notice = "persisting session (passkey ceremony)…";
+    render();
+    try {
+      const { escrow, sessionId } = await onPersist();
+      const { state: withProxy } = store.upsertProxy(state, connected);
+      state = store.recordSession(withProxy, {
+        proxyId: connected.endpointIdHex,
+        sessionId,
+        key: escrow,
+      });
+      store.save(storage, state);
+      notice = `session ${sessionId} persistent (passkey-gated reattach)`;
+    } catch (e) {
+      notice = `persist failed: ${e.message ?? e}`;
+    } finally {
+      connecting = false;
+      render();
+    }
+  };
+
+  // Assertion-gated reattach to a recorded session; the fresh escrow
+  // (re-sealed at a jumped floor) replaces the stored arm.
+  const reattach = async (proxy, session, token) => {
+    if (connecting || !onReattach) return;
+    if (!token) {
+      notice = "pairing token required (tokens are not persisted — get one from the proxy)";
+      render();
+      return;
+    }
+    connecting = true;
+    notice = `reattaching session ${session.sessionId}…`;
+    render();
+    try {
+      const { escrow } = await onReattach({
+        relayUrl: proxy.relayUrl,
+        endpointIdHex: proxy.endpointIdHex,
+        token,
+        sessionId: session.sessionId,
+      });
+      connected = { relayUrl: proxy.relayUrl, endpointIdHex: proxy.endpointIdHex };
+      state = store.recordSession(state, {
+        proxyId: proxy.endpointIdHex,
+        sessionId: session.sessionId,
+        key: escrow,
+      });
+      store.save(storage, state);
+      notice = "";
+    } catch (e) {
+      notice = `reattach failed: ${e.message ?? e}`;
     } finally {
       connecting = false;
       render();
@@ -148,6 +216,17 @@ export async function initBoot(panel, storage = localStorage, { onConnect } = {}
       );
     }
 
+    if (connected && onPersist) {
+      panel.append(
+        el(
+          "div",
+          { class: "boot-session" },
+          `live session on ${connected.endpointIdHex.slice(0, 8)}… — `,
+          el("button", { id: "persist-btn", onclick: persist }, "persist session"),
+        ),
+      );
+    }
+
     const list = el("div", { class: "boot-proxies" });
     for (const p of state.proxies) {
       const tokenInput = el("input", {
@@ -155,41 +234,60 @@ export async function initBoot(panel, storage = localStorage, { onConnect } = {}
         placeholder: "pairing token",
         size: "14",
       });
-      list.append(
+      // Reattach rides the prf arm only (plain-arm records are test
+      // fixtures) and needs the proxy-assigned session id.
+      const session = state.sessions.find(
+        (s) => s.proxyId === p.endpointIdHex && s.sessionId != null && s.key.prf,
+      );
+      const row = el(
+        "div",
+        { class: "boot-proxy", "data-id": p.endpointIdHex },
+        `${p.name} (${p.endpointIdHex.slice(0, 8)}… via ${p.relayUrl}) `,
+        tokenInput,
+        " ",
         el(
-          "div",
-          { class: "boot-proxy", "data-id": p.endpointIdHex },
-          `${p.name} (${p.endpointIdHex.slice(0, 8)}… via ${p.relayUrl}) `,
-          tokenInput,
-          " ",
-          el(
-            "button",
-            {
-              class: "connect-btn",
-              onclick: () =>
-                connect({
-                  relayUrl: p.relayUrl,
-                  endpointIdHex: p.endpointIdHex,
-                  token: tokenInput.value.trim(),
-                }),
-            },
-            "connect",
-          ),
-          " ",
-          el(
-            "button",
-            {
-              class: "forget-btn",
-              onclick: () => {
-                state = store.removeProxy(state, p.endpointIdHex);
-                store.save(storage, state);
-                render();
-              },
-            },
-            "forget",
-          ),
+          "button",
+          {
+            class: "connect-btn",
+            onclick: () =>
+              connect({
+                relayUrl: p.relayUrl,
+                endpointIdHex: p.endpointIdHex,
+                token: tokenInput.value.trim(),
+              }),
+          },
+          "connect",
         ),
       );
+      if (session && onReattach) {
+        row.append(
+          " ",
+          el(
+            "button",
+            {
+              class: "reattach-btn",
+              onclick: () => reattach(p, session, tokenInput.value.trim()),
+            },
+            `reattach #${session.sessionId}`,
+          ),
+        );
+      }
+      row.append(
+        " ",
+        el(
+          "button",
+          {
+            class: "forget-btn",
+            onclick: () => {
+              state = store.removeProxy(state, p.endpointIdHex);
+              store.save(storage, state);
+              render();
+            },
+          },
+          "forget",
+        ),
+      );
+      list.append(row);
     }
     panel.append(list);
     if (notice) panel.append(el("div", { class: "boot-notice" }, notice));
@@ -211,11 +309,16 @@ export async function initBoot(panel, storage = localStorage, { onConnect } = {}
     get notice() {
       return notice;
     },
+    get connected() {
+      return connected;
+    },
     identityAvailable: !!identity,
     identityError,
     tryParse,
     saveOffer,
     connect,
+    persist,
+    reattach,
     render,
   };
 }

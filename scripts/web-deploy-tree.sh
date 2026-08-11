@@ -28,7 +28,7 @@ done
 
 mkdir -p "$dest/xterm" "$dest/dist"
 
-cp index.html app.mjs boot.mjs connstring.mjs storage.mjs idb-keys.mjs prf-wrap.mjs "$dest/"
+cp index.html app.mjs boot.mjs connstring.mjs storage.mjs idb-keys.mjs prf-wrap.mjs passkey.mjs "$dest/"
 cp node_modules/@xterm/xterm/css/xterm.css "$dest/xterm/"
 cp node_modules/@xterm/xterm/lib/xterm.js "$dest/xterm/"
 cp node_modules/@xterm/addon-fit/lib/addon-fit.js "$dest/xterm/"

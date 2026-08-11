@@ -6,7 +6,7 @@
 //     proxies: [{ endpointIdHex, relayUrl, direct?, name,
 //                 addedAt, lastSeenAt }],
 //     identityRef: null | { kind: "idb", name },
-//     sessions: [{ proxyId, key, createdAt }] }
+//     sessions: [{ proxyId, sessionId, key, createdAt }] }
 //
 // A proxy's id IS its endpointIdHex (key = address, as in iroh).
 // Pairing tokens are deliberately not persisted: they are first-contact
@@ -113,15 +113,17 @@ export function setIdentityRef(state, ref) {
 
 /**
  * Record (or replace — v0 is one session per proxy) a persistent
- * session. `key` is the tagged variant described in the header.
+ * session. `key` is the tagged variant described in the header;
+ * `sessionId` is the proxy-assigned id reattach needs (absent in
+ * key-only fixtures).
  */
-export function recordSession(state, { proxyId, key }, now = Date.now()) {
+export function recordSession(state, { proxyId, sessionId = null, key }, now = Date.now()) {
   assertKeyVariant(key);
   return {
     ...state,
     sessions: [
       ...state.sessions.filter((s) => s.proxyId !== proxyId),
-      { proxyId, key, createdAt: now },
+      { proxyId, sessionId, key, createdAt: now },
     ],
   };
 }

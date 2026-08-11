@@ -118,29 +118,14 @@ const installHooks = (mode, session, extra = {}) => {
 // --- iroh mode (M5): the composed client over a real proxy -------------------
 // Called by the bootstrap panel. Throws a user-legible error on failure
 // (the panel renders it); on success the terminal is live end-to-end.
-export async function connectIroh({ relayUrl, endpointIdHex, token }) {
-  if (sessionActive) throw new Error("a session is already running in this tab");
-  status(`connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
-  const { loadClient, WitError } = await import(DIST.bundle);
-  const client = await loadClient(DIST.client, DIST.translator);
 
-  let session;
-  try {
-    // direct: none — a page has no UDP; the paths are relay + WebRTC.
-    session = await client.ClientSession.connectProxy(
-      relayUrl,
-      endpointIdHex,
-      undefined,
-      token,
-      term.cols,
-      term.rows,
-    );
-  } catch (e) {
-    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
-    status(`connect failed: ${msg}`);
-    throw new Error(msg);
-  }
+let currentSession = null;
+
+// Terminal + pump wiring shared by connect and reattach: the session is
+// live; make the page drive it.
+async function wireSession(session, { relayUrl, endpointIdHex }) {
   sessionActive = true;
+  currentSession = session;
 
   term.onData((s) => {
     if (window.__mosh.failure) return;
@@ -193,6 +178,66 @@ export async function connectIroh({ relayUrl, endpointIdHex, token }) {
     path: () => session.path(),
   });
   return session;
+}
+
+export async function connectIroh({ relayUrl, endpointIdHex, token }) {
+  if (sessionActive) throw new Error("a session is already running in this tab");
+  status(`connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
+  const { loadClient, WitError } = await import(DIST.bundle);
+  const client = await loadClient(DIST.client, DIST.translator);
+
+  let session;
+  try {
+    // direct: none — a page has no UDP; the paths are relay + WebRTC.
+    session = await client.ClientSession.connectProxy(
+      relayUrl,
+      endpointIdHex,
+      undefined,
+      token,
+      term.cols,
+      term.rows,
+    );
+  } catch (e) {
+    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    status(`connect failed: ${msg}`);
+    throw new Error(msg);
+  }
+  return wireSession(session, { relayUrl, endpointIdHex });
+}
+
+// --- passkey persistence (M6 browser leg) -------------------------------------
+// Ceremonies live in passkey.mjs; these wrappers bind them to the live
+// session / a fresh client instance. The panel owns storage.
+
+/** Make the LIVE session persistent; returns { escrow, sessionId }. */
+export async function persistCurrent() {
+  if (!sessionActive || !currentSession) throw new Error("no live session to persist");
+  const { persistSession } = await import("./passkey.mjs");
+  return persistSession(currentSession);
+}
+
+/** Assertion-gated reattach to a persistent session (fresh client). */
+export async function reattachIroh({ relayUrl, endpointIdHex, token, sessionId }) {
+  if (sessionActive) throw new Error("a session is already running in this tab");
+  status(`reattaching session ${sessionId} on ${endpointIdHex.slice(0, 8)}…`);
+  const { loadClient, WitError } = await import(DIST.bundle);
+  const { reattachSession } = await import("./passkey.mjs");
+  const client = await loadClient(DIST.client, DIST.translator);
+  let session, escrow;
+  try {
+    ({ session, escrow } = await reattachSession(
+      client,
+      { relayUrl, endpointIdHex, token, sessionId },
+      term.cols,
+      term.rows,
+    ));
+  } catch (e) {
+    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    status(`reattach failed: ${msg}`);
+    throw new Error(msg);
+  }
+  await wireSession(session, { relayUrl, endpointIdHex });
+  return { escrow };
 }
 
 // --- bridge mode (M2) ---------------------------------------------------------

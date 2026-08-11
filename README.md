@@ -12,8 +12,8 @@ JS hosting moved from jco (AOT transpilation, node) to
 browsers); the A3 blocker family is retired, and `just m5` now gates a
 real in-browser mosh session (composed client in headless Chromium ↔
 proxy over iroh). M0–M7 native milestones unchanged and green.
-Remaining browser legs (M6 ceremony E2E, M7 inner-ssh E2E in-page) are
-unblocked follow-ups. Experiment-grade: no stability, delete-at-will;
+Remaining browser leg (M7 inner-ssh E2E in-page) is an unblocked
+follow-up. Experiment-grade: no stability, delete-at-will;
 the only CI is the Pages deploy of the browser client
 (`.github/workflows/pages.yml`). The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
@@ -247,7 +247,7 @@ ssh/mosh layer is the strong security boundary.
 | M3 | client-core glue; engine+glue+endpoint composed; native leg over real iroh | **DONE** — finding 15; `just m3` |
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **DONE** — findings 17–19 (unblocked parts, jco era) + 24–25 (deltic cutover, browser leg live); `just m5 m5-netem` |
-| M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native gate) + web-tests phase 3; browser↔proxy ceremony E2E: unblocked follow-up (finding 24) |
+| M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native) + web-tests phase 3 + `just m6-browser` (browser ceremony E2E, finding 28) |
 | M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7`; proxy deprivileged by default (`--personal` opts back in); in-page ssh leg: unblocked follow-up (finding 24) |
 
 ## Running
@@ -857,3 +857,33 @@ below reference it as the "jco era").
     (TASK.md); the tunnel's sub-framing already tolerates a
     post-upgrade ceiling shrink. Sweep: m2, m3, m4, m5×3, m6, m7
     green (m1/spikes untouched — engine unchanged).
+
+28. **M6 browser ceremony leg LIVE (`just m6-browser`): the passkey
+    lifecycle end-to-end from the real page.** The RP's webauthn-rs
+    JSON is the standard WebAuthn wire format, so the page marshals
+    with `PublicKeyCredential.parse*FromJSON`/`toJSON` — and
+    webauthn-rs-proto's `alias = "clientExtensionResults"` accepts
+    `toJSON()` output verbatim. The PRF extension never crosses the
+    wire: ceremony options gain it client-side, and responses are
+    stripped of `clientExtensionResults` before the RP sees them (the
+    PRF output seeds the escrow KEK; handing it to the proxy would
+    defeat the D4 PRF arm). Reattach is ONE `get()`: the same
+    assertion satisfies the RP and evaluates the PRF that unwraps the
+    returned escrow; attach at sealed-floor+SEQ_MARGIN, then the
+    prf-wrap floor-jump policy executes for real — re-seal at
+    floor+2^32 under the same PRF output (credId taken from the
+    assertion's own rawId, never from the returned blob's outer
+    fields — finding 21) and re-escrow over the live control channel
+    (repeated make-persistent replaces; the proxy logs the second
+    escrow write). Gate topology: CDP virtual authenticator
+    (ctap2.1 + prf, resident, UV), page at http://localhost:3354
+    (`--rp-id localhost --rp-origin` = the page origin; Chromium
+    resolver-maps localhost→127.0.0.1), relay :3353. A reload is the
+    fresh-client-process boundary; localStorage and the resident
+    credential survive it; the pre-detach screen resyncs without
+    input, the engine resumes above the floor, and a second detach is
+    still kept. Storage: session records now carry the proxy session
+    id; the panel offers "persist session" on a live session and
+    "reattach #N" on saved proxies holding a prf-arm record.
+    Ceremony negatives stay native-gate territory (passkey-e2e).
+    Swept: m5-web, m5-browser-e2e, m2, m6-browser.

@@ -23,7 +23,7 @@
       font: 12px monospace; padding: 2px 4px;
     }
     #panel .boot-notice { color: #d90; margin-top: 4px; }
-    #panel .boot-proxy, #panel .boot-pending, #panel .boot-entry { margin-top: 4px; }
+    #panel .boot-proxy, #panel .boot-pending, #panel .boot-entry, #panel .boot-session { margin-top: 4px; }
     #term { flex: 1; min-height: 0; padding: 2px; }
   </style>
   <script src="./xterm/xterm.js"></script>
@@ -36,10 +36,12 @@
     <div id="term"></div>
   </div>
   <script type="module">
-    import { connectIroh } from "./app.mjs";
+    import { connectIroh, persistCurrent, reattachIroh } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
     window.__moshBoot = await initBoot(document.getElementById("panel"), localStorage, {
       onConnect: connectIroh,
+      onPersist: persistCurrent,
+      onReattach: reattachIroh,
     });
   </script>
 </body>

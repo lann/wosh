@@ -185,6 +185,15 @@ m5: m5-web m5-client-deno m5-browser-e2e
 m6: compose-client compose-proxy proxy-build
     cd host-test/passkey-e2e && cargo run --release
 
+# The M6 browser ceremony leg (finding 24 unblocked it): the full
+# passkey lifecycle from the real page against the proxy's webauthn-rs
+# RP — register, PRF-wrapped escrow, detach, reload (fresh client),
+# assertion-gated reattach with screen resync, floor-jump re-escrow.
+# CDP virtual authenticator (ctap2.1 + prf); page at localhost:3354,
+# relay :3353.
+m6-browser: compose-client compose-proxy proxy-build web-bundle
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) node passkey-browser-e2e.mjs
+
 # --- M7 inner ssh (F) ---------------------------------------------------------
 
 # The M7 gate: DEPRIVILEGED proxy (no --personal — it spawns nothing
