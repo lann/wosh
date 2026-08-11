@@ -7,6 +7,101 @@ of each session.
 
 ## Status: DELTIC CUTOVER COMPLETE — browser leg live (2026-08-10)
 
+2026-08-11, end of session — DIRECTION SHIFT (owner conversation) +
+a spike in flight; read this first when resuming:
+
+1. **Owner verdict: mosh UX is not good enough — local echo
+   specifically ("just doesn't work well").** Direction under
+   consideration: replace mosh with plain-SSH-carried sessions. The
+   recommended phasing (discussed, owner did not object): (a) an
+   interactive ssh mode ALONGSIDE mosh — the "interactive-shell
+   fallback" that TASK previously parked "awaiting a concrete need"
+   now has its need; reuses the M7 forwarded-stream plumbing +
+   finding-30 flow; gives scrollback and full xterm.js fidelity
+   (mosh's server-side emulator is the ceiling: no scrollback, eats
+   OSC 52/images); (b) persistence via `tmux new -A` at first; if
+   that offends, a small resume daemon (pty + ring buffer +
+   seq-resume) spoken INSIDE an ssh exec channel — D2 preserved by
+   ssh crypto, no new cryptography; (c) keep mosh as the bad-network
+   mode until `m5-netem` grows an ssh-mode column and MEASURES the
+   stream HOL-blocking cost vs SSP under the same delay/loss cells.
+   None of this is started.
+
+2. **webauthn-ssh publickey auth is the owner's killer feature**
+   (happy path; password/other methods stay supported). This
+   upgrades issue #8 from WebCrypto-key to passkey. SPIKE AUTHORIZED
+   AND IN FLIGHT — facts pinned so far (env + upstream source), no
+   spike code written yet:
+   - Local sshd is OpenSSH 10.0p2; `ssh -Q sig` lists
+     `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`.
+   - x/crypto v0.49.0: `KeyAlgoSKECDSA256` is in the supported
+     pubkey-auth algos, and client_auth marshals the
+     `Signature{Format,Blob,Rest}` a custom Signer returns — so
+     pkalg `sk-ecdsa-…` with sig format `webauthn-sk-…` should pass
+     through unpatched (if a strict Format check bites anywhere,
+     it's a ~3-line vendored shim).
+   - PROTOCOL.u2f: authorized_keys holds a plain sk-ecdsa pubkey
+     blob whose `application` is the web RP ID (browser credentials
+     can't mint `ssh:`); webauthn sig wire = format string,
+     ecdsa_signature (mpint r, mpint s), flags u8, counter u32,
+     origin string, clientData string, extensions string.
+   - ssh-ecdsa-sk.c verify semantics (the details that make or
+     break the client): clientData is checked by PREFIX match
+     against `{"type":"webauthn.get","challenge":"<b64url>",
+     "origin":"<origin>"` — the challenge is the UNPADDED base64url
+     of the RAW ssh signed blob (session id + userauth request),
+     NOT a hash of it ⇒ the WebAuthn get() challenge must be the
+     raw blob bytes (the browser base64urls it); crossOrigin and
+     trailing clientData fields are ignored; origin must contain no
+     `"`; flags: AD (0x40) must be clear, ED (0x80) set iff the
+     extensions field is non-empty; signed payload reconstructed as
+     SHA256(application) || flags || counter || extensions ||
+     SHA256(clientData), ECDSA/SHA-256; the webauthn key impl is
+     sigonly=1 over KEY_ECDSA_SK (confirms the pkalg/sig pairing).
+   - NEXT (the actual spike, ~a day): `spikes/webauthn-sshd/` — Go
+     client with a soft-WebAuthn P-256 signer (hand-built
+     clientDataJSON; no authenticator hardware), custom ssh.Signer
+     (PublicKey().Type() = sk-ecdsa-…; Sign returns Format
+     webauthn-sk-…, Blob = ecdsa sig, Rest = flags || counter ||
+     origin || clientData || extensions), authorized_keys line
+     generation, unprivileged sshd on a loopback high port
+     (current-user login, publickey-only), assert handshake + exec.
+     Probe whether stock `PubkeyAcceptedAlgorithms` accepts it
+     unconfigured; pin the sshd version floor (8.3-era claim).
+   - AFTER the spike: reshape #8 around it — engine sign gate via
+     the finding-30 park/resume pattern (status `sign-request` +
+     provide-signature, exactly like the host-key gate), ceremony
+     from the page (M6 machinery + CDP virtual authenticator for
+     the gate), and the m7 gate grows a REAL-sshd leg (the russh
+     stand-in almost certainly cannot verify webauthn sigs —
+     verify). Payoff worth restating: assertion binds to the ssh
+     session id (channel binding — unphishable, unlike the
+     password), the proxy exits the RP business, one
+     authorized_keys line works on every host. TCB note: passkey
+     sync provider becomes an authorized-key holder; device-bound
+     attestation at registration is the opt-out.
+
+3. **Local-echo complaint is UNDIAGNOSED — open question: our bug
+   or mosh's design?** Known so far (findings 12/19 + m2 numbers):
+   mosh-go's predictor engages on ANY printable keystroke with no
+   RTT-adaptive gating and resets on control chars (C mosh gates
+   display on SRTT/glitch triggers and confirms epochs before
+   un-tentative display — the port may lack the adaptive/confirm
+   machinery wholesale); the 10 s RTO clamp (finding 10b/19) is a
+   separate stall. m2 measures ~130-140 ms to paint a 9-char burst
+   (~40-50 ms/char through feedKeys → pump → rAF) — the in-page
+   pipeline deserves profiling too. NEXT: diff
+   `.deps/mosh-go/predict.go` against C mosh `terminaloverlay.cc`
+   (display gating, epochs, confirmation, cursor predictions), and
+   instrument per-keystroke paint latency on the real page. If the
+   verdict is "port gaps", it feeds the fork-patch list (DEPS.md);
+   if "inherent", it strengthens the plain-ssh pivot.
+
+PR state at hand-off: #20 (finding 30) and #22 (m1 flake fix)
+MERGED; **#23 (CI tiering + unit-test extraction) OPEN and green —
+this TASK update rides it.** After #23 merges, the first main push
+seeds the per-shard caches; PRs restore warm from then on.
+
 2026-08-11 addendum: the client now deploys to GitHub Pages on every
 main merge (since gated on the CI gates; `.github/workflows/ci.yml`;
 repo went public), `just
@@ -98,7 +193,14 @@ wholesale and shipped the previously A3-blocked browser leg:
 - Finding 10 follow-ups: leg-b scroll artifact; predictor not
   RTT-adaptive; RTO clamp 10 s measured live (finding 19) — fork
   patch to C mosh's [50 ms, 1 s] if long sessions stall on idle
-  recovery.
+  recovery. NOW ELEVATED: the local-echo experience is the owner's
+  top complaint — see the status addendum item 3 for the diagnosis
+  plan (predict.go vs terminaloverlay.cc diff + in-page paint
+  profiling) before any protocol decision.
+- **mosh replacement direction (owner, this session)**: interactive
+  plain-ssh mode alongside mosh, tmux-then-maybe-resume-daemon for
+  persistence, netem ssh-mode column to price stream HOL vs SSP —
+  status addendum item 1 has the full phasing. Nothing started.
 - mosh-go throwaway limitation (DEPS.md): C server retains all client
   states, quenches past 1024 — long sessions degrade; candidate patch
   sketched there. Now tracked upstream: unixshells/mosh-go#3.
@@ -113,12 +215,15 @@ wholesale and shipped the previously A3-blocked browser leg:
   engine's password deferred behind the host-key gate, panel prompt
   UX, native + browser gate legs; the user name rides begin because
   x/crypto snapshots its config pre-handshake — sent only post-gate),
-  #8 (publickey auth with a non-extractable WebCrypto key over the
-  polymorph signing-key handle; the async engine import is the work —
-  unblocked since deltic), #9 (keyboard-interactive, riding #7's now-
-  landed park→verdict→resume prompt plumbing). Interactive-shell
-  fallback and multi-exec stay unfiled: product-scope decisions
-  awaiting a concrete need.
+  #8 UPGRADED to passkey/webauthn publickey auth against stock sshd
+  (`webauthn-sk-ecdsa-sha2-nistp256@openssh.com` — owner's killer
+  feature; spike in flight, status addendum item 2 has the pinned
+  wire/verify facts and next steps; the engine plumbing is the
+  finding-30 park/resume pattern, NOT an async import), #9
+  (keyboard-interactive, riding #7's now-landed park→verdict→resume
+  prompt plumbing). Interactive-shell fallback: NO LONGER unfiled-
+  by-default — it is phase (a) of the mosh-replacement direction
+  (status addendum item 1). Multi-exec stays unfiled.
 - Upstream courtesies: ALL FILED 2026-08-11 — deltic module-identity
   convergence (lann/deltic#108); mosh-go wasip build tags
   (unixshells/mosh-go#1), pending-diff races + resume-adoption notes
@@ -140,7 +245,9 @@ wholesale and shipped the previously A3-blocked browser leg:
   translator shim). M6: webauthn-rs 0.5 (proxy),
   webauthn-authenticator-rs 0.5.5 + webauthn-rs-proto 0.5 (harness).
   M7: golang.org/x/crypto v0.49.0 (engine go.mod, unpatched); russh
-  0.62.5 (ssh-e2e stand-in).
+  0.62.5 (ssh-e2e stand-in). webauthn-sshd spike: local OpenSSH is
+  10.0p2 (`/usr/sbin/sshd`; `ssh -Q sig` lists the webauthn-sk
+  algo) — the spike runs it unprivileged on a loopback high port.
 - `.deps/mosh-go` — committed vendored fork (4 patches, DEPS.md).
   `.deps/polymorph-iroh`, `.deps/deltic` — setup.sh clones at the
   pins in scripts/setup.sh (deltic consumed as a git reference; its
