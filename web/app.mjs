@@ -22,6 +22,7 @@
 // run one async pump loop with a single writer draining output (two
 // concurrent drains could interleave screen bytes out of order).
 
+import { initMobile, transformInput } from "./mobile.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const status = (msg) => {
@@ -54,12 +55,22 @@ term.loadAddon(fit);
 const overlay = new OverlayAddon();
 term.loadAddon(overlay);
 term.open(document.getElementById("term"));
-fit.fit();
+fit.fit(); // synchronous: sessions read term.cols/rows at connect time
 term.focus();
-addEventListener("resize", () => fit.fit());
-// Registered after the initial fit so page load doesn't flash a size.
+// Refits beyond the first are owned by the observer: everything that
+// moves the terminal's BOX funnels through it — the boot panel
+// rendering (async, grows #panel), the extra-keys bar filling in,
+// mobile.mjs resizing #wrap to the visual viewport, plain window
+// resizes. A one-shot startup fit alone goes stale on the first of
+// those (seen live: rows fitted before the keys bar filled overflow
+// the flex box and eat the bar's taps).
+new ResizeObserver(() => fit.fit()).observe(document.getElementById("term"));
+addEventListener("resize", () => fit.fit()); // zoom edge cases; harmless overlap
+initMobile(term); // soft-keyboard viewport glue + extra-keys bar
 // The status line renders cols×rows once at session wire-up and goes
-// stale on later resizes; this is the live feedback (issue #11).
+// stale on later resizes; this is the live feedback (issue #11). Fires
+// on any real dims change — including the settling refit when the boot
+// panel/keys bar land shortly after load, which is a genuine resize.
 term.onResize(({ cols, rows }) => overlay.showOverlay(`${cols}×${rows}`, 500));
 
 let sessionActive = false;
@@ -202,7 +213,9 @@ const wireInput = (session, fail) => {
   wired = {
     data: term.onData((s) => {
       if (currentSession !== session || window.__mosh.failure) return;
-      session.feedKeys(new TextEncoder().encode(s)).then(wakeNow, fail);
+      // transformInput: mobile.mjs's sticky Ctrl/Alt over every chunk
+      // (identity unless armed) — one spot covers both session modes.
+      session.feedKeys(new TextEncoder().encode(transformInput(s))).then(wakeNow, fail);
     }),
     resize: term.onResize(({ cols, rows }) => {
       if (currentSession !== session) return;

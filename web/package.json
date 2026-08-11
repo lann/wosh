@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Browser client for wosh: xterm.js in front of deltic-hosted components — the M2 dev-bridge mode (bare engine) and the real iroh mode (composed client). Bundle via `just web-bundle`; deploy tree via scripts/web-deploy-tree.sh.",
   "dependencies": {
-    "@xterm/xterm": "^5.5.0",
-    "@xterm/addon-fit": "^0.10.0"
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0"
   }
 }

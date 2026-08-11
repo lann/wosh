@@ -28,7 +28,7 @@ done
 
 mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons"
 
-cp index.html app.mjs boot.mjs connstring.mjs storage.mjs idb-keys.mjs prf-wrap.mjs passkey.mjs overlay.mjs "$dest/"
+cp index.html app.mjs boot.mjs connstring.mjs storage.mjs idb-keys.mjs prf-wrap.mjs passkey.mjs overlay.mjs mobile.mjs "$dest/"
 cp manifest.json "$dest/"
 cp icons/*.png "$dest/icons/"
 cp node_modules/@xterm/xterm/css/xterm.css "$dest/xterm/"
