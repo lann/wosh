@@ -3,7 +3,10 @@
 //! the proxy spawned — full control channel (hello/pairing token/TOFU
 //! --yes, new-session, key delivery) and the datagram tunnel with
 //! sub-framing exercised by a bulk phase whose server datagrams
-//! exceed the 1162 B ceiling.
+//! exceed the 1162 B ceiling. Tail phases pin the console shutdown
+//! discipline: SIGINT exits gracefully (sessions reaped, exit 0) even
+//! with an interactive TOFU prompt pending on stdin, and a second
+//! SIGINT force-quits a wedged graceful shutdown (exit 130).
 //!
 //!   relay (child) ← proxy (child: shell + proxy-core + endpoint)
 //!                     ↑ iroh QUIC (control stream + framed datagrams)
@@ -128,35 +131,96 @@ struct ProxyProc {
     direct: String,
     /// Collected stdout lines (shared with the reader task).
     lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Held open: a closed stdin would EOF an interactive TOFU prompt
+    /// instead of parking it (the shutdown phases need a parked read).
+    _stdin: tokio::process::ChildStdin,
 }
 
-async fn start_proxy() -> Result<ProxyProc> {
-    let state = std::env::temp_dir().join(format!("wosh-m4-state-{}", std::process::id()));
+impl ProxyProc {
+    fn saw(&self, needle: &str) -> bool {
+        self.lines.lock().unwrap().iter().any(|l| l.contains(needle))
+    }
+
+    fn signal_int(&self) -> Result<()> {
+        let pid = self.child.id().context("proxy already exited")?;
+        let ok = std::process::Command::new("kill")
+            .args(["-INT", &pid.to_string()])
+            .status()?
+            .success();
+        anyhow::ensure!(ok, "kill -INT {pid} failed");
+        Ok(())
+    }
+
+    async fn wait_line(&self, needle: &str, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            if self.saw(needle) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        bail!(
+            "timeout waiting for proxy line {needle:?}\n--- proxy stdout ---\n{}",
+            self.lines.lock().unwrap().join("\n")
+        )
+    }
+
+    async fn wait_exit(
+        &mut self,
+        timeout: Duration,
+        what: &str,
+    ) -> Result<std::process::ExitStatus> {
+        Ok(tokio::time::timeout(timeout, self.child.wait())
+            .await
+            .with_context(|| format!("proxy wedged: no exit within {timeout:?} {what}"))??)
+    }
+}
+
+struct ProxyOpts {
+    /// `--yes` (auto-accept TOFU) vs the interactive stdin prompt.
+    auto_accept: bool,
+    /// Set the proxy's test-only knob that wedges graceful shutdown
+    /// (exercises the double-SIGINT force-quit path).
+    wedge_shutdown: bool,
+}
+
+async fn start_proxy(opts: ProxyOpts) -> Result<ProxyProc> {
+    static INSTANCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let state = std::env::temp_dir().join(format!("wosh-m4-state-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state);
     let bin = manifest_path("../../proxy/target/release/wosh-proxy");
-    let mut child = tokio::process::Command::new(&bin)
-        .args([
-            "--relay",
-            &format!("http://127.0.0.1:{RELAY_PORT}"),
-            "--token",
-            TOKEN,
-            "--no-qr",
-            "--yes",
-            // M4 exercises proxy-spawned sessions (D2 interim), which
-            // are opt-in since M7's deprivileged default.
-            "--personal",
-            "--state-dir",
-            state.to_str().unwrap(),
-            "--component",
-            &manifest_path("../../proxy/composed-proxy.wasm"),
-            "--shell",
-            "bash --noprofile --norc -i",
-        ])
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.args([
+        "--relay",
+        &format!("http://127.0.0.1:{RELAY_PORT}"),
+        "--token",
+        TOKEN,
+        "--no-qr",
+        // M4 exercises proxy-spawned sessions (D2 interim), which
+        // are opt-in since M7's deprivileged default.
+        "--personal",
+        "--state-dir",
+        state.to_str().unwrap(),
+        "--component",
+        &manifest_path("../../proxy/composed-proxy.wasm"),
+        "--shell",
+        "bash --noprofile --norc -i",
+    ]);
+    if opts.auto_accept {
+        cmd.arg("--yes");
+    }
+    if opts.wedge_shutdown {
+        cmd.env("WOSH_PROXY_TEST_WEDGE_SHUTDOWN", "1");
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("spawning {bin}"))?;
+    let stdin = child.stdin.take().context("proxy stdin")?;
 
     let stdout = child.stdout.take().context("proxy stdout")?;
     let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -197,6 +261,7 @@ async fn start_proxy() -> Result<ProxyProc> {
         endpoint_id_hex: id.unwrap(),
         direct: direct.unwrap(),
         lines,
+        _stdin: stdin,
     })
 }
 
@@ -249,7 +314,11 @@ async fn run() -> Result<()> {
 
     let _relay = start_relay().await?;
     log(&format!("relay on http://127.0.0.1:{RELAY_PORT}"));
-    let mut proxy = start_proxy().await?;
+    let mut proxy = start_proxy(ProxyOpts {
+        auto_accept: true,
+        wedge_shutdown: false,
+    })
+    .await?;
     log(&format!(
         "proxy up: id={} direct={}",
         proxy.endpoint_id_hex, proxy.direct
@@ -419,7 +488,120 @@ async fn run() -> Result<()> {
         bail!("bulk phase produced no oversized datagrams — sub-framing untested");
     }
 
-    proxy.child.kill().await.ok();
+    // --- shutdown discipline -------------------------------------------------
+    // First SIGINT = graceful shutdown: exit 0, sessions reaped. This
+    // used to wedge "in some cases" because the signal was handled
+    // inside the store's event loop (wasmtime #11869: a select! in the
+    // run_concurrent closure can starve).
+    proxy.signal_int()?;
+    let status = proxy
+        .wait_exit(Duration::from_secs(10), "after SIGINT")
+        .await?;
+    if status.code() != Some(0) {
+        bail!("graceful shutdown exit status: {status:?} (want 0)");
+    }
+    if !proxy.saw("shutting down; reaped") {
+        bail!("proxy exited without reaping sessions");
+    }
+    println!("[proxy-e2e] SIGINT graceful shutdown OK");
+
+    // The historical ctrl-c wedge: a pending interactive TOFU prompt
+    // parks a blocking stdin read. The old proxy either never saw the
+    // signal (starved select!) or printed its shutdown line and then
+    // hung forever in tokio's runtime-drop joining that read. SIGINT
+    // with the prompt pending must still exit promptly.
+    let mut proxy = start_proxy(ProxyOpts {
+        auto_accept: false,
+        wedge_shutdown: false,
+    })
+    .await?;
+    let mut store = Store::new(
+        &engine,
+        Ctx {
+            wasi: {
+                let mut wasi = WasiCtx::builder();
+                wasi.inherit_stdio().inherit_env().inherit_network();
+                wasi.build()
+            },
+            webrtc: WebrtcCtx::new(),
+            webcrypto: WasiWebcryptoCtx::new(),
+            websocket: WasiWebsocketCtx::new(),
+            table: ResourceTable::new(),
+        },
+    );
+    let client =
+        bindings::ComposedClient::instantiate_async(&mut store, &component, &linker).await?;
+    let relay_url = format!("http://127.0.0.1:{RELAY_PORT}");
+    let peer_hex = proxy.endpoint_id_hex.clone();
+    let direct = proxy.direct.clone();
+    // Detached: this connect blocks on the operator answering the
+    // prompt, which never happens.
+    let connect = tokio::spawn(async move {
+        store
+            .run_concurrent(async move |accessor| {
+                client
+                    .experiment_mosh_client_client()
+                    .client_session()
+                    .call_connect_proxy(
+                        accessor,
+                        relay_url,
+                        peer_hex,
+                        Some(direct),
+                        TOKEN.into(),
+                        80,
+                        24,
+                    )
+                    .await
+            })
+            .await
+    });
+    proxy
+        .wait_line("presented a valid pairing token", Duration::from_secs(30))
+        .await?;
+    // Let the prompt's blocking stdin read actually park.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if connect.is_finished() {
+        bail!("connect-proxy resolved while the TOFU prompt should be pending");
+    }
+    proxy.signal_int()?;
+    let status = proxy
+        .wait_exit(Duration::from_secs(10), "with a pending TOFU prompt")
+        .await?;
+    if status.code() != Some(0) {
+        bail!("shutdown with pending TOFU prompt: exit status {status:?} (want 0)");
+    }
+    if !proxy.saw("shutting down; reaped 0 session(s)") {
+        bail!("proxy did not reach the reap line with a pending TOFU prompt");
+    }
+    connect.abort();
+    println!("[proxy-e2e] SIGINT with pending TOFU prompt OK (no wedge)");
+
+    // Double-SIGINT aborts a wedged graceful shutdown. The test-only
+    // knob parks the graceful path forever after the first signal,
+    // standing in for any real wedge (stuck store teardown, blocked
+    // reap, ...); the second signal must force-quit with 128+SIGINT.
+    let mut proxy = start_proxy(ProxyOpts {
+        auto_accept: true,
+        wedge_shutdown: true,
+    })
+    .await?;
+    proxy.signal_int()?;
+    proxy
+        .wait_line("shutdown signal received", Duration::from_secs(10))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if let Some(status) = proxy.child.try_wait()? {
+        bail!("proxy exited ({status:?}) despite the shutdown wedge knob");
+    }
+    proxy.signal_int()?;
+    let status = proxy
+        .wait_exit(Duration::from_secs(5), "after the second SIGINT")
+        .await?;
+    if status.code() != Some(130) {
+        bail!("force-quit exit status: {status:?} (want 130)");
+    }
+    println!("[proxy-e2e] double-SIGINT force-quit OK");
+
     println!("proxy E2E (M4 gate): OK");
     Ok(())
 }

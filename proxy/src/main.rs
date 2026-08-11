@@ -619,6 +619,33 @@ fn webauthn_step_impl(
     }
 }
 
+/// Signal orchestration (D2 console UX): the first SIGINT/SIGTERM asks
+/// main for a graceful shutdown (reap sessions, exit 0); a second one
+/// aborts a graceful shutdown that is taking too long and force-quits
+/// with the conventional 128+SIGINT code. This runs as its own tokio
+/// task, deliberately OUTSIDE the store's event loop: a `select!`
+/// inside the `run_concurrent` closure is documented as unreliable
+/// (wasmtime #11869/#11870 — the closure future can go unpolled while
+/// the event loop is busy), which is one of the ways ctrl-c used to
+/// wedge the console.
+async fn watch_signals(shutdown: std::sync::Arc<tokio::sync::Notify>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut int = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = int.recv() => {}
+        _ = term.recv() => {}
+    }
+    println!("shutdown signal received (again to force-quit)");
+    shutdown.notify_one();
+    tokio::select! {
+        _ = int.recv() => {}
+        _ = term.recv() => {}
+    }
+    eprintln!("wosh-proxy: force quit; mosh-server sessions may be left running");
+    std::process::exit(130);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = env_logger::try_init();
@@ -675,67 +702,98 @@ async fn main() -> Result<()> {
     );
     let proxy = bindings::ComposedProxy::instantiate_async(&mut store, &component, &linker).await?;
 
+    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    tokio::spawn(watch_signals(shutdown.clone()));
+
     let relay = cli.relay.clone();
     let ssh_target = cli.ssh_target.to_string();
     let personal = cli.personal;
-    store
-        .run_concurrent(async move |accessor| -> Result<()> {
-            let started = proxy
-                .experiment_mosh_proxy_proxy()
-                .call_start(accessor, relay.clone(), ssh_target.clone(), personal)
-                .await?
-                .map_err(|e| anyhow!("proxy start: {e}"))?;
+    let serve = store.run_concurrent(async move |accessor| -> Result<()> {
+        let started = proxy
+            .experiment_mosh_proxy_proxy()
+            .call_start(accessor, relay.clone(), ssh_target.clone(), personal)
+            .await?
+            .map_err(|e| anyhow!("proxy start: {e}"))?;
 
-            let connstring = format!("1.{}.{token}.{relay}", started.endpoint_id_hex);
-            println!("connstring: {connstring}");
-            if let Some(direct) = &started.direct_addr {
-                println!("direct-addr: {direct}");
-            }
-            if !cli.no_qr {
-                let url = format!("{}{}", cli.qr_base, connstring);
-                match qrcode::QrCode::new(url.as_bytes()) {
-                    Ok(code) => {
-                        let rendered = code
-                            .render::<qrcode::render::unicode::Dense1x2>()
-                            .quiet_zone(true)
-                            .build();
-                        println!("{rendered}");
-                        println!("scan → {url}");
-                    }
-                    Err(e) => println!("(no QR: {e})"),
+        let connstring = format!("1.{}.{token}.{relay}", started.endpoint_id_hex);
+        println!("connstring: {connstring}");
+        if let Some(direct) = &started.direct_addr {
+            println!("direct-addr: {direct}");
+        }
+        if !cli.no_qr {
+            let url = format!("{}{}", cli.qr_base, connstring);
+            match qrcode::QrCode::new(url.as_bytes()) {
+                Ok(code) => {
+                    let rendered = code
+                        .render::<qrcode::render::unicode::Dense1x2>()
+                        .quiet_zone(true)
+                        .build();
+                    println!("{rendered}");
+                    println!("scan → {url}");
                 }
+                Err(e) => println!("(no QR: {e})"),
             }
-            println!(
-                "ready; pairing token: {token} ({} mode; ssh-target {})",
-                if cli.personal { "personal" } else { "deprivileged" },
-                cli.ssh_target
-            );
+        }
+        println!(
+            "ready; pairing token: {token} ({} mode; ssh-target {})",
+            if cli.personal { "personal" } else { "deprivileged" },
+            cli.ssh_target
+        );
 
-            // Park until asked to stop; the store keeps driving the
-            // component's accept/session tasks. SIGINT/SIGTERM reap
-            // sessions before exit: persistent sessions deliberately
-            // outlive *connections* (M6), never the proxy process —
-            // and process teardown without this handler (SIGKILL, or
-            // default signal disposition) never runs Ctx::drop, which
-            // would orphan every mosh-server.
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
+        // Park forever; the store keeps driving the component's
+        // accept/session tasks. Shutdown is orchestrated outside
+        // `run_concurrent` (see `watch_signals`).
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+
+    enum Exit {
+        /// The event loop itself finished — always unexpected (the
+        /// serve closure parks forever), so an error even on Ok.
+        Loop(wasmtime::Result<Result<()>>),
+        Signal,
+    }
+    let exit = tokio::select! {
+        r = serve => Exit::Loop(r),
+        _ = shutdown.notified() => Exit::Signal,
+    };
+    let code = match exit {
+        Exit::Loop(r) => {
+            match r {
+                Ok(Ok(())) => eprintln!("wosh-proxy: event loop exited unexpectedly"),
+                Ok(Err(e)) => eprintln!("wosh-proxy: {e:#}"),
+                Err(e) => eprintln!("wosh-proxy: {e:#}"),
             }
-            accessor.with(|mut a| {
-                let ctx = a.get();
-                for s in &ctx.sessions {
-                    s.kill();
-                }
-                let n = ctx.sessions.len();
-                ctx.sessions.clear();
-                println!("shutting down; reaped {n} session(s)");
-            });
-            Ok(())
-        })
-        .await??;
-
-    Ok(())
+            1
+        }
+        Exit::Signal => {
+            // Test-only knob (proxy-e2e): simulate a wedged graceful
+            // shutdown so the double-SIGINT force-quit path can be
+            // exercised deterministically.
+            if std::env::var_os("WOSH_PROXY_TEST_WEDGE_SHUTDOWN").is_some() {
+                std::future::pending::<()>().await;
+            }
+            // Reap sessions before exit: persistent sessions
+            // deliberately outlive *connections* (M6), never the
+            // proxy process — and process teardown without this
+            // (SIGKILL, or default signal disposition) never runs
+            // Ctx::drop, which would orphan every mosh-server.
+            let ctx = store.data_mut();
+            for s in &ctx.sessions {
+                s.kill();
+            }
+            let n = ctx.sessions.len();
+            ctx.sessions.clear();
+            println!("shutting down; reaped {n} session(s)");
+            0
+        }
+    };
+    // On the error path Ctx::drop is the reaper.
+    drop(store);
+    // Explicit exit rather than returning: a pending TOFU prompt
+    // (`authorize`) parks a spawn_blocking stdin read that tokio's
+    // runtime-drop would join forever — the other historical ctrl-c
+    // wedge. process::exit skips that join (stdout is line-buffered;
+    // everything above is already flushed).
+    std::process::exit(code);
 }
