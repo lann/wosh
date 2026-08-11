@@ -68,7 +68,7 @@
     <div id="keys"></div>
   </div>
   <script type="module">
-    import { connectIroh, connectSshIroh, persistCurrent, reattachIroh } from "./app.mjs";
+    import { connectIroh, connectSshIroh, persistCurrent, reattachIroh, setReconnectHandler } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
     window.__moshBoot = await initBoot(document.getElementById("panel"), localStorage, {
       onConnect: connectIroh,
@@ -76,6 +76,9 @@
       onPersist: persistCurrent,
       onReattach: reattachIroh,
     });
+    // Transport drop → one-gesture retry (issue #12): the tap/key that
+    // triggers it is the WebAuthn user activation for reattach.
+    setReconnectHandler(() => window.__moshBoot.reconnect());
     // PWA shell (issue #10): https only — dev/test serving (localhost
     // is a secure context but stays http) never installs the SW, so
     // caching can't confuse local iteration or the browser gates. The

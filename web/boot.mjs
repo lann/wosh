@@ -31,6 +31,14 @@ export async function initBoot(
   let notice = "";
   let connecting = false;
   let connected = null; // { relayUrl, endpointIdHex } of the live session
+  // The last successful iroh connect/reattach of THIS TAB, token
+  // included (issue #12): pairing tokens are deliberately never
+  // persisted, but retaining the one in hand for the tab's lifetime is
+  // what makes a transport drop recoverable in one gesture instead of
+  // a re-pairing ceremony — mobile's common case, not its edge. ssh
+  // credentials are NOT retained: an ssh reconnect is a full re-auth
+  // through the panel, by design (the TOFU pin does its work there).
+  let lastConnect = null;
 
   const keyStore = await openKeyStore();
   let identity = null;
@@ -105,6 +113,7 @@ export async function initBoot(
     try {
       await onConnect({ relayUrl, endpointIdHex, token });
       connected = { relayUrl, endpointIdHex };
+      lastConnect = { relayUrl, endpointIdHex, token };
       notice = "";
     } catch (e) {
       notice = `connect failed: ${e.message ?? e}`;
@@ -160,6 +169,7 @@ export async function initBoot(
         sessionId: session.sessionId,
       });
       connected = { relayUrl: proxy.relayUrl, endpointIdHex: proxy.endpointIdHex };
+      lastConnect = { relayUrl: proxy.relayUrl, endpointIdHex: proxy.endpointIdHex, token };
       state = store.recordSession(state, {
         proxyId: proxy.endpointIdHex,
         sessionId: session.sessionId,
@@ -173,6 +183,33 @@ export async function initBoot(
       connecting = false;
       render();
     }
+  };
+
+  // One-gesture retry of the last connect/reattach (issue #12); called
+  // by app.mjs's disconnected-state key/tap handler (that gesture also
+  // satisfies WebAuthn user activation for the reattach arm). Prefers
+  // the assertion-gated reattach when this proxy has a persistent
+  // session — same session, screen resynced; otherwise a fresh connect
+  // (v0: non-persistent sessions die with their connection, so this is
+  // a NEW session on a live proxy). Success ⇔ `connected` set again.
+  const reconnect = async () => {
+    if (connecting) return false;
+    if (!lastConnect) {
+      notice = "no previous connection to retry — connect from the panel";
+      render();
+      return false;
+    }
+    const { relayUrl, endpointIdHex, token } = lastConnect;
+    connected = null;
+    const session = state.sessions.find(
+      (s) => s.proxyId === endpointIdHex && s.sessionId != null && s.key.prf,
+    );
+    if (session && onReattach) {
+      await reattach({ relayUrl, endpointIdHex }, session, token);
+    } else {
+      await connect({ relayUrl, endpointIdHex, token });
+    }
+    return connected != null;
   };
 
   // Inner-ssh connect (M7). On success the proxy is saved and the
@@ -408,6 +445,7 @@ export async function initBoot(
     connectSsh,
     persist,
     reattach,
+    reconnect,
     render,
   };
 }

@@ -136,8 +136,10 @@ proxy-build:
 
 # The M4 gate: composed client ↔ proxy (thin shell + composed
 # proxy-core) ↔ proxy-spawned stock mosh-server, over real iroh —
-# control channel, TOFU, negative pairing-token path, and >1162 B
-# server datagrams sub-framed through the tunnel.
+# control channel, TOFU, negative pairing-token path, >1162 B
+# server datagrams sub-framed through the tunnel, and the console
+# shutdown discipline (SIGINT graceful even mid-TOFU-prompt;
+# double-SIGINT force-quit).
 m4: compose-client compose-proxy proxy-build
     cd host-test/proxy-e2e && cargo run --release
 
