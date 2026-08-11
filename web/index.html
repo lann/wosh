@@ -36,10 +36,11 @@
     <div id="term"></div>
   </div>
   <script type="module">
-    import { connectIroh, persistCurrent, reattachIroh } from "./app.mjs";
+    import { connectIroh, connectSshIroh, persistCurrent, reattachIroh } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
     window.__moshBoot = await initBoot(document.getElementById("panel"), localStorage, {
       onConnect: connectIroh,
+      onConnectSsh: connectSshIroh,
       onPersist: persistCurrent,
       onReattach: reattachIroh,
     });

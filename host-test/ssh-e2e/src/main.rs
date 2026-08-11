@@ -10,7 +10,7 @@
 //!                     ↕ ssh (exec mosh-server)
 //!   in-process sshd stand-in (this process, russh)
 
-mod standin;
+use ssh_e2e::standin;
 
 use std::process::Stdio;
 use std::time::Duration;

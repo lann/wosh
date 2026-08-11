@@ -208,6 +208,15 @@ m6-browser: compose-client compose-proxy proxy-build web-bundle
 m7: compose-client compose-proxy proxy-build
     cd host-test/ssh-e2e && cargo run --release
 
+# The M7 browser leg (last of the finding-24 unblocks): inner ssh from
+# the real page through a DEPRIVILEGED proxy to the russh stand-in
+# (ssh-e2e's sshd-standin bin) — TOFU host-key pin on first contact, a
+# tampered pin refused BEFORE the password (stand-in's attempt counter
+# proves it), restored pin reconnects. Relay :3355.
+m7-browser: compose-client compose-proxy proxy-build web-bundle
+    cd host-test/ssh-e2e && cargo build --release
+    cd host-test && DELTIC_TRANSLATOR=$(just _translator) node ssh-browser-e2e.mjs
+
 # --- running it (see README "Running the server") -----------------------------
 
 # Build everything and run the proxy in personal mode (it spawns

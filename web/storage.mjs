@@ -4,7 +4,7 @@
 //
 //   { v: 1,
 //     proxies: [{ endpointIdHex, relayUrl, direct?, name,
-//                 addedAt, lastSeenAt }],
+//                 sshHostKey?, addedAt, lastSeenAt }],
 //     identityRef: null | { kind: "idb", name },
 //     sessions: [{ proxyId, sessionId, key, createdAt }] }
 //
@@ -72,6 +72,7 @@ export function upsertProxy(state, { endpointIdHex, relayUrl, direct, name }, no
     relayUrl,
     direct: direct ?? existing?.direct ?? null,
     name: name ?? existing?.name ?? `proxy-${endpointIdHex.slice(0, 8)}`,
+    sshHostKey: existing?.sshHostKey ?? null,
     addedAt: existing?.addedAt ?? now,
     lastSeenAt: existing?.lastSeenAt ?? null,
   };
@@ -102,6 +103,24 @@ export function touchProxy(state, endpointIdHex, now = Date.now()) {
     ...state,
     proxies: state.proxies.map((p) =>
       p.endpointIdHex === endpointIdHex ? { ...p, lastSeenAt: now } : p,
+    ),
+  };
+}
+
+/**
+ * Pin (TOFU) or refresh a proxy's ssh host-key fingerprint (M7:
+ * base64 SHA-256 over the RFC 4253 public-key blob, as connect-ssh's
+ * ssh-host-key reports it). The pin gates later connects: the glue
+ * refuses to send a password to a host whose key does not match.
+ */
+export function pinHostKey(state, endpointIdHex, fingerprint) {
+  if (typeof fingerprint !== "string" || !fingerprint) {
+    throw new Error("host-key fingerprint must be a non-empty string");
+  }
+  return {
+    ...state,
+    proxies: state.proxies.map((p) =>
+      p.endpointIdHex === endpointIdHex ? { ...p, sshHostKey: fingerprint } : p,
     ),
   };
 }

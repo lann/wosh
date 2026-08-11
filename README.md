@@ -12,8 +12,9 @@ JS hosting moved from jco (AOT transpilation, node) to
 browsers); the A3 blocker family is retired, and `just m5` now gates a
 real in-browser mosh session (composed client in headless Chromium ↔
 proxy over iroh). M0–M7 native milestones unchanged and green.
-Remaining browser leg (M7 inner-ssh E2E in-page) is an unblocked
-follow-up. Experiment-grade: no stability, delete-at-will;
+Every remaining browser leg has landed (findings 27–29): the WebRTC
+upgrade, the M6 ceremony E2E, and the M7 inner-ssh E2E all run
+in-page. Experiment-grade: no stability, delete-at-will;
 the only CI is the Pages deploy of the browser client
 (`.github/workflows/pages.yml`). The full plan lives in
 [`PLAN.md`](PLAN.md); resumable session state in [`TASK.md`](TASK.md).
@@ -248,7 +249,7 @@ ssh/mosh layer is the strong security boundary.
 | M4 | proxy (QR, TOFU, interim sessions, forwarding) + native E2E over iroh | **DONE** — finding 16; `just m4` |
 | M5 | identity PR + browser client (bootstrap flows, storage, WebRTC-direct E2E) | **DONE** — findings 17–19 (unblocked parts, jco era) + 24–25 (deltic cutover, browser leg live); `just m5 m5-netem` |
 | M6 | passkeys (ceremonies over control channel, gated reattach) | **DONE** — findings 20–21; `just m6` (native) + web-tests phase 3 + `just m6-browser` (browser ceremony E2E, finding 28) |
-| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7`; proxy deprivileged by default (`--personal` opts back in); in-page ssh leg: unblocked follow-up (finding 24) |
+| M7 | inner ssh (stream forward to sshd; ssh in engine; deprivileged proxy) | **DONE** — findings 22–23; `just m7` (native) + `just m7-browser` (in-page leg, finding 29); proxy deprivileged by default (`--personal` opts back in) |
 
 ## Running
 
@@ -887,3 +888,22 @@ below reference it as the "jco era").
     "reattach #N" on saved proxies holding a prf-arm record.
     Ceremony negatives stay native-gate territory (passkey-e2e).
     Swept: m5-web, m5-browser-e2e, m2, m6-browser.
+
+29. **M7 browser leg LIVE (`just m7-browser`) — the last finding-24
+    follow-up is closed.** The page grows the inner-ssh UX: an ssh
+    cluster (user, password, optional command) on the pending and
+    saved proxy rows drives connect-ssh through the DEPRIVILEGED
+    proxy; the ssh-e2e russh stand-in is factored behind a lib and a
+    `sshd-standin` bin the node harness spawns. Host-key policy is
+    storage policy: `proxies[].sshHostKey`, pinned TOFU-style from
+    `ssh-host-key` on first success, passed as `expected-host-key`
+    afterwards. The gate proves the pin does its job from the page: a
+    TAMPERED pin fails "host key mismatch" BEFORE the password leaves
+    the browser (the stand-in's password-attempts counter is asserted
+    unchanged across the refusal), and restoring the pin reconnects
+    (fresh session, second exec'd mosh-server). Auth and posture
+    negatives (wrong password, NewSession-without---personal) stay in
+    the native gate. Relay :3355. Swept: m5-web, m5-browser-e2e,
+    m6-browser, m7 native, m2 (one m2 flake under parallel browser
+    load — the prediction-latency budget is timing-sensitive — green
+    on rerun).

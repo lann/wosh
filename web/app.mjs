@@ -205,6 +205,50 @@ export async function connectIroh({ relayUrl, endpointIdHex, token }) {
   return wireSession(session, { relayUrl, endpointIdHex });
 }
 
+// Inner-ssh mode (M7, workstream F): dial the proxy deprivileged-style,
+// authenticate end-to-end over ssh through the forwarded stream, boot a
+// mosh-server via ssh exec, and run mosh over the datagram tunnel. The
+// proxy never sees the mosh key. Host-key policy is the embedder's
+// (boot.mjs pins TOFU-style through storage): `expectedHostKey` some ⇒
+// mismatch fails BEFORE the password is sent; undefined ⇒ first
+// contact, read `hostKey` back and pin it.
+export async function connectSshIroh({
+  relayUrl,
+  endpointIdHex,
+  token,
+  user,
+  password,
+  expectedHostKey,
+  command,
+}) {
+  if (sessionActive) throw new Error("a session is already running in this tab");
+  status(`ssh-connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
+  const { loadClient, WitError } = await import(DIST.bundle);
+  const client = await loadClient(DIST.client, DIST.translator);
+
+  let session;
+  try {
+    session = await client.ClientSession.connectSsh(
+      relayUrl,
+      endpointIdHex,
+      undefined,
+      token,
+      user,
+      password,
+      expectedHostKey ?? undefined,
+      command ?? undefined,
+      term.cols,
+      term.rows,
+    );
+  } catch (e) {
+    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    status(`connect failed: ${msg}`);
+    throw new Error(msg);
+  }
+  await wireSession(session, { relayUrl, endpointIdHex });
+  return { hostKey: await session.sshHostKey() };
+}
+
 // --- passkey persistence (M6 browser leg) -------------------------------------
 // Ceremonies live in passkey.mjs; these wrappers bind them to the live
 // session / a fresh client instance. The panel owns storage.

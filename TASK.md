@@ -10,13 +10,14 @@ of each session.
 2026-08-11 addendum: the client now deploys to GitHub Pages on every
 main merge (`.github/workflows/pages.yml`; repo went public), `just
 proxy-personal` runs the proxy against n0's public relays with QR/RP
-defaults pointing at the Pages client, the **WebRTC upgrade leg
-landed** (finding 27): both sides enable the wire, the glue offers the
-upgrade hint, `client-session.path` observes it, and m5-browser-e2e
-hard-asserts the relay→webrtc move (Deno lane logs it, ~0.8 s) — and
-the **M6 browser ceremony leg landed** (finding 28, `just
-m6-browser`): persist/reattach from the real page against the real RP,
-PRF wrap/unwrap in the page, floor-jump re-escrow per reattach.
+defaults pointing at the Pages client, and every finding-24 browser
+follow-up landed: the **WebRTC upgrade leg** (finding 27,
+m5-browser-e2e hard-asserts the relay→webrtc move), the **M6 browser
+ceremony leg** (finding 28, `just m6-browser`: persist/reattach from
+the real page against the real RP, PRF wrap/unwrap in-page,
+floor-jump re-escrow per reattach), and the **M7 in-page ssh leg**
+(finding 29, `just m7-browser`: ssh UX in the panel, TOFU host-key
+pin, tampered pin refused before the password leaves the page).
 
 Post-cutover pin bump (same day, finding 26): deltic @ a18be734
 (includes the hop-atomicity fix lann/deltic#82 our M2 gate found, the
@@ -65,9 +66,6 @@ wholesale and shipped the previously A3-blocked browser leg:
 
 ## Pending / open (carried)
 
-- **M7 in-page ssh leg**: unblocked, pure wosh work — a password
-  prompt + host-key UX in the page over the existing connect-ssh
-  surface (the M6 ceremony leg landed: finding 28).
 - **RefCell borrow hazard** (endpoint guest, upstream-documented):
   never fired in our gates (connects at attempt 1), but
   browser-e2e.mjs keeps an 8-attempt budget. If it starts firing,
@@ -119,17 +117,18 @@ wholesale and shipped the previously A3-blocked browser leg:
 - mosh-server 1.4.0 at `/usr/bin/mosh-server`.
 - Harness ports: :3345 m3, :3347 m4, :3348 m5-client-deno, :3349 m6,
   :3350 m7, :3352 m5-browser-e2e, :3353/:3354 m6-browser
-  (relay/page). The user's own `mosh-server -p 0` is NOT ours; never
-  kill it.
+  (relay/page), :3355 m7-browser. The user's own `mosh-server -p 0`
+  is NOT ours; never kill it.
 - This repo: private remote `lann/wosh`. GitHub auth: `gh` as `lann`.
 
 ## Entry points
 
 - `just m5` — web modules + Deno-lane client E2E + the browser E2E
   (the deltic showcase); `just m5-browser-e2e` alone for the page
-  gate. `just m7 m6 m4 m3` — native gates; `just m2` / `just
-  web-serve` — dev bridge; `just m1` — conformance; `just spikes` —
-  wasmtime + deltic spike legs.
+  gate. `just m6-browser m7-browser` — the in-page ceremony and
+  inner-ssh legs. `just m7 m6 m4 m3` — native gates; `just m2` /
+  `just web-serve` — dev bridge; `just m1` — conformance; `just
+  spikes` — wasmtime + deltic spike legs.
 - `just web-bundle` — rebuild `web/dist/deltic.js` after touching
   `web/deltic-entry.ts` or bumping deltic.
 - `just engine-bindings` — regen after `wit/mosh.wit` changes

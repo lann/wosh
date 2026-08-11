@@ -10,12 +10,22 @@
 // passkey registration + PRF-wrapped escrow, app.mjs persistCurrent),
 // and a saved proxy with a recorded session offers "reattach"
 // (assertion-gated, same token rules — app.mjs reattachIroh).
+//
+// M7: "ssh" connects through the deprivileged proxy path — end-to-end
+// ssh auth through the forwarded stream (app.mjs connectSshIroh). The
+// host-key pin is TOFU: first success stores the fingerprint on the
+// proxy record; later connects pass it as expected-host-key, so a
+// mismatch fails before the password is ever sent.
 
 import { parseConnstring, connstringFromFragment } from "./connstring.mjs";
 import * as store from "./storage.mjs";
 import { openKeyStore, ensureIdentity } from "./idb-keys.mjs";
 
-export async function initBoot(panel, storage = localStorage, { onConnect, onPersist, onReattach } = {}) {
+export async function initBoot(
+  panel,
+  storage = localStorage,
+  { onConnect, onPersist, onReattach, onConnectSsh } = {},
+) {
   let state = store.load(storage);
   let pending = null; // parsed-but-unsaved proxy details
   let notice = "";
@@ -165,8 +175,77 @@ export async function initBoot(panel, storage = localStorage, { onConnect, onPer
     }
   };
 
+  // Inner-ssh connect (M7). On success the proxy is saved and the
+  // observed host key pinned — the pin is what makes the NEXT connect
+  // refuse an impostor before sending the password.
+  const connectSsh = async ({ relayUrl, endpointIdHex }, { token, user, password, command }) => {
+    if (connecting || !onConnectSsh) return;
+    if (!token || !user || !password) {
+      notice = "ssh needs pairing token, user, and password";
+      render();
+      return;
+    }
+    const pinned = state.proxies.find((p) => p.endpointIdHex === endpointIdHex)?.sshHostKey;
+    connecting = true;
+    notice = `ssh-connecting to ${endpointIdHex.slice(0, 8)}…`;
+    render();
+    try {
+      const { hostKey } = await onConnectSsh({
+        relayUrl,
+        endpointIdHex,
+        token,
+        user,
+        password,
+        expectedHostKey: pinned ?? undefined,
+        command: command || undefined,
+      });
+      connected = { relayUrl, endpointIdHex };
+      const { state: withProxy } = store.upsertProxy(state, { endpointIdHex, relayUrl });
+      state = store.pinHostKey(withProxy, endpointIdHex, hostKey);
+      store.save(storage, state);
+      notice = pinned ? "" : `ssh host key pinned (TOFU first contact): ${hostKey}`;
+    } catch (e) {
+      notice = `connect failed: ${e.message ?? e}`;
+    } finally {
+      connecting = false;
+      render();
+    }
+  };
+
   const render = () => {
     panel.replaceChildren();
+    // The ssh input cluster (M7), shared by the pending row and saved
+    // rows; `tokenFn` defers to whichever token source the row has.
+    const sshCluster = (proxyish, tokenFn) => {
+      if (!onConnectSsh) return null;
+      const user = el("input", { class: "ssh-user", placeholder: "user", size: "8" });
+      const pass = el("input", {
+        class: "ssh-pass",
+        placeholder: "password",
+        type: "password",
+        size: "10",
+      });
+      const cmd = el("input", {
+        class: "ssh-cmd",
+        placeholder: "command (default: mosh-server …)",
+        size: "24",
+      });
+      const btn = el(
+        "button",
+        {
+          class: "ssh-btn",
+          onclick: () =>
+            connectSsh(proxyish, {
+              token: tokenFn(),
+              user: user.value.trim(),
+              password: pass.value,
+              command: cmd.value.trim(),
+            }),
+        },
+        "ssh",
+      );
+      return el("span", { class: "boot-ssh" }, " · ssh: ", user, " ", pass, " ", cmd, " ", btn);
+    };
     const idLine = identityError
       ? `identity: unavailable (${identityError})`
       : identity
@@ -189,31 +268,35 @@ export async function initBoot(panel, storage = localStorage, { onConnect, onPer
     );
 
     if (pending) {
-      panel.append(
+      const row = el(
+        "div",
+        { class: "boot-pending" },
+        `proxy ${pending.endpointIdHex.slice(0, 16)}… via ${pending.relayUrl} — `,
         el(
-          "div",
-          { class: "boot-pending" },
-          `proxy ${pending.endpointIdHex.slice(0, 16)}… via ${pending.relayUrl} — `,
-          el(
-            "button",
-            { id: "connect-pending-btn", onclick: () => connect(pending) },
-            "connect",
-          ),
-          " ",
-          el("button", { id: "save-btn", onclick: saveOffer }, "save"),
-          " ",
-          el(
-            "button",
-            {
-              onclick: () => {
-                pending = null;
-                render();
-              },
+          "button",
+          { id: "connect-pending-btn", onclick: () => connect(pending) },
+          "connect",
+        ),
+        " ",
+        el("button", { id: "save-btn", onclick: saveOffer }, "save"),
+        " ",
+        el(
+          "button",
+          {
+            onclick: () => {
+              pending = null;
+              render();
             },
-            "discard",
-          ),
+          },
+          "discard",
         ),
       );
+      const ssh = sshCluster(
+        { relayUrl: pending.relayUrl, endpointIdHex: pending.endpointIdHex },
+        () => pending.token,
+      );
+      if (ssh) row.append(ssh);
+      panel.append(row);
     }
 
     if (connected && onPersist) {
@@ -272,6 +355,11 @@ export async function initBoot(panel, storage = localStorage, { onConnect, onPer
           ),
         );
       }
+      const ssh = sshCluster(
+        { relayUrl: p.relayUrl, endpointIdHex: p.endpointIdHex },
+        () => tokenInput.value.trim(),
+      );
+      if (ssh) row.append(ssh);
       row.append(
         " ",
         el(
@@ -317,6 +405,7 @@ export async function initBoot(panel, storage = localStorage, { onConnect, onPer
     tryParse,
     saveOffer,
     connect,
+    connectSsh,
     persist,
     reattach,
     render,

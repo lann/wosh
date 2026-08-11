@@ -4,6 +4,9 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 description = "M7 gate: composed client core -> inner ssh (x/crypto/ssh in wasm) through the proxy's ssh-forward stream to an sshd stand-in, then mosh over the datagram tunnel"
+# `cargo run` means the gate; the sshd-standin bin serves the browser
+# leg's node harness (ssh-browser-e2e.mjs).
+default-run = "ssh-e2e"
 
 [workspace]
 
@@ -13,7 +16,7 @@ wasmtime-wasi = { version = "47", features = ["p3"] }
 wasmtime-webrtc-datachannels = { path = "../../.deps/polymorph-iroh/.deps/webrtc/wasmtime-impl" }
 polymorph-webcrypto-wasmtime = { path = "../../.deps/polymorph-iroh/.deps/webcrypto/rust/wasmtime" }
 wasmtime-websocket = { path = "../../.deps/polymorph-iroh/.deps/websocket/rust/wasmtime" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "process", "io-util", "signal"] }
 anyhow = "1"
 env_logger = "0.11"
 russh = "0.62.5"
