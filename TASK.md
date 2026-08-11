@@ -76,7 +76,7 @@ wholesale and shipped the previously A3-blocked browser leg:
   recovery.
 - mosh-go throwaway limitation (DEPS.md): C server retains all client
   states, quenches past 1024 — long sessions degrade; candidate patch
-  sketched there.
+  sketched there. Now tracked upstream: unixshells/mosh-go#3.
 - Escrow refresh: per-reattach floor-jump re-escrow LANDED (finding
   28). Residual: re-escrow *within* a session epoch (immortal
   sessions crossing 2^32 datagrams) needs a retained PRF output or a
@@ -85,16 +85,16 @@ wholesale and shipped the previously A3-blocked browser leg:
   no interactive shell/stdin surface; hostkey pinning embedder-side.
   The unextractable-WebCrypto-ssh-key step needs an async engine
   export — no longer blocked (deltic), just unbuilt.
-- Upstream courtesies: deltic/polymorph module-identity convergence
-  (finding 26 addendum: sibling deltic modules' standalone URL pins
-  vs consumer import maps — bless the prefix-mapping pattern in
-  deltic docs/consumers.md or drop standalone pins); mosh-go wasip
-  build-tag patch; per-path
-  datagram-ceiling issue on polymorph-iroh; mosh-go fork patch 4 +
-  resume-adoption learning; connection close-reason accessor on the
-  endpoint WIT (the Error-then-close race).
-- `just m5-netem` not rerun this session (needs passwordless sudo for
-  tc; measurement matrix, not a regression gate).
+- Upstream courtesies: ALL FILED 2026-08-11 — deltic module-identity
+  convergence (lann/deltic#108); mosh-go wasip build tags
+  (unixshells/mosh-go#1), pending-diff races + resume-adoption notes
+  (#2), throwaway_num quench (#3); polymorph-iroh per-path datagram
+  ceiling (polymorph-iroh#47) and peer close-info accessor for the
+  Error-then-close race (polymorph-iroh#48).
+- `just m5-netem` rerun 2026-08-11: all five cells green (RTO adapts
+  250→684 ms under 100 ms delay; dial survives 10% loss). Needs
+  passwordless sudo for tc; measurement matrix, not a regression
+  gate.
 
 ## Environment
 
