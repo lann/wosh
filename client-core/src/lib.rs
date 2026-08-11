@@ -274,6 +274,30 @@ async fn drive_ssh(
                     return Ok((port, key, fp));
                 }
                 if let Some(code) = ssh.exit_status() {
+                    // Exit-status can beat the last output through the
+                    // engine's internal buffers: stdout rides a separate
+                    // goroutine reader, and one network flight can carry
+                    // data + exit together (first seen when the upstream
+                    // endpoint moved to event-driven wakeups and arrival
+                    // coalescing changed). No further input exists after
+                    // exit, so the drain strictly converges: pump
+                    // scheduler rounds until read-output stays quiet a
+                    // few consecutive rounds, then parse once more.
+                    let mut quiet = 0;
+                    while quiet < 4 {
+                        ssh.pump();
+                        let more = ssh.read_output();
+                        if more.is_empty() {
+                            quiet += 1;
+                        } else {
+                            quiet = 0;
+                            output.extend_from_slice(&more);
+                        }
+                    }
+                    if let Some((port, key)) = parse_mosh_connect(&output) {
+                        let fp = host_fp.ok_or("ready without a host key")?;
+                        return Ok((port, key, fp));
+                    }
                     return Err(format!(
                         "'{command}' exited with status {code} without MOSH CONNECT: {}",
                         String::from_utf8_lossy(&output).trim()
