@@ -1,0 +1,97 @@
+# The shared per-shard setup: everything scripts/setup.sh expects
+# preinstalled, then setup.sh itself (idempotent, stamped — warm rust
+# caches turn its .deps builds into quick relinks). Factored out so the
+# gate shards, the browser job, and the deploy path stay in lockstep;
+# repo-wide policy (which shard builds what) lives in ci.yml, not here.
+#
+# Rust caches are PER-SHARD (`key: inputs.shard`): each shard caches
+# only the workspaces it builds, so no shard pays the restore/save cost
+# of another's wasmtime-embedding dep tree. cache-on-failure keeps a
+# flaky gate from throwing away a good build — losing the cache on
+# every red run is how CI stays cold forever (observed: main's first
+# run failed on a gate flake and every later run rebuilt ~3 GB from
+# scratch).
+name: wosh setup
+description: toolchain, pinned .deps, and per-shard rust caches for a gate job
+
+inputs:
+  shard:
+    description: cache-key discriminator, named after the shard
+    required: true
+  workspaces:
+    description: Swatinem/rust-cache workspaces this shard builds
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: System packages (mosh — conformance + spawned mosh-servers)
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mosh
+
+    # scripts/setup.sh expects the wasmtime CLI preinstalled (locally
+    # the polymorph family setup provides it). Pinned to the same
+    # major as the wasmtime crates the proxy and harnesses embed.
+    - name: wasmtime CLI
+      shell: bash
+      run: |
+        v=47.0.1
+        mkdir -p "$HOME/.local/bin"
+        curl -fsSL "https://github.com/bytecodealliance/wasmtime/releases/download/v${v}/wasmtime-v${v}-x86_64-linux.tar.xz" \
+          | tar -xJ --strip-components=1 -C "$HOME/.local/bin" "wasmtime-v${v}-x86_64-linux/wasmtime"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/wasmtime" --version
+
+    # The .deps clones must exist before rust-cache snapshots their
+    # lockfiles; pins are READ FROM scripts/setup.sh, so a pin bump
+    # there flows here automatically (setup.sh later re-checks them).
+    - name: Check out pinned .deps (pins live in scripts/setup.sh)
+      shell: bash
+      run: |
+        deltic_pin=$(sed -n 's/^DELTIC_PIN=//p' scripts/setup.sh)
+        piroh_pin=$(sed -n 's/^PIROH_PIN=//p' scripts/setup.sh)
+        [ -n "$deltic_pin" ] && [ -n "$piroh_pin" ]
+        git clone https://github.com/lann/deltic .deps/deltic
+        git -C .deps/deltic checkout --quiet "$deltic_pin"
+        git clone https://github.com/polymorph-components/polymorph-iroh .deps/polymorph-iroh
+        git -C .deps/polymorph-iroh checkout --quiet "$piroh_pin"
+
+    # Installs just/wac/wasm-tools (digest-pinned cargo-binstall,
+    # prebuilt assets) and clones polymorph-iroh's own pinned .deps —
+    # including upstream iroh, whose relay the e2e gates spawn. No
+    # cargo builds happen here (rust-cache comes after).
+    - name: polymorph-iroh setup
+      shell: bash
+      working-directory: .deps/polymorph-iroh
+      run: scripts/setup.sh
+
+    - name: Rust wasm targets
+      shell: bash
+      run: rustup target add wasm32-wasip2 wasm32-unknown-unknown
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.shard }}
+        cache-on-failure: true
+        workspaces: ${{ inputs.workspaces }}
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '>=1.25.5'
+        cache-dependency-path: |
+          engine-go/go.sum
+          host-test/moshgo-server/go.sum
+
+    - uses: denoland/setup-deno@v2
+      with:
+        deno-version: v2.x
+
+    # Everything else, exactly as locally: componentize-go, the deltic
+    # translator shim, iroh-endpoint + iroh-relay, npm and deno module
+    # installs. Idempotent; tolerates the pre-seeded tools and
+    # checkouts above. (rust-cache prunes workspace-member binaries,
+    # so the stamped .deps builds re-link from warm deps each run —
+    # a minute or two, not the cold tens.)
+    - name: wosh setup
+      shell: bash
+      run: scripts/setup.sh

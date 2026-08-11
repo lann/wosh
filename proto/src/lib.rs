@@ -90,6 +90,25 @@ pub mod stream_tag {
     pub const SSH_FORWARD: u8 = 0x01;
 }
 
+/// Shared client/proxy glue: find `MOSH CONNECT <port> <key>` among the
+/// *complete* lines of ssh exec output (a partial chunk could truncate
+/// the key — only lines terminated by `\n` are parsed).
+pub fn parse_mosh_connect(output: &[u8]) -> Option<(u16, String)> {
+    let text = String::from_utf8_lossy(output);
+    for line in text.split_inclusive('\n') {
+        if !line.ends_with('\n') {
+            break; // trailing partial line: wait for more output
+        }
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("MOSH") && parts.next() == Some("CONNECT") {
+            let port: u16 = parts.next()?.parse().ok()?;
+            let key = parts.next()?.to_string();
+            return Some((port, key));
+        }
+    }
+    None
+}
+
 /// Encode one control message with the u32-LE length prefix.
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
     let mut body = Vec::new();
@@ -240,6 +259,53 @@ impl Defragmenter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mosh_connect_happy_path() {
+        let out = b"MOSH CONNECT 60001 tuiV0K7A3AKAOXHZfHtHTw\n";
+        assert_eq!(
+            parse_mosh_connect(out),
+            Some((60001, "tuiV0K7A3AKAOXHZfHtHTw".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_mosh_connect_amid_noise() {
+        let out = b"Last login: Tue Aug 11\nMOSH CONNECT 60001 tuiV0K7A3AKAOXHZfHtHTw\nGoodbye\n";
+        assert_eq!(
+            parse_mosh_connect(out),
+            Some((60001, "tuiV0K7A3AKAOXHZfHtHTw".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_mosh_connect_ignores_trailing_partial_line() {
+        // No trailing '\n': a chunk boundary could have truncated the
+        // key mid-word, so the line is not parsed even though it looks
+        // complete — wait for more output instead.
+        let out = b"noise\nMOSH CONNECT 60001 abc";
+        assert_eq!(parse_mosh_connect(out), None);
+    }
+
+    #[test]
+    fn parse_mosh_connect_tolerates_crlf() {
+        let out = b"MOSH CONNECT 60001 tuiV0K7A3AKAOXHZfHtHTw\r\n";
+        assert_eq!(
+            parse_mosh_connect(out),
+            Some((60001, "tuiV0K7A3AKAOXHZfHtHTw".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_mosh_connect_malformed_line_short_circuits() {
+        // Pinning existing (e2e-proven) behavior: `parts.next()?` on a
+        // malformed "MOSH CONNECT" line returns None from the whole
+        // function via `?`, even though a later line is well-formed.
+        // This is not "improved" here — the caller only ever sees one
+        // MOSH CONNECT line in practice.
+        let out = b"MOSH CONNECT nonsense\nMOSH CONNECT 60001 tuiV0K7A3AKAOXHZfHtHTw\n";
+        assert_eq!(parse_mosh_connect(out), None);
+    }
 
     #[test]
     fn whole_round_trip() {

@@ -271,6 +271,140 @@ const PAGE = `<!doctype html><meta charset=utf-8>
       if (store.load(localStorage).proxies.length !== 0) return "FAIL: forget did not persist";
       return "OK phase2";
     }
+    if (phase === "4") {
+      // M7 first-contact ssh state machine (host-key-gate parked
+      // handshake): fake onBeginSsh/onConnectSsh handlers stand in for
+      // the real forwarded-ssh session so the phase runs headless and
+      // fast — the actual ssh bytes are M7's e2e gate's job.
+      localStorage.clear();
+      const IDS = "d".repeat(64);
+      const FP = "SHA256:fakefingerprintfakefingerprintfakefingerprint";
+      const beginCalls = [];
+      const connectCalls = [];
+      let declineCalls = 0;
+      let confirmArgs = null;
+      const flow = {
+        hostKey: FP,
+        confirm: async (args) => {
+          confirmArgs = args;
+          return { hostKey: FP };
+        },
+        decline: async () => {
+          declineCalls++;
+        },
+      };
+      const boot = await initBoot(document.getElementById("panel"), localStorage, {
+        onBeginSsh: async (a) => {
+          beginCalls.push(a);
+          return flow;
+        },
+        onConnectSsh: async (a) => {
+          connectCalls.push(a);
+          return { hostKey: FP };
+        },
+      });
+
+      // 1: first contact — onBeginSsh, not onConnectSsh; no password
+      // crosses into the parked flow (it stays embedder-side until
+      // confirmSsh).
+      await boot.connectSsh(
+        { relayUrl: "http://r", endpointIdHex: IDS },
+        { token: "tok", user: "u", password: "pw", command: undefined },
+      );
+      if (beginCalls.length !== 1) return "FAIL: onBeginSsh calls " + beginCalls.length;
+      const beginArgs = beginCalls[0];
+      if ("password" in beginArgs) return "FAIL: password leaked to onBeginSsh";
+      if (
+        beginArgs.relayUrl !== "http://r" ||
+        beginArgs.endpointIdHex !== IDS ||
+        beginArgs.token !== "tok" ||
+        beginArgs.user !== "u"
+      ) {
+        return "FAIL: onBeginSsh args " + JSON.stringify(beginArgs);
+      }
+      if (connectCalls.length !== 0) return "FAIL: onConnectSsh called on first contact";
+      if (boot.sshPrompt?.hostKey !== FP) return "FAIL: sshPrompt.hostKey " + boot.sshPrompt?.hostKey;
+      const fpEl = document.querySelector(".ssh-confirm-fp");
+      if (!fpEl || fpEl.textContent !== FP) {
+        return "FAIL: .ssh-confirm-fp textContent " + fpEl?.textContent;
+      }
+      if (boot.notice.includes("connect failed")) return "FAIL: notice " + boot.notice;
+
+      // 2: decline — no pin, flow torn down.
+      await boot.declineSsh();
+      if (declineCalls !== 1) return "FAIL: flow.decline calls " + declineCalls;
+      if (boot.sshPrompt !== null) return "FAIL: sshPrompt not cleared after decline";
+      if (!boot.notice.includes("declined")) return "FAIL: decline notice " + boot.notice;
+      if (boot.state.proxies.some((p) => p.sshHostKey)) {
+        return "FAIL: decline pinned a host key";
+      }
+
+      // 3: confirm — the password parked in step 1 is released now.
+      await boot.connectSsh(
+        { relayUrl: "http://r", endpointIdHex: IDS },
+        { token: "tok", user: "u", password: "pw", command: undefined },
+      );
+      if (!boot.sshPrompt) return "FAIL: no prompt on second first-contact";
+      await boot.confirmSsh();
+      if (!confirmArgs || confirmArgs.password !== "pw" || confirmArgs.command !== undefined) {
+        return "FAIL: flow.confirm args " + JSON.stringify(confirmArgs);
+      }
+      if (!boot.connected) return "FAIL: not connected after confirm";
+      const pin1 = boot.state.proxies.find((p) => p.endpointIdHex === IDS)?.sshHostKey;
+      if (pin1 !== FP) return "FAIL: stored pin " + pin1;
+      if (!boot.notice.includes("pinned")) return "FAIL: confirm notice " + boot.notice;
+
+      // 4: pinned path — onConnectSsh directly, onBeginSsh not re-called.
+      await boot.connectSsh(
+        { relayUrl: "http://r", endpointIdHex: IDS },
+        { token: "tok", user: "u", password: "pw", command: undefined },
+      );
+      if (connectCalls.length !== 1) return "FAIL: onConnectSsh calls " + connectCalls.length;
+      if (connectCalls[0].expectedHostKey !== FP) {
+        return "FAIL: expectedHostKey " + connectCalls[0].expectedHostKey;
+      }
+      // begin was called once in step 1 (first contact) and once more
+      // in step 3 (post-decline re-attempt); the pinned path here must
+      // not add a third.
+      if (beginCalls.length !== 2) return "FAIL: onBeginSsh re-called on pinned path";
+      if (boot.sshPrompt !== null) return "FAIL: sshPrompt set on pinned path";
+
+      // 5: failure path — a throwing confirm leaves no pin, a legible
+      // notice, and the prompt cleared (the flow is one-shot; a failed
+      // authenticate is spent — see confirmSsh's comment).
+      const div2 = document.createElement("div");
+      document.body.append(div2);
+      const fake2 = new Map();
+      const storage2 = {
+        getItem: (k) => fake2.get(k) ?? null,
+        setItem: (k, v) => fake2.set(k, String(v)),
+      };
+      const failFlow = {
+        hostKey: FP,
+        confirm: async () => {
+          throw new Error("auth rejected");
+        },
+        decline: async () => {},
+      };
+      const boot3 = await initBoot(div2, storage2, {
+        onBeginSsh: async () => failFlow,
+        onConnectSsh: async () => ({ hostKey: FP }),
+      });
+      await boot3.connectSsh(
+        { relayUrl: "http://r", endpointIdHex: IDS },
+        { token: "tok", user: "u", password: "pw", command: undefined },
+      );
+      await boot3.confirmSsh();
+      if (!boot3.notice.startsWith("connect failed")) {
+        return "FAIL: failure-path notice " + boot3.notice;
+      }
+      if (boot3.sshPrompt !== null) return "FAIL: failure-path sshPrompt not cleared";
+      if (boot3.state.proxies.some((p) => p.sshHostKey)) {
+        return "FAIL: failure path pinned a host key";
+      }
+
+      return "OK phase4";
+    }
     if (phase === "3") {
       // WebAuthn prf ceremony against the CDP virtual authenticator
       // (wired by the node side before navigation). Prototype calls
@@ -386,6 +520,11 @@ try {
   const r2 = await page.evaluate(() => window.__result);
   console.log(`[web-tests] browser phase 2: ${r2}`);
   if (r2 !== "OK phase2") process.exit(1);
+
+  await page.goto(`${base}/?phase=4`);
+  const r4 = await page.evaluate(() => window.__result);
+  console.log(`[web-tests] browser phase 4: ${r4}`);
+  if (r4 !== "OK phase4") process.exit(1);
 
   // Phase 3: real WebAuthn ceremonies against the CDP virtual
   // authenticator (the finding is the capability report either way;

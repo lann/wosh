@@ -1,18 +1,40 @@
-# CI: the project gates, and — on main — the Pages deploy gated on
-# them. One job runs the same sequence a developer runs locally
-# (scripts/setup.sh, then the just gates), so the pins in
-# scripts/setup.sh flow here automatically; the deploy job only ships
-# the tree the gates job already built and uploaded.
+# CI, tiered (issue: gates-as-CI was one 44-minute serial job).
 #
-# Excluded from CI: m5-netem (sudo tc latency/loss matrix — a
-# measurement, not a pass/fail gate, and timing-hostile on shared
-# runners).
+# Measured on the serial job: actual gate RUNTIME is ~2 minutes; the
+# other ~36 were four cold cargo builds of the wasmtime-embedding
+# harnesses (m3 ~9m, m4 ~14m, m6 ~7m, m7 ~7m). So the layout below
+# shards by WHAT GETS BUILT, not by test count, and treats caching as
+# the first-order concern:
+#
+#   unit     — tier 0, PR-blocking: proto cargo tests + the web module
+#              tests (connstring/storage/prf-wrap/panel state machines
+#              in headless chromium). No wasm, no .deps. Minutes.
+#   gates    — tier 1, PR-blocking: the native e2e gates, one shard
+#              per cargo-build cluster (engine / proxy / sessions).
+#   browser  — tier 2: the in-page e2e legs. Runs on main pushes, the
+#              nightly drift watch, manual dispatch, and PRs that ask
+#              for it with the `browser-gates` label (labeling
+#              triggers a run — the `labeled` event type is wired).
+#   deploy   — main pushes only, gated on ALL of the above; ships the
+#              tree the same green run built.
+#
+# The e2e gates stay the source of truth (they keep finding the real
+# bugs — see README findings); the tiers change their COST, not their
+# authority. m5-netem stays excluded (sudo tc; a measurement, not a
+# gate). Per-shard rust caches + cache-on-failure live in
+# .github/actions/wosh-setup.
 name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  schedule:
+    # Nightly drift watch: full matrix including the browser legs —
+    # catches breakage from the unpinned edges (chromium, deno, go
+    # toolchain drift) on quiet days.
+    - cron: '43 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -25,109 +47,137 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # mosh requires a UTF-8 locale on both ends.
+  LC_ALL: C.UTF-8
+  LANG: C.UTF-8
+
 jobs:
-  gates:
+  # --- tier 0: the standard fast layer ---------------------------------
+  unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      # mosh requires a UTF-8 locale on both ends.
-      LC_ALL: C.UTF-8
-      LANG: C.UTF-8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - name: System packages (mosh — conformance + proxy-spawned servers)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mosh
-
-      # scripts/setup.sh expects the wasmtime CLI preinstalled (locally
-      # the polymorph family setup provides it). Pinned to the same
-      # major as the wasmtime crates the proxy and harnesses embed.
-      - name: wasmtime CLI
-        run: |
-          v=47.0.1
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/bytecodealliance/wasmtime/releases/download/v${v}/wasmtime-v${v}-x86_64-linux.tar.xz" \
-            | tar -xJ --strip-components=1 -C "$HOME/.local/bin" "wasmtime-v${v}-x86_64-linux/wasmtime"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/wasmtime" --version
-
-      # The .deps clones must exist before rust-cache snapshots their
-      # lockfiles; pins are READ FROM scripts/setup.sh, so a pin bump
-      # there flows here automatically (setup.sh later re-checks them).
-      - name: Check out pinned .deps (pins live in scripts/setup.sh)
-        run: |
-          deltic_pin=$(sed -n 's/^DELTIC_PIN=//p' scripts/setup.sh)
-          piroh_pin=$(sed -n 's/^PIROH_PIN=//p' scripts/setup.sh)
-          [ -n "$deltic_pin" ] && [ -n "$piroh_pin" ]
-          git clone https://github.com/lann/deltic .deps/deltic
-          git -C .deps/deltic checkout --quiet "$deltic_pin"
-          git clone https://github.com/polymorph-components/polymorph-iroh .deps/polymorph-iroh
-          git -C .deps/polymorph-iroh checkout --quiet "$piroh_pin"
-
-      # Installs just/wac/wasm-tools (digest-pinned cargo-binstall,
-      # prebuilt assets) and clones polymorph-iroh's own pinned .deps —
-      # including upstream iroh, whose relay the e2e gates spawn. No
-      # cargo builds happen here (rust-cache comes after).
-      - name: polymorph-iroh setup
-        working-directory: .deps/polymorph-iroh
-        run: scripts/setup.sh
-
-      - name: Rust wasm targets
-        run: rustup target add wasm32-wasip2 wasm32-unknown-unknown
-
       - uses: Swatinem/rust-cache@v2
         with:
+          key: unit
+          cache-on-failure: true
+          workspaces: proto -> target
+
+      - name: proto unit tests (control/framing/escrow shapes, MOSH CONNECT parse)
+        working-directory: proto
+        run: cargo test
+
+      # web-tests needs only the harness deps and the runner's
+      # preinstalled chromium — no wasm artifacts, no .deps.
+      - name: npm ci (host-test + web)
+        run: |
+          (cd host-test && npm ci --no-fund --no-audit)
+          (cd web && npm ci --no-fund --no-audit)
+
+      - name: web module tests (connstring, storage, prf-wrap, panel incl. ssh first-contact prompt)
+        working-directory: host-test
+        run: npm run web-tests
+
+  # --- tier 1: native gates, sharded by cargo-build cluster -------------
+  gates:
+    name: gates (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # A flake in one shard must not mask another shard's real result.
+      fail-fast: false
+      matrix:
+        include:
+          # spikes + M1 conformance + M3 composed client: the Go/deno
+          # lanes plus the one light harness (composed-e2e).
+          - shard: engine
+            recipes: spikes m1 m3
+            workspaces: |
+              spikes/compose/adapter -> target
+              client-core -> target
+              host-test/composed-e2e -> target
+              .deps/deltic -> target
+              .deps/polymorph-iroh -> target
+              .deps/polymorph-iroh/.deps/iroh -> target
+          # M4: the proxy stack — the single longest cold build, so it
+          # gets a shard to itself.
+          - shard: proxy
+            recipes: m4
+            workspaces: |
+              client-core -> target
+              proxy-core -> target
+              proxy -> target
+              host-test/proxy-e2e -> target
+              .deps/deltic -> target
+              .deps/polymorph-iroh -> target
+              .deps/polymorph-iroh/.deps/iroh -> target
+          # M6 passkeys + M7 inner ssh: the two session-layer harnesses.
+          - shard: sessions
+            recipes: m6 m7
+            workspaces: |
+              client-core -> target
+              proxy-core -> target
+              proxy -> target
+              host-test/passkey-e2e -> target
+              host-test/ssh-e2e -> target
+              .deps/deltic -> target
+              .deps/polymorph-iroh -> target
+              .deps/polymorph-iroh/.deps/iroh -> target
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/wosh-setup
+        with:
+          shard: ${{ matrix.shard }}
+          workspaces: ${{ matrix.workspaces }}
+
+      - name: Gates
+        run: just ${{ matrix.recipes }}
+
+  # --- tier 2: the browser legs ------------------------------------------
+  # m5-web is deliberately absent (the unit job runs it); this is the
+  # composed-artifact-in-the-page set. Browser legs find the runner's
+  # preinstalled Chrome via host-test/chrome.mjs.
+  browser:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'browser-gates')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/wosh-setup
+        with:
+          shard: browser
           workspaces: |
             client-core -> target
             proxy-core -> target
             proxy -> target
-            spikes/compose/adapter -> target
-            host-test/composed-e2e -> target
-            host-test/proxy-e2e -> target
-            host-test/passkey-e2e -> target
             host-test/ssh-e2e -> target
             .deps/deltic -> target
             .deps/polymorph-iroh -> target
             .deps/polymorph-iroh/.deps/iroh -> target
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '>=1.25.5'
-          cache-dependency-path: |
-            engine-go/go.sum
-            host-test/moshgo-server/go.sum
+      - name: Browser gates
+        run: just m2 m5-client-deno m5-browser-e2e m6-browser m7-browser
 
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      # Everything else, exactly as locally: componentize-go, the
-      # deltic translator shim, iroh-endpoint + iroh-relay, npm and
-      # deno module installs. Idempotent; tolerates the pre-seeded
-      # tools and checkouts above.
-      - name: wosh setup
-        run: scripts/setup.sh
-
-      # Browser legs (m2, m5, m6-browser, m7-browser) find the
-      # runner's preinstalled Chrome via host-test/chrome.mjs.
-      - name: Gates
-        run: just spikes m1 m2 m3 m4 m5 m6 m6-browser m7 m7-browser
-
-      # --- deploy tree, built by the same green run (main only) -----
+      # --- deploy tree, built by the same green run (main pushes) -----
       - name: Assemble the deploy tree
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         run: scripts/web-deploy-tree.sh "$GITHUB_WORKSPACE/_site"
 
       - uses: actions/upload-pages-artifact@v3
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push'
         with:
           path: _site
 
-  # The Pages push — gated on the gates job; deploys the artifact that
-  # exact run produced.
+  # The Pages push — main pushes only, gated on every tier; deploys the
+  # artifact that exact run produced.
   deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: gates
+    if: github.event_name == 'push'
+    needs: [unit, gates, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -29,6 +29,22 @@ gone). One wosh-side fix rode along: drive_ssh drains to quiescence
 on exit-status (exit can beat the final stdout through the engine's
 buffers under the new arrival coalescing).
 
+2026-08-11, latest: CI tiered (the serial 44-minute gates job is
+gone). Measured on that job: gate RUNTIME was ~2 min; ~36 min was
+four cold cargo builds of the wasmtime-embedding harnesses. New
+layout (`.github/workflows/ci.yml` + the wosh-setup composite
+action): `unit` (proto cargo tests + web-tests — now including a
+first-contact-ssh panel phase 4 with fake handlers, and
+parse-mosh-connect moved to proto with unit tests), three native
+gate shards split by cargo-build cluster (engine=spikes+m1+m3,
+proxy=m4, sessions=m6+m7) with PER-SHARD rust caches and
+cache-on-failure (a gate flake no longer throws the build away —
+the old cache never landed on main because of exactly that), and
+the browser legs on main pushes + nightly cron + the
+`browser-gates` PR label. Deploy gated on all tiers. The e2e gates
+remain the source of truth (finding 30 alone: three bugs only they
+could catch); the tiers changed their cost, not their authority.
+
 2026-08-11, later: issue #7 landed (finding 30) — TRUE first-contact
 ssh now parks at the host-key gate and the page confirms the
 fingerprint BEFORE the password moves (two-phase `ssh-flow`; engine

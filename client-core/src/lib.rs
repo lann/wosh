@@ -202,25 +202,6 @@ async fn control_hello(conn: &Connection, pairing_token: &str) -> Result<Control
     }
 }
 
-/// Find `MOSH CONNECT <port> <key>` among the *complete* lines of the
-/// exec output (a partial chunk could truncate the key — only lines
-/// terminated by `\n` are parsed).
-fn parse_mosh_connect(output: &[u8]) -> Option<(u16, String)> {
-    let text = String::from_utf8_lossy(output);
-    for line in text.split_inclusive('\n') {
-        if !line.ends_with('\n') {
-            break; // trailing partial line: wait for more output
-        }
-        let mut parts = line.split_whitespace();
-        if parts.next() == Some("MOSH") && parts.next() == Some("CONNECT") {
-            let port: u16 = parts.next()?.parse().ok()?;
-            let key = parts.next()?.to_string();
-            return Some((port, key));
-        }
-    }
-    None
-}
-
 /// Drive the sans-I/O ssh engine over the forwarded stream, split in
 /// two phases at the host-key gate (issue #7): `run-to-host-key`
 /// parks the handshake with the fingerprint in hand and no password
@@ -360,7 +341,7 @@ impl SshDrive {
                         continue;
                     }
                     output.extend_from_slice(&self.ssh.read_output());
-                    if let Some((port, key)) = parse_mosh_connect(&output) {
+                    if let Some((port, key)) = proto::parse_mosh_connect(&output) {
                         return Ok((port, key));
                     }
                     if let Some(code) = self.ssh.exit_status() {
@@ -384,7 +365,7 @@ impl SshDrive {
                                 output.extend_from_slice(&more);
                             }
                         }
-                        if let Some((port, key)) = parse_mosh_connect(&output) {
+                        if let Some((port, key)) = proto::parse_mosh_connect(&output) {
                             return Ok((port, key));
                         }
                         return Err(format!(
