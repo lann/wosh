@@ -119,6 +119,39 @@ e2e: compose
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
 
+# Keyboard-interactive, end to end: the same composed client, over the
+# same real iroh path, against the scripted x/crypto stand-in server
+# (real sshd cannot do kbd-interactive as a user process -- its only
+# backends are PAM and BSDAuth). Positive leg answers two prompt
+# batches (echoed + masked, then a second round); negative leg proves
+# a wrong answer fails legibly.
+e2e-kbdint: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    (cd kbdint-sshd && go build -o ../target/gate/kbdint-sshd .)
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    pkill -f 'kbdint-ssh[d]' 2>/dev/null || true
+    sleep 1
+    target/gate/kbdint-sshd --port 2223 > /tmp/wosh-kbdint-sshd.log 2>&1 &
+    sleep 1
+    fp=$(grep '^fingerprint: ' /tmp/wosh-kbdint-sshd.log | cut -d" " -f2)
+    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:2223 --no-qr > /tmp/wosh-kbdint-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-kbdint-listener.log | cut -d" " -f2)
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user gate --auth kbd \
+        --kbd-answers 'gate-token-123,gate-passphrase-456,gate-otp-789' \
+        --expect-host-key "$fp"
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user gate --auth kbd \
+        --kbd-answers 'gate-token-123,WRONG,gate-otp-789' \
+        --expect-auth-fail
+
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
 browser: site
@@ -129,4 +162,4 @@ browser: site
 live:
     node host-test/live-check.mjs
 
-check: test-connstring spike-async e2e browser
+check: test-connstring spike-async e2e e2e-kbdint browser

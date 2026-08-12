@@ -152,10 +152,10 @@ channel gets declared complete the instant nothing Component-Model
 visible is pending *for that task* — never calling task-return, which
 surfaces as the same `async-lifted export failed to produce a result`.
 The keepalive keeps *background* goroutines running; it cannot rescue a
-blocked export closure. Hence `authenticate-password` and
-`authenticate-publickey` latch a credential and resolve at once, and the
-caller polls `status` — the sans-I/O discipline, arrived at the hard
-way.
+blocked export closure. Hence the `authenticate-*` calls latch a
+credential and resolve at once, `answer-prompts` latches its answers the
+same way, and the caller polls `status` — the sans-I/O discipline,
+arrived at the hard way.
 
 **This is a library-design difference, not a Component Model limit.** A
 Rust future is a value the binding owns and can enumerate; a goroutine
@@ -227,6 +227,14 @@ Verified working:
   authenticates by **publickey with a signature produced by that
   WebCrypto key**, gets an interactive pty, round-trips a command
   through the tunnel, resizes, and detaches cleanly.
+- **Keyboard-interactive auth** (`just e2e-kbdint`): the same composed
+  client answers two server-driven prompt batches (echoed and masked
+  prompts, RFC 4256) over the same iroh path and reaches a shell; a
+  wrong answer is refused legibly. Runs against a scripted
+  `x/crypto/ssh` stand-in server (`kbdint-sshd/`), because a user-mode
+  OpenSSH sshd has no keyboard-interactive backend without PAM. This is
+  what PAM OTP/2FA setups need; the prompts render in the page with
+  masking honored.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs
