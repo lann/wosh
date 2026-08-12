@@ -1023,3 +1023,25 @@ below reference it as the "jco era").
     (`WOSH_DATAGRAM_CEILING`, proxy-core; the harness pins the
     historic 1162 B, production paths unaffected). Swept: spikes,
     m1–m7 including m6-browser and m7-browser.
+
+33. **deltic A11 family convergence complete: one prerelease
+    everywhere, ambient goroutine liveness on the mainline config.**
+    The `0.1.0-pre.ga2f84a5` prerelease (A11 settlement pump,
+    deltic#121) published once deltic's main went green — the x64
+    core failure was a node-datachannel prebuild-download flake
+    (empty `libc=` detection, broken source fallback under Deno's
+    script runner), re-run clean, release job un-skipped. Sibling
+    bumps (webcrypto#380, websocket#51, webrtc#157) and
+    polymorph-iroh#62 followed — one sequencing lesson recorded
+    there: regenerate a consumer's deno.lock AFTER its sibling
+    checkouts move, because the lock's links section records the
+    siblings' own @deltic/runtime dependency version. wosh then
+    flipped the root config to ga2f84a5 (PIROH_PIN b18c9d9), folded
+    `spike-keepalive-deltic` onto the root config, and deleted
+    deno-local-deltic.json: the finding-31 ambient probe (background
+    goroutine fires on schedule during a no-calls idle window) now
+    runs on the same graph as every other deltic leg. The local
+    .deps/deltic checkout survives solely as the translator-shim
+    build, at the identical commit. Swept: spikes, m1, m4, m5
+    locally; full matrix on CI. wosh#25's remaining opens are
+    unchanged (wasmtime dwelling-host leg, canary retirement).

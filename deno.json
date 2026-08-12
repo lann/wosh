@@ -1,15 +1,15 @@
 {
   "//": [
     "The Deno-lane + browser-bundle config for the deltic host layer (the jco replacement).",
-    "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally, and their `instanceof ComponentException` checks require ONE module instance per graph. Since polymorph-iroh#58 the whole family converges on exact-pinned JSR prereleases: every config in the graph (this file AND the sibling packages' own deno.jsons under .deps/polymorph-iroh) must name the IDENTICAL @deltic version \u2014 currently 0.1.0-pre.g078aa15, the A10 rename commit. When bumping PIROH_PIN, re-check the sibling pins and update the versions here to match (TASK.md: deltic A11 family convergence).",
-    "PINS: polymorph-iroh is a git reference at .deps/polymorph-iroh (scripts/setup.sh owns it). The LOCAL deltic checkout at .deps/deltic (DELTIC_PIN, currently a2f84a5 = g078aa15 + the A11 settlement pump) serves exactly two things: the translator-shim wasm build (translator sources identical between the two commits, so the plan-format coupling holds) and the keep-alive spike's runtime (A11 has no JSR prerelease yet; the spike rides runner/deno-local-deltic.json).",
+    "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally, and their `instanceof ComponentException` checks require ONE module instance per graph. Since polymorph-iroh#58 the whole family converges on exact-pinned JSR prereleases: every config in the graph (this file AND the sibling packages' own deno.jsons under .deps/polymorph-iroh) must name the IDENTICAL @deltic version \u2014 currently 0.1.0-pre.ga2f84a5 (A11, the settlement pump). When bumping PIROH_PIN, re-check the sibling pins and update the versions here to match (TASK.md: deltic A11 family convergence).",
+    "PINS: polymorph-iroh is a git reference at .deps/polymorph-iroh (scripts/setup.sh owns it). The LOCAL deltic checkout at .deps/deltic (DELTIC_PIN a2f84a5) now serves ONE thing: the translator-shim wasm build, at the same commit the jsr prerelease names \u2014 plan-format coupling holds by identity. The keep-alive spike rides this config like everything else (A11 family convergence complete).",
     "minimumDependencyAge: Deno's default supply-chain gate stays for everything else; same-day @deltic prereleases are the family's release vehicle (mirrors .deps/polymorph-iroh/host-deltic/deno.json)."
   ],
   "nodeModulesDir": "auto",
   "imports": {
-    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0-pre.g078aa15/embedder",
-    "@deltic/runtime/shim": "jsr:@deltic/runtime@0.1.0-pre.g078aa15/shim",
-    "@deltic/wasi-shims": "jsr:@deltic/wasi-shims@0.1.0-pre.g078aa15",
+    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5/embedder",
+    "@deltic/runtime/shim": "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5/shim",
+    "@deltic/wasi-shims": "jsr:@deltic/wasi-shims@0.1.0-pre.ga2f84a5",
     "@polymorph/webcrypto-deltic": "./.deps/polymorph-iroh/.deps/webcrypto/js/deltic/src/mod.ts",
     "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
     "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
