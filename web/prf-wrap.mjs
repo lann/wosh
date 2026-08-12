@@ -67,18 +67,47 @@ export function prfExtensionForGet() {
 }
 
 /**
+ * Client-capability probe (issue #13): can this BROWSER return
+ * WebAuthn prf output at all? Three-state — "yes" / "no" / "unknown"
+ * (API or key absent, or the call failed). Gates the persist/reattach
+ * *offers* only, never the ceremony: client capability ≠ authenticator
+ * capability (a "yes" client can still pick an hmac-secret-less
+ * security key), so assertPersistencePermitted stays the authoritative
+ * per-credential gate. No UA sniffing — WebAuthn L3
+ * getClientCapabilities answers at runtime.
+ */
+export async function probePrfCapability() {
+  try {
+    const caps = await globalThis.PublicKeyCredential?.getClientCapabilities?.();
+    const v = caps?.["extension:prf"];
+    return v === true ? "yes" : v === false ? "no" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
  * D4 sub-policy (decided M6): an authenticator without `prf` cannot
  * make a session persistent — the escrowed key would have to be
  * plaintext on the proxy, which is exactly what the PRF arm exists to
  * prevent. The `plain` schema arm stays for tests and emergencies, but
- * the client refuses to create one.
+ * the client refuses to create one. `clientCap` (a probePrfCapability
+ * result, when the caller has one) shades the copy: on a PRF-capable
+ * browser the limitation is the chosen authenticator, and saying so
+ * makes the retry actionable.
  */
-export function assertPersistencePermitted(prfEnabled) {
+export function assertPersistencePermitted(prfEnabled, clientCap) {
   if (prfEnabled !== true) {
+    const cause =
+      clientCap === "yes"
+        ? "this browser supports the WebAuthn prf extension but the chosen " +
+          "authenticator did not enable it — retry and pick a different " +
+          "passkey source (a platform passkey or an hmac-secret security key)"
+        : "the authenticator (or this browser) does not support the WebAuthn " +
+          "prf extension";
     throw new Error(
-      "this authenticator does not support the WebAuthn prf extension; " +
-        "refusing to persist the session (the mosh key would sit in " +
-        "plaintext on the proxy)",
+      `${cause}; refusing to persist the session (the mosh key would sit ` +
+        "in plaintext on the proxy)",
     );
   }
 }
