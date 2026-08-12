@@ -124,4 +124,9 @@ e2e: compose
 browser: site
     node host-test/browser-identity.mjs
 
+# Smoke-check the DEPLOYED site (real https origin, so this also
+# exercises service-worker registration, which local http cannot).
+live:
+    node host-test/live-check.mjs
+
 check: test-connstring spike-async e2e browser
