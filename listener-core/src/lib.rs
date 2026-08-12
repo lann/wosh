@@ -39,7 +39,11 @@ struct Cli {
 
 fn usage() -> String {
     "usage: irsh-listener-core --relay <url> --target <ip:port> \
-     [--qr-base <url>] [--token <hex>] [--no-token] [--no-qr]"
+     [--qr-base <url>] [--token <hex>] [--no-token] [--no-qr]\n\
+     \n\
+     --qr-base defaults to the deployed client at \
+     https://lann.github.io/wosh/# ; point it at your own copy to avoid \
+     depending on that origin."
         .into()
 }
 
@@ -91,7 +95,10 @@ fn parse_args() -> Result<Cli, String> {
         relay: relay.ok_or_else(usage)?,
         target: target.ok_or_else(usage)?,
         token,
-        qr_base: qr_base.unwrap_or_else(|| "https://localhost/#".into()),
+        // The deployed client. The QR code is the whole bootstrap, so
+        // this has to point at a site a phone can actually open; use
+        // --qr-base to aim at a self-hosted copy instead.
+        qr_base: qr_base.unwrap_or_else(|| "https://lann.github.io/wosh/#".into()),
         no_qr,
     })
 }

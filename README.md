@@ -237,6 +237,24 @@ Not finished:
   fresh per instance today.
 - CI.
 
+## Deploying
+
+`.github/workflows/pages.yml` publishes `site/` to GitHub Pages on every
+push to `main`. What ships is the *same* component the gates run --
+deltic is a runtime linker, so there is no transpiled variant that could
+drift from what was tested.
+
+The listener's `--qr-base` defaults to that deployed client, because the
+QR code is the entire bootstrap and it has to point at something a phone
+can open. Pass `--qr-base` to aim at your own copy:
+`scripts/site-deploy-tree.sh <dir>` produces a tree any static host can
+serve, and the whole thing is relative-path clean.
+
+Worth being explicit about the trust this implies: the origin serving
+the client can serve *different* client code, so it is part of the
+trusted computing base for new sessions. Self-hosting the tree removes
+that dependency.
+
 ## Licence and provenance
 
 Experiment-grade; no stability promised. Built against

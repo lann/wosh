@@ -78,8 +78,15 @@ say "polymorph-iroh: $(git -C "$DEPS/polymorph-iroh" log --oneline -1)"
 say "building the iroh endpoint component (cold: several minutes)"
 (cd "$DEPS/polymorph-iroh" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
 
-say "building a local iroh-relay (used by the gates)"
-(cd "$DEPS/polymorph-iroh/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
+# The relay is only needed to RUN the gates, never to build the
+# components or the site -- and it is by far the most expensive thing
+# here. CI that only publishes the site skips it.
+if [ -n "${IRSH_SKIP_RELAY:-}" ]; then
+  say "skipping the local iroh-relay build (IRSH_SKIP_RELAY set)"
+else
+  say "building a local iroh-relay (used by the gates)"
+  (cd "$DEPS/polymorph-iroh/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
+fi
 
 # --- deltic: the JS component host for the browser leg ----------------
 if [ ! -d "$DEPS/deltic/.git" ]; then
@@ -96,7 +103,7 @@ say "building deltic's translator shim"
 say "setup complete
 
   iroh endpoint : .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm
-  iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay
+  iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay${IRSH_SKIP_RELAY:+ (skipped)}
   deltic shim   : .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm
 
 next: just build"

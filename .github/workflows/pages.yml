@@ -1,0 +1,123 @@
+name: pages
+
+# Publishes the static client to GitHub Pages. The QR code the listener
+# prints is the entire bootstrap, so this site being live is what makes
+# the product usable from a phone -- `--qr-base` defaults to it.
+#
+# What ships is the SAME component the native gates run: deltic is a
+# runtime linker, so there is no transpiled variant that could drift
+# from what was tested.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; let a newer commit supersede an in-flight run,
+# but never cancel a deployment half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust + wasm targets
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add wasm32-wasip2 wasm32-unknown-unknown
+
+      # componentize-go needs a Go newer than the runner ships, and for
+      # async worlds it downloads its own patched toolchain on first
+      # build (golang.org/x/crypto builds fine on it).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: false
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,wasm-tools,cargo-binstall
+
+      - name: wac
+        run: cargo binstall --no-confirm --locked wac-cli
+
+      - name: componentize-go
+        run: go install github.com/bytecodealliance/componentize-go@latest
+
+      # The expensive half is .deps/: polymorph-iroh's endpoint component
+      # and its four sibling repos, plus deltic's translator shim. Keyed
+      # on setup.sh, which owns every pin.
+      - name: Cache .deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps
+            ~/.cache/componentize-go
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/setup.sh') }}
+
+      - name: Cache cargo + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            client-go/main.wasm
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'client-go/go.sum') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # IRSH_SKIP_RELAY: the relay is only needed to RUN the gates, and
+      # it is by far the most expensive build here.
+      - name: Dependencies
+        env:
+          IRSH_SKIP_RELAY: "1"
+        run: scripts/setup.sh
+
+      - name: Build the site
+        run: |
+          # xterm assets only -- `just web-deps` would also pull the
+          # browser-gate driver, which publishing does not need.
+          npm install --prefix site --no-fund --no-audit
+          just site out
+
+      # Cheap coherence checks on what is about to be published: an
+      # unreplaced service-worker placeholder is a syntax error that
+      # would break every visit, and a missing component is a site that
+      # loads and then cannot do anything.
+      - name: Sanity-check the tree
+        run: |
+          test -s out/dist/irsh-ssh-client.wasm
+          test -s out/dist/deltic.js
+          test -s out/dist/deltic-translator-shim.wasm
+          ! grep -q '__IRSH_' out/sw.js
+          grep -q 'irsh-ssh-client.wasm' out/sw.js
+          echo "tree ok: $(du -sh out | cut -f1)"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
