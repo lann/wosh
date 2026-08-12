@@ -1,0 +1,23 @@
+package irsh:listener;
+
+/// The irsh listener: a wasi:cli component. It generates (or reuses)
+/// an iroh identity, binds a polymorph-iroh endpoint on a configured
+/// relay, prints a QR code + link whose URL fragment carries the
+/// connection string (pubkey + relay + optional pairing token), and
+/// for every accepted connection: reads a short pairing-token prefix
+/// off the first stream the peer opens and, if it matches, bridges
+/// the rest of that stream to a configured TCP endpoint (raw
+/// byte-for-byte proxy -- the SSH protocol itself lives entirely at
+/// the endpoints; this component never parses it).
+world listener {
+  include wasi:cli/command@0.3.1;
+
+  import polymorph:iroh/identity-generate@0.1.0;
+  import polymorph:iroh/endpoint@0.1.0;
+  // wasi:sockets/types@0.3.1 (needed for the TCP proxy leg) already
+  // arrives via the wasi:cli/command include above -- no separate
+  // import needed, and no *other* version of it is vendored here (see
+  // wit/deps/polymorph-iroh/iroh.wit's header comment for why: mixing
+  // two versions of an async-bearing package in one generate! call
+  // hits a wit-bindgen codegen bug).
+}

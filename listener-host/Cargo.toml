@@ -1,0 +1,26 @@
+[package]
+name = "irsh-listener-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The native host shell for irsh-listener-core: wasmtime + the polymorph-iroh native host crates (webcrypto/websocket/webrtc), running the wac-composed listener component."
+
+[dependencies]
+anyhow = "1"
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+
+# The polymorph-iroh endpoint component (fused into the composed
+# listener by `wac plug`) imports these three non-WASI interfaces
+# regardless of which paths (relay/direct/webrtc) are actually in use;
+# these crates are their native-host implementations. Pinned to the
+# same revisions polymorph-iroh's own scripts/setup.sh pins (see this
+# project's scripts/setup.sh).
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "5dc3d4184d2ab82b98aa0ff82a218f9ed1e080eb" }
+polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", rev = "a0c924d3f10cc598e9ea2e754dc4f13f162dc749" }
+wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "a3b7fb1d0231c110b0bebb493276d23308642537" }
+
+[[bin]]
+name = "irsh-listener"
+path = "src/main.rs"

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "connstring",
+    "listener-core",
+    "listener-host",
+    "ssh-client-core",
+]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[profile.release]
+opt-level = "s"

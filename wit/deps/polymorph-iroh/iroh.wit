@@ -1,0 +1,449 @@
+package polymorph:iroh@0.1.0;
+
+/// Structural types for the iroh endpoint surface.
+///
+/// Every non-resource type used by the package lives here. Structural
+/// types carry no host-side identity, so a single composition can freely
+/// share these definitions across multiple components; the stateful
+/// resources live in the `endpoint` interface.
+interface types {
+    /// An endpoint identity: exactly 32 bytes, an Ed25519 public key.
+    ///
+    /// The key is the address: connections are requested by, and
+    /// authenticated against, this value. A `list<u8>` of any other
+    /// length is rejected with `error.invalid-argument` wherever an
+    /// `endpoint-id` is accepted.
+    type endpoint-id = list<u8>;
+
+    /// One way a peer may be reached, mirroring upstream iroh's
+    /// `TransportAddr`.
+    ///
+    /// The `custom` case is the extension point: address kinds that do
+    /// not exist yet travel as an opaque payload under a numeric
+    /// transport ID, so they survive round trips through parties that
+    /// do not understand them.
+    variant transport-addr {
+        /// A relay server the peer keeps a connection open to (a URL).
+        relay(string),
+        /// A direct socket address, `ip:port`.
+        ip(string),
+        /// Reachable over a WebRTC data channel, negotiated by signaling
+        /// through the given relay server (a URL). Both peers must hold
+        /// a connection to that relay. An entry of this kind is an
+        /// upgrade hint, not a dial target: the connection starts on
+        /// the relay and moves to the channel once it opens (see
+        /// `endpoint.connect`). This case is this package's own; it
+        /// maps to a `custom` entry in upstream iroh address records
+        /// (the mapping is fixed when discovery lands).
+        webrtc(string),
+        /// An address for a transport this package predates.
+        custom(custom-addr),
+    }
+
+    /// An opaque address for an unrecognized transport (upstream iroh's
+    /// `CustomAddr`).
+    record custom-addr {
+        /// The transport's numeric identifier.
+        id: u64,
+        /// Opaque address data, meaningful to that transport.
+        data: list<u8>,
+    }
+
+    /// Where to find a peer.
+    ///
+    /// Only `endpoint-id` identifies the peer; `addrs` are hints for
+    /// reaching it. A connection is authenticated against `endpoint-id`
+    /// regardless of which path reached the peer.
+    record endpoint-addr {
+        /// The peer's identity.
+        endpoint-id: endpoint-id,
+        /// Ways the peer may be reachable, in no particular order.
+        /// Unrecognized `custom` entries are ignored for dialing but
+        /// preserved.
+        addrs: list<transport-addr>,
+    }
+
+    /// The lifecycle state of a `connection`.
+    enum connection-state {
+        /// The handshake is in progress.
+        connecting,
+        /// The connection is open: streams operate normally.
+        open,
+        /// The connection is closed. Terminal.
+        closed,
+    }
+
+    /// The contents of a received QUIC application close (RFC 9000
+    /// CONNECTION_CLOSE carrying an application-supplied code and
+    /// reason). Read it with `connection.wait-closed`.
+    ///
+    /// A `close-info` exists only when the peer's application close
+    /// arrived: a connection that ends any other way — closed locally,
+    /// idle-timed-out, or lost to a transport error — has none, and
+    /// implementations never invent one.
+    record close-info {
+        /// The peer's application close code. QUIC carries codes up
+        /// to 2^62 - 1.
+        code: u64,
+        /// The peer's close reason. QUIC carries raw bytes; bytes that
+        /// are not valid UTF-8 are replaced with U+FFFD.
+        reason: string,
+    }
+
+    /// The wire currently carrying a `connection`'s packets. Read it
+    /// with `connection.path`; it can change over the connection's
+    /// life (see `connect` for the upgrade behavior).
+    enum path-kind {
+        /// Datagrams travel through a relay server.
+        relay,
+        /// Datagrams travel over a direct UDP socket.
+        ip,
+        /// Datagrams travel over a WebRTC data channel.
+        webrtc,
+    }
+
+    /// Errors surfaced by the endpoint surface. The `string` payloads
+    /// are human-readable diagnostics for logging; do not match on
+    /// their contents.
+    variant error {
+        /// The endpoint, connection, or stream was closed before the
+        /// operation completed. When the peer closed the connection,
+        /// `connection.wait-closed` reports its application close.
+        closed,
+        /// The peer reset the stream. The payload is the application
+        /// reset code.
+        reset(u64),
+        /// Connection establishment failed: the relay was unreachable,
+        /// the handshake failed, the peer refused every offered ALPN,
+        /// or the attempt timed out.
+        connect-failed(string),
+        /// A supplied argument is invalid: an `endpoint-id` that is not
+        /// 32 bytes, or a malformed relay URL. The operation had no
+        /// effect.
+        invalid-argument(string),
+        /// An implementation-specific failure.
+        other(string),
+    }
+}
+
+/// The endpoint identity resource. Constructing one is a separate
+/// concern: each provisioning path is its own interface
+/// (`identity-generate`, `identity-from-keys`, …), so a world imports
+/// exactly the paths it needs, and a deployment serves exactly the
+/// paths it implements — a composition needing an unserved path fails
+/// at composition time, not at runtime.
+interface identity {
+    use types.{endpoint-id};
+
+    /// An endpoint identity: an Ed25519 key pair whose private half
+    /// lives behind the component's crypto import and is never present
+    /// in this component's memory.
+    ///
+    /// An identity is valid by construction — every constructor
+    /// interface validates before minting — and reusable: any number
+    /// of `endpoint-options` may be built from one identity (endpoints
+    /// sharing an identity share the key, not connection state).
+    resource identity {
+        /// The raw 32-byte Ed25519 public key: this identity's
+        /// `endpoint-id`.
+        endpoint-id: func() -> endpoint-id;
+    }
+}
+
+/// Fresh-identity construction. A deployment that requires provisioned
+/// identities (for example, platform-keystore-only policies) withholds
+/// this interface; consumers that mint their own identities import it.
+interface identity-generate {
+    use types.{error};
+    use identity.{identity};
+
+    /// Mint a fresh identity through the component's crypto import.
+    /// The private key is created non-extractable: the identity can
+    /// sign, nothing can read it.
+    generate: async func() -> result<identity, error>;
+}
+
+/// Identity construction from `polymorph:webcrypto` key handles: the
+/// embedder owns provisioning and persistence (for example, a
+/// platform-held key that survives instantiations) and injects the
+/// pair here.
+interface identity-from-keys {
+    use types.{error};
+    use identity.{identity};
+    use polymorph:webcrypto/signature@0.1.0.{signing-key, verifying-key};
+
+    /// Mint an identity from an Ed25519 key pair. The private key
+    /// stays behind its handle; this component never reads it.
+    ///
+    /// Both keys must be Ed25519, `signing-key` must permit `sign`,
+    /// and `verifying-key` must be the signing key's public half. The
+    /// pair is checked here — including a sign/verify probe of the
+    /// halves against each other — and any mismatch fails
+    /// `error.invalid-argument`, so a bad pair fails at construction,
+    /// not as handshake failures against every peer. Extractability is
+    /// not required.
+    from-keys: async func(signing: signing-key, verifying: verifying-key) -> result<identity, error>;
+}
+
+/// The stateful endpoint surface: one identity, its connections, and
+/// their streams.
+interface endpoint {
+    use types.{endpoint-id, endpoint-addr, connection-state, close-info, path-kind, error};
+    use identity.{identity};
+
+    /// Configuration for `endpoint.bind`: constructed around the
+    /// endpoint's identity — the one mandatory input — then populated
+    /// through the setters. Every setting starts disabled or unset.
+    resource endpoint-options {
+        /// Options for an endpoint that binds as `identity`. The
+        /// identity is borrowed: one identity can configure any number
+        /// of endpoints.
+        constructor(identity: borrow<identity>);
+
+        /// Add an ALPN this endpoint accepts. `accept` delivers only
+        /// connections whose negotiated ALPN was added here. None are
+        /// accepted by default.
+        add-alpn: func(alpn: list<u8>);
+
+        /// The home relay this endpoint keeps a connection open to.
+        relay-url: func(url: string);
+
+        /// The `ip:port` to bind a UDP socket to, enabling the direct
+        /// path: `endpoint-addr.addrs` `ip` entries become dialable and
+        /// direct peers can dial in. Unset binds no socket. A port of
+        /// zero picks a free port; read the result with
+        /// `endpoint.direct-addr`.
+        udp-bind-addr: func(addr: string);
+
+        /// Enables the WebRTC wire: `webrtc` address entries become
+        /// dialable, and the endpoint answers WebRTC signaling arriving
+        /// on its relay connections. When disabled (the default),
+        /// `webrtc` entries are ignored for dialing and inbound
+        /// signaling is discarded.
+        webrtc: func(enabled: bool);
+    }
+
+    /// A bound endpoint: an identity plus the machinery to connect and
+    /// accept.
+    resource endpoint {
+        /// Stand the endpoint up as the options' identity. `options`
+        /// is consumed: construct one per bind.
+        ///
+        /// `bind` currently requires a `relay-url` and at least one
+        /// ALPN, and fails `error.invalid-argument` without them.
+        bind: static async func(options: endpoint-options) -> result<endpoint, error>;
+
+        /// This endpoint's identity.
+        id: func() -> endpoint-id;
+
+        /// The bound UDP socket's local `ip:port`, when
+        /// `endpoint-options.udp-bind-addr` was set.
+        direct-addr: func() -> option<string>;
+
+        /// Connect to a peer.
+        ///
+        /// Resolves once the QUIC handshake has completed and
+        /// authenticated `addr.endpoint-id`: a peer holding a different
+        /// key fails `connect-failed`, never connects. The connection's
+        /// ALPN is `alpn`, refused by the peer if it does not serve it.
+        ///
+        /// The dial path: the first parseable `ip` entry when a UDP
+        /// socket is bound, the relay otherwise. There is no fallback
+        /// between dial paths: a chosen path that does not answer fails
+        /// `connect-failed` by timeout.
+        ///
+        /// A `webrtc` entry (with `endpoint-options.webrtc` set)
+        /// upgrades a relay-dialed connection in the background: the
+        /// handshake and early data run on the relay, and the packets
+        /// move to the data channel once it opens — `connection.path`
+        /// reports the move. A failed upgrade leaves the connection on
+        /// the relay; a channel that later dies moves it back.
+        connect: async func(addr: endpoint-addr, alpn: list<u8>) -> result<connection, error>;
+
+        /// The next accepted connection.
+        ///
+        /// The peer's identity is authenticated before delivery — read
+        /// it with `connection.peer` — and the negotiated ALPN is one
+        /// of `endpoint-options.alpns`. Concurrent calls are supported;
+        /// concurrently pending acceptors are each handed one
+        /// connection, in an implementation-defined order.
+        accept: async func() -> result<connection, error>;
+
+        /// Close the endpoint: new connections are refused and existing
+        /// ones close. Idempotent. Dropping the resource without
+        /// calling `close` implies `close`.
+        close: func();
+    }
+
+    /// An authenticated QUIC connection to one peer.
+    resource connection {
+        /// The authenticated peer identity. What this proves: the peer
+        /// holds the private key for this `endpoint-id`. Nothing else —
+        /// no naming, no authorization — is implied.
+        peer: func() -> endpoint-id;
+
+        /// The negotiated ALPN.
+        alpn: func() -> list<u8>;
+
+        /// The connection's current lifecycle state. `closed` is
+        /// terminal and latched.
+        state: func() -> connection-state;
+
+        /// The wire currently carrying this connection's packets. Not
+        /// latched: a background upgrade moves a relay-dialed
+        /// connection to `webrtc` when its channel opens, and back to
+        /// `relay` if the channel dies (see `endpoint.connect`).
+        path: func() -> path-kind;
+
+        /// Open a bidirectional stream. Resolves when stream credit is
+        /// available.
+        open-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
+
+        /// Open a unidirectional (outgoing) stream.
+        open-uni: async func() -> result<send-stream, error>;
+
+        /// The next peer-initiated bidirectional stream.
+        ///
+        /// Concurrent calls are supported; concurrently pending
+        /// acceptors are each handed one stream, in an
+        /// implementation-defined order.
+        accept-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
+
+        /// The next peer-initiated unidirectional stream.
+        accept-uni: async func() -> result<recv-stream, error>;
+
+        /// The largest datagram `send-datagram` accepts right now, or
+        /// `none` when the peer does not accept datagrams.
+        ///
+        /// The value is path-dependent and not latched. Each path
+        /// discovers its own packet-size ceiling: a path over a wire
+        /// with no real packet-size limit (relay, WebRTC) converges on
+        /// an implementation-defined ceiling well above the 1200-byte
+        /// QUIC minimum, and a UDP path discovers the actual path MTU.
+        /// The value can rise as discovery progresses and can change
+        /// either way when `connection.path` moves — re-read it after
+        /// a path change. A datagram accepted before a downward move
+        /// may be dropped instead of delivered: loss is this
+        /// transport's semantics.
+        ///
+        /// Discovery is also per direction: this value is the local
+        /// send limit, and the peer's may lag or lead it. A payload
+        /// that fit the sender's ceiling does not necessarily fit the
+        /// receiver's when it echoes.
+        max-datagram-size: func() -> option<u32>;
+
+        /// Queue one unreliable, unordered datagram (RFC 9221).
+        ///
+        /// Never blocks and never applies backpressure: when the send
+        /// buffer is full, the oldest queued datagrams are dropped to
+        /// make room — loss is this transport's semantics, and a full
+        /// buffer is loss. Delivery is not acknowledged; a datagram
+        /// may be lost anywhere along the path.
+        ///
+        /// Fails with `invalid-argument` when `data` exceeds
+        /// `max-datagram-size`, or when the peer accepts no datagrams
+        /// (`max-datagram-size` returns `none`).
+        send-datagram: func(data: list<u8>) -> result<_, error>;
+
+        /// The next inbound datagram.
+        ///
+        /// Datagrams arrive unordered. Ones that arrive while no call
+        /// is waiting are buffered, bounded; at the bound the oldest
+        /// buffered datagrams are dropped. Concurrent calls are
+        /// supported; concurrently pending receivers are each handed
+        /// one datagram, in an implementation-defined order.
+        recv-datagram: async func() -> result<list<u8>, error>;
+
+        /// Close the connection with an application code and reason.
+        /// The peer reads them with `wait-closed`. Idempotent; await
+        /// `wait-closed` for completion. Dropping the resource without
+        /// calling `close` implies `close(0, "")`. QUIC carries codes
+        /// up to 2^62 - 1; larger values saturate to that ceiling.
+        close: func(code: u64, reason: string);
+
+        /// Resolves once the connection is fully closed, with the
+        /// peer's application close when one was received and `none`
+        /// when the connection ended without one (see `close-info`).
+        ///
+        /// The result is latched: once the connection is closed, this
+        /// resolves immediately with the same value, any number of
+        /// times.
+        wait-closed: async func() -> option<close-info>;
+    }
+
+    /// The send half of a QUIC stream.
+    resource send-stream {
+        /// Write `bytes`, applying the stream's flow-control
+        /// backpressure through the async ABI. Resolves when the bytes
+        /// are accepted for delivery, not when they are delivered.
+        write: async func(bytes: list<u8>) -> result<_, error>;
+
+        /// Finish the stream: a FIN after all accepted writes. No
+        /// writes may follow.
+        finish: func() -> result<_, error>;
+
+        /// Abandon the stream, notifying the peer with `code`. QUIC
+        /// carries codes up to 2^62 - 1; larger values saturate to
+        /// that ceiling.
+        reset: func(code: u64);
+
+        /// Send the whole remaining payload through a byte stream,
+        /// then finish. One-shot: after this call the resource accepts
+        /// no further writes; the returned future resolves when every
+        /// byte has been accepted and the FIN sent.
+        write-via-stream: async func(data: stream<u8>) -> result<_, error>;
+    }
+
+    /// The receive half of a QUIC stream.
+    resource recv-stream {
+        /// Up to `max` bytes of the stream, in order; `none` at the
+        /// peer's FIN. The FIN is the only clean end.
+        ///
+        /// `error.reset` reports the peer abandoning the stream; QUIC
+        /// discards the stream's undelivered bytes with it.
+        /// `error.closed` reports the connection closing before the
+        /// FIN — bytes the connection already delivered drain first.
+        /// Either outcome is terminal and repeats on every later call:
+        /// a close after a consumed FIN never turns the clean end into
+        /// a failure.
+        read: async func(max: u32) -> result<option<list<u8>>, error>;
+
+        /// Stop reading, notifying the peer with `code`. QUIC carries
+        /// codes up to 2^62 - 1; larger values saturate to that
+        /// ceiling.
+        stop: func(code: u64);
+
+        /// Take the stream's remaining bytes as a byte stream, with a
+        /// future reporting how the stream ended. May be called once:
+        /// after it, any call to it or to `read` fails with
+        /// `error.other`.
+        ///
+        /// The byte stream ends at the peer's FIN, at a reset, and at
+        /// a connection close alike; the future tells them apart. It
+        /// resolves `ok` for the FIN, and otherwise the error `read`
+        /// would report. Dropping the byte stream abandons the read
+        /// path: delivery stops, the future resolves `error.other`,
+        /// and the peer learns nothing (tell it with `stop`).
+        read-via-stream: func() -> result<tuple<stream<u8>, future<result<_, error>>>, error>;
+    }
+}
+
+/// One iroh endpoint: transports and time in, peer connectivity out.
+///
+/// The crypto imports (`polymorph:webcrypto`) are mostly consumed by
+/// the implementation directly and do not appear here; the `signature`
+/// interface does appear, because `identity-from-keys` accepts its key
+/// handles. The UDP direct path uses `wasi:sockets/types@0.3.0`, whose
+/// `udp-socket` resource carries the socket operations in the 0.3
+/// draft.
+world iroh-endpoint {
+    import polymorph:webcrypto/signature@0.1.0;
+    import polymorph:webrtc-datachannels/connections@0.1.0;
+    import polymorph:websocket/connections@0.1.0;
+    import wasi:clocks/monotonic-clock@0.3.0;
+    import wasi:sockets/types@0.3.0;
+    export identity;
+    export identity-generate;
+    export identity-from-keys;
+    export endpoint;
+}

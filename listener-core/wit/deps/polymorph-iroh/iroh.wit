@@ -1,0 +1,129 @@
+package polymorph:iroh@0.1.0;
+
+/// Trimmed vendor copy for irsh-listener-core: only the interfaces
+/// this component actually imports (`identity-generate`, `endpoint`).
+/// The full upstream package (vendored unabridged for ssh-client-core
+/// and engine-go, which don't also pull in wasi:cli@0.3.1) also
+/// defines `identity-from-keys` and the `iroh-endpoint` world; both
+/// pull in wasi:sockets@0.3.0 + wasi:clocks@0.3.0 + webrtc-datachannels
+/// + websocket, which this component never uses directly. Keeping
+/// those out of THIS copy's graph avoids a wit-bindgen codegen bug:
+/// generating bindings for a world that has two versions of an
+/// async-bearing package in scope at once (wasi:sockets@0.3.0 here,
+/// @0.3.1 via wasi:cli@0.3.1's own dependency closure) fails with
+/// "the trait bound `Result<(), sockets0_3_1::types::ErrorCode>:
+/// FuturePayload` is not satisfied" -- a wit-bindgen limitation, not a
+/// real type conflict (the two versions never interact; nothing here
+/// shares a value between them). Source of truth for the full package:
+/// https://github.com/polymorph-components/polymorph-iroh/blob/main/wit/iroh.wit
+interface types {
+    type endpoint-id = list<u8>;
+
+    variant transport-addr {
+        relay(string),
+        ip(string),
+        webrtc(string),
+        custom(custom-addr),
+    }
+
+    record custom-addr {
+        id: u64,
+        data: list<u8>,
+    }
+
+    record endpoint-addr {
+        endpoint-id: endpoint-id,
+        addrs: list<transport-addr>,
+    }
+
+    enum connection-state {
+        connecting,
+        open,
+        closed,
+    }
+
+    record close-info {
+        code: u64,
+        reason: string,
+    }
+
+    enum path-kind {
+        relay,
+        ip,
+        webrtc,
+    }
+
+    variant error {
+        closed,
+        reset(u64),
+        connect-failed(string),
+        invalid-argument(string),
+        other(string),
+    }
+}
+
+interface identity {
+    use types.{endpoint-id};
+
+    resource identity {
+        endpoint-id: func() -> endpoint-id;
+    }
+}
+
+interface identity-generate {
+    use types.{error};
+    use identity.{identity};
+
+    generate: async func() -> result<identity, error>;
+}
+
+interface endpoint {
+    use types.{endpoint-id, endpoint-addr, connection-state, close-info, path-kind, error};
+    use identity.{identity};
+
+    resource endpoint-options {
+        constructor(identity: borrow<identity>);
+        add-alpn: func(alpn: list<u8>);
+        relay-url: func(url: string);
+        udp-bind-addr: func(addr: string);
+        webrtc: func(enabled: bool);
+    }
+
+    resource endpoint {
+        bind: static async func(options: endpoint-options) -> result<endpoint, error>;
+        id: func() -> endpoint-id;
+        direct-addr: func() -> option<string>;
+        connect: async func(addr: endpoint-addr, alpn: list<u8>) -> result<connection, error>;
+        accept: async func() -> result<connection, error>;
+        close: func();
+    }
+
+    resource connection {
+        peer: func() -> endpoint-id;
+        alpn: func() -> list<u8>;
+        state: func() -> connection-state;
+        path: func() -> path-kind;
+        open-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
+        open-uni: async func() -> result<send-stream, error>;
+        accept-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
+        accept-uni: async func() -> result<recv-stream, error>;
+        max-datagram-size: func() -> option<u32>;
+        send-datagram: func(data: list<u8>) -> result<_, error>;
+        recv-datagram: async func() -> result<list<u8>, error>;
+        close: func(code: u64, reason: string);
+        wait-closed: async func() -> option<close-info>;
+    }
+
+    resource send-stream {
+        write: async func(bytes: list<u8>) -> result<_, error>;
+        finish: func() -> result<_, error>;
+        reset: func(code: u64);
+        write-via-stream: async func(data: stream<u8>) -> result<_, error>;
+    }
+
+    resource recv-stream {
+        read: async func(max: u32) -> result<option<list<u8>>, error>;
+        stop: func(code: u64);
+        read-via-stream: func() -> result<tuple<stream<u8>, future<result<_, error>>>, error>;
+    }
+}

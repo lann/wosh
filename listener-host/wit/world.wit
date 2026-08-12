@@ -1,0 +1,15 @@
+package irsh:host-view;
+
+/// The composed listener artifact as the native host sees it.
+///
+/// `wac plug` fuses the polymorph-iroh endpoint into
+/// `irsh-listener-core`, so every `polymorph:*` import is already
+/// satisfied inside the composition and the only surface left for the
+/// host to drive is the WASI command entry point -- which, at 0.3.1,
+/// is an `async func` (that asyncness is the whole reason this
+/// project targets 0.3.1: the listener must suspend across real
+/// network I/O while binding its iroh endpoint, which a 0.2
+/// synchronously-lifted `run` forbids).
+world composed-listener {
+  export wasi:cli/run@0.3.1;
+}

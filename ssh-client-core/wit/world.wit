@@ -1,0 +1,84 @@
+package irsh:terminal;
+
+/// The browser-facing SSH terminal surface: what the static website's
+/// JS talks to (via deltic) to drive an interactive shell over the
+/// iroh tunnel. This is deliberately a thin, stable contract -- the
+/// actual SSH protocol work happens in the imported `irsh:ssh-engine`
+/// Go component and the iroh dial in `polymorph:iroh`; this interface
+/// hides both behind session lifecycle + raw terminal I/O.
+interface terminal {
+  /// Where the session currently stands.
+  variant status {
+    /// Dialing the proxy over iroh, or the ssh transport handshake is
+    /// in progress.
+    connecting,
+    /// Key exchange complete; host-key-fingerprint() is available and
+    /// the session parks here until confirm-host-key resolves it.
+    /// Nothing is sent to the server before this -- not even a
+    /// public-key probe.
+    host-key-check,
+    /// Authenticating (password, once confirm-host-key(true) ran).
+    authenticating,
+    /// Pty + shell are up; write-input/drain-output carry the
+    /// interactive session.
+    ready,
+    /// Terminal: dial failed, handshake/auth failed, the host key was
+    /// rejected, or the shell exited. The string is a human-readable
+    /// reason (or "shell exited" once a shell was actually reached).
+    closed(string),
+  }
+
+  resource session {
+    /// Parse `connstring` (as printed/QR-encoded by the listener:
+    /// iroh pubkey + relay URL + optional pairing token), dial over
+    /// iroh, open the tunnel stream, present the token if the
+    /// connstring carries one, and start the ssh transport handshake
+    /// with `cols`/`rows` for the eventual pty. Resolves once dialing
+    /// and the tunnel handshake either succeed (poll `status` from
+    /// here) or fail outright.
+    connect: static async func(connstring: string, user: string, cols: u16, rows: u16) -> result<session, string>;
+
+    status: func() -> status;
+
+    /// base64 SHA-256 of the server's host key, once kex reached it
+    /// (status == host-key-check or later).
+    host-key-fingerprint: func() -> option<string>;
+
+    /// The user confirmed (or rejected) the fingerprint shown by the
+    /// UI. Rejecting closes the connection; nothing is ever sent to
+    /// the server -- not even a password -- before an accept here.
+    confirm-host-key: func(accept: bool);
+
+    /// Authenticate with a password, once confirm-host-key(true) has
+    /// moved status to `authenticating`. Resolves once the shell is
+    /// up (status -> ready) or authentication fails (status ->
+    /// closed).
+    authenticate: async func(password: string) -> result<_, string>;
+
+    /// Keystrokes or pasted bytes from the terminal (xterm.js
+    /// `onData`). No local echo or line editing happens here -- the
+    /// remote pty owns both, exactly like a real terminal.
+    write-input: func(data: list<u8>);
+
+    /// Propagate a terminal resize (xterm.js `onResize`).
+    resize: func(cols: u16, rows: u16);
+
+    /// Drain accumulated pty output bytes since the last call (raw
+    /// passthrough -- write straight to xterm.js). Returns promptly
+    /// with whatever is currently buffered, possibly empty.
+    drain-output: async func() -> list<u8>;
+
+    /// True once the remote shell has exited or the connection died.
+    exited: func() -> bool;
+
+    /// Stop the session and close the underlying iroh connection.
+    detach: async func();
+  }
+}
+
+world ssh-client-world {
+  import irsh:ssh-engine/ssh;
+  import polymorph:iroh/identity-generate@0.1.0;
+  import polymorph:iroh/endpoint@0.1.0;
+  export terminal;
+}

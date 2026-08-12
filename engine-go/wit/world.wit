@@ -1,0 +1,91 @@
+package irsh:ssh-engine;
+
+/// The ssh client engine: x/crypto/ssh (Go, well-vetted, real-world
+/// production use) as a fully synchronous, sans-I/O component export --
+/// the same shape wosh's own M7 milestone proved out (findings 22-23):
+/// parked goroutines survive across sync export calls, x/crypto/ssh's
+/// client path is timer-free, and the host owns all I/O and time. The
+/// host feeds inbound bytes from the forwarded stream, drains outbound
+/// bytes to it, and runs bounded scheduler rounds on a tick cadence;
+/// every export returns promptly and never blocks.
+interface ssh {
+  /// Where the session currently stands.
+  variant status {
+    connecting,
+    /// Parked in the host-key callback: host-key-sha256 is now
+    /// available and the handshake will not proceed until
+    /// host-key-decision resolves it. Nothing -- not even a public
+    /// key probe -- is ever sent to the server before this: x/crypto/ssh
+    /// authenticates strictly after a successful host-key callback.
+    host-key-check,
+    /// Pty + shell are up; write-input/drain-output carry the
+    /// interactive session.
+    ready,
+    /// Terminal: the handshake, auth, or shell setup failed, or the
+    /// connection closed. The string is a human-readable reason.
+    closed(string),
+  }
+
+  resource session {
+    /// Start the handshake over an external byte stream (fed via
+    /// `feed`, drained via `drain`), with `cols`/`rows` for the pty
+    /// this session will request once authenticated. Never fails
+    /// synchronously -- watch `status`. `user` must be supplied up
+    /// front (x/crypto/ssh snapshots its client config before the
+        /// handshake begins) but is only ever SENT in an auth request,
+    /// which cannot happen before the host-key gate resolves.
+    connect: static func(user: string, cols: u16, rows: u16) -> session;
+
+    /// Grant the deferred password. Call while parked at
+    /// `host-key-check`, before `host-key-decision(true)` -- accepting
+    /// the host key with no credentials granted fails the handshake
+    /// legibly instead of silently hanging.
+    authenticate: func(password: string);
+
+    /// Bytes that arrived from the forwarded stream.
+    feed: func(data: list<u8>);
+
+    /// Bytes to write to the forwarded stream.
+    drain: func() -> list<u8>;
+
+    /// Run scheduler rounds without feeding bytes (handshake
+    /// progress, goroutine scheduling). Call on the tick cadence.
+    pump: func();
+
+    status: func() -> status;
+
+    /// base64 SHA-256 of the server host key, once kex reached it.
+    host-key-sha256: func() -> option<string>;
+
+    /// Resolve a host-key-check: accept continues the handshake
+    /// (authentication starts, using credentials granted via
+    /// `authenticate`); reject fails it. Resolves the parked callback
+    /// goroutine either way.
+    host-key-decision: func(accept: bool);
+
+    /// Keystrokes or pasted bytes from the interactive terminal.
+    /// Buffered until the shell's stdin pipe is up (i.e. harmless to
+    /// call before `ready`, though nothing is delivered until then).
+    write-input: func(data: list<u8>);
+
+    /// Accumulated pty output (stdout+stderr, interleaved exactly as
+    /// the remote pty produced them) since the last call. Write
+    /// straight to the terminal.
+    drain-output: func() -> list<u8>;
+
+    /// Propagate a terminal resize (SSH `window-change`).
+    resize: func(cols: u16, rows: u16);
+
+    /// True once the remote shell process has exited (or the
+    /// connection died before a shell ever came up).
+    exited: func() -> bool;
+
+    /// The shell's exit status, once `exited` is true. `none` if the
+    /// connection dropped before an exit status was ever read.
+    exit-status: func() -> option<s32>;
+  }
+}
+
+world ssh-engine-world {
+  export ssh;
+}

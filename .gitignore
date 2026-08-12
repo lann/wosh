@@ -1,0 +1,18 @@
+# Build outputs
+target/
+**/*.wasm
+!wit/**/*.wasm
+
+# Go
+engine-go/main.wasm
+
+# Node / web
+node_modules/
+site/dist/
+
+# Pinned external checkouts (fetched by scripts/setup.sh)
+.deps/
+
+# Editor / OS
+.DS_Store
+*.swp
