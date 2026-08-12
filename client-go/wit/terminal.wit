@@ -26,12 +26,34 @@ interface terminal {
     host-key-check,
     /// The host key was accepted; authentication is in flight.
     authenticating,
+    /// Keyboard-interactive auth: the server issued a prompt batch and
+    /// authentication is parked until `answer-prompts` supplies the
+    /// answers. Read the batch with `pending-prompts`.
+    auth-prompts,
     /// Pty and shell are up; `write-input`/`drain-output` carry the
     /// interactive session.
     ready,
     /// Terminal state: the dial, handshake, auth, or shell failed, or
     /// the session ended. The string is a human-readable reason.
     closed(string),
+  }
+
+  /// One keyboard-interactive prompt: the text to display, and whether
+  /// the user's answer should be echoed as typed (`false` means mask
+  /// it, password-style).
+  record prompt {
+    text: string,
+    echo: bool,
+  }
+
+  /// One server-issued batch of keyboard-interactive prompts (RFC
+  /// 4256). The server drives: it may send any number of batches in
+  /// sequence, each with any number of prompts, before deciding.
+  record prompt-batch {
+    /// Free-text preamble to display above the prompts. Often empty;
+    /// PAM setups use it for OTP guidance and expiry warnings.
+    instruction: string,
+    prompts: list<prompt>,
   }
 
   /// Hold this component's async runtime open. Call it ONCE, as early
@@ -103,6 +125,28 @@ interface terminal {
     /// resolve-immediately-then-poll contract as
     /// `authenticate-password`.
     authenticate-publickey: async func() -> result<_, string>;
+
+    /// Start keyboard-interactive authentication (RFC 4256): the
+    /// server drives the exchange through prompt batches, which is how
+    /// PAM OTP/2FA setups -- and sshds with plain password auth
+    /// disabled -- steer clients. Same host-key gating, and the same
+    /// resolve-immediately-then-poll contract as the other
+    /// `authenticate-*` calls. Each time `status` reports
+    /// `auth-prompts`, read `pending-prompts`, collect answers, and
+    /// call `answer-prompts`; batches repeat until the server decides.
+    /// Zero-prompt batches are answered internally without surfacing.
+    authenticate-interactive: async func() -> result<_, string>;
+
+    /// The prompt batch authentication is parked on, present while
+    /// `status` is `auth-prompts`.
+    pending-prompts: async func() -> option<prompt-batch>;
+
+    /// Answer the pending batch: one string per prompt, in order.
+    /// Latches the answers and RESOLVES AT ONCE (the same no-blocking
+    /// rule as every export here); the exchange continues in the
+    /// background, so poll `status` for what the server did next.
+    /// Fails if no batch is pending or the count does not match.
+    answer-prompts: async func(answers: list<string>) -> result<_, string>;
 
     /// Keystrokes or pasted bytes from the terminal (xterm.js
     /// `onData`). No local echo or line editing happens here -- the

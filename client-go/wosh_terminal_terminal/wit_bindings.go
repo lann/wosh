@@ -23,12 +23,16 @@ const (
 	StatusHostKeyCheck uint8 = 1
 	// The host key was accepted; authentication is in flight.
 	StatusAuthenticating uint8 = 2
+	// Keyboard-interactive auth: the server issued a prompt batch and
+	// authentication is parked until `answer-prompts` supplies the
+	// answers. Read the batch with `pending-prompts`.
+	StatusAuthPrompts uint8 = 3
 	// Pty and shell are up; `write-input`/`drain-output` carry the
 	// interactive session.
-	StatusReady uint8 = 3
+	StatusReady uint8 = 4
 	// Terminal state: the dial, handshake, auth, or shell failed, or
 	// the session ended. The string is a human-readable reason.
-	StatusClosed uint8 = 4
+	StatusClosed uint8 = 5
 )
 
 // Where the session currently stands.
@@ -57,9 +61,30 @@ func MakeStatusHostKeyCheck() Status {
 func MakeStatusAuthenticating() Status {
 	return Status{StatusAuthenticating, nil}
 }
+func MakeStatusAuthPrompts() Status {
+	return Status{StatusAuthPrompts, nil}
+}
 func MakeStatusReady() Status {
 	return Status{StatusReady, nil}
 }
 func MakeStatusClosed(value string) Status {
 	return Status{StatusClosed, value}
+}
+
+// One keyboard-interactive prompt: the text to display, and whether
+// the user's answer should be echoed as typed (`false` means mask
+// it, password-style).
+type Prompt struct {
+	Text string
+	Echo bool
+}
+
+// One server-issued batch of keyboard-interactive prompts (RFC
+// 4256). The server drives: it may send any number of batches in
+// sequence, each with any number of prompts, before deciding.
+type PromptBatch struct {
+	// Free-text preamble to display above the prompts. Often empty;
+	// PAM setups use it for OTP guidance and expiry warnings.
+	Instruction string
+	Prompts     []Prompt
 }
