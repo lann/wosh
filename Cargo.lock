@@ -1468,61 +1468,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 
 [[package]]
-name = "irsh-connstring"
-version = "0.1.0"
-dependencies = [
- "base64",
-]
-
-[[package]]
-name = "irsh-listener-core"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.2.17",
- "irsh-connstring",
- "qrcode",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
-name = "irsh-listener-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "polymorph-webcrypto-wasmtime",
- "tokio",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-webrtc-datachannels",
- "wasmtime-websocket",
-]
-
-[[package]]
-name = "irsh-smoke-test"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "polymorph-webcrypto-wasmtime",
- "tokio",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-webrtc-datachannels",
- "wasmtime-websocket",
-]
-
-[[package]]
-name = "irsh-spike-go-async-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "tokio",
- "wasmtime",
- "wasmtime-wasi",
-]
-
-[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4314,6 +4259,61 @@ dependencies = [
  "log",
  "thiserror 1.0.69",
  "wast 35.0.2",
+]
+
+[[package]]
+name = "wosh-connstring"
+version = "0.1.0"
+dependencies = [
+ "base64",
+]
+
+[[package]]
+name = "wosh-listener-core"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "qrcode",
+ "wit-bindgen 0.59.0",
+ "wosh-connstring",
+]
+
+[[package]]
+name = "wosh-listener-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "polymorph-webcrypto-wasmtime",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-webrtc-datachannels",
+ "wasmtime-websocket",
+]
+
+[[package]]
+name = "wosh-smoke-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "polymorph-webcrypto-wasmtime",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-webrtc-datachannels",
+ "wasmtime-websocket",
+]
+
+[[package]]
+name = "wosh-spike-go-async-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! irsh-listener-core: a wasi:cli component. Generates an iroh
+//! wosh-listener-core: a wasi:cli component. Generates an iroh
 //! identity, binds a polymorph-iroh endpoint on a configured relay,
 //! prints a QR code + link (URL fragment = connection string: iroh
 //! pubkey + relay + optional pairing token), and for each accepted
@@ -22,23 +22,23 @@ use std::net::SocketAddr;
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions};
 use bindings::polymorph::iroh::identity_generate::generate as identity_generate;
 
-use irsh_connstring::ConnString;
+use wosh_connstring::ConnString;
 
 /// v0 connection ALPN, shared with the browser client.
-const ALPN: &[u8] = b"irsh/1";
+const ALPN: &[u8] = b"wosh/1";
 
 struct Cli {
     relay: String,
     target: SocketAddr,
     /// `None` = open mode (no pairing token required); anyone who has
     /// the link can connect. Default is a fresh random token.
-    token: Option<[u8; irsh_connstring::TOKEN_LEN]>,
+    token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
     qr_base: String,
     no_qr: bool,
 }
 
 fn usage() -> String {
-    "usage: irsh-listener-core --relay <url> --target <ip:port> \
+    "usage: wosh-listener-core --relay <url> --target <ip:port> \
      [--qr-base <url>] [--token <hex>] [--no-token] [--no-qr]\n\
      \n\
      --qr-base defaults to the deployed client at \
@@ -50,7 +50,7 @@ fn usage() -> String {
 fn parse_args() -> Result<Cli, String> {
     let mut relay = None;
     let mut target = None;
-    let mut token: Option<Option<[u8; irsh_connstring::TOKEN_LEN]>> = None; // None = unset (generate); Some(None) = --no-token
+    let mut token: Option<Option<[u8; wosh_connstring::TOKEN_LEN]>> = None; // None = unset (generate); Some(None) = --no-token
     let mut qr_base = None;
     let mut no_qr = false;
 
@@ -67,15 +67,15 @@ fn parse_args() -> Result<Cli, String> {
             "--token" => {
                 let v = value()?;
                 let bytes = decode_hex(&v).ok_or_else(|| format!("--token {v:?}: not valid hex"))?;
-                if bytes.len() != irsh_connstring::TOKEN_LEN {
+                if bytes.len() != wosh_connstring::TOKEN_LEN {
                     return Err(format!(
                         "--token must be exactly {} bytes ({} hex chars), got {}",
-                        irsh_connstring::TOKEN_LEN,
-                        irsh_connstring::TOKEN_LEN * 2,
+                        wosh_connstring::TOKEN_LEN,
+                        wosh_connstring::TOKEN_LEN * 2,
                         bytes.len()
                     ));
                 }
-                let mut t = [0u8; irsh_connstring::TOKEN_LEN];
+                let mut t = [0u8; wosh_connstring::TOKEN_LEN];
                 t.copy_from_slice(&bytes);
                 token = Some(Some(t));
             }
@@ -103,8 +103,8 @@ fn parse_args() -> Result<Cli, String> {
     })
 }
 
-fn random_token() -> [u8; irsh_connstring::TOKEN_LEN] {
-    let mut t = [0u8; irsh_connstring::TOKEN_LEN];
+fn random_token() -> [u8; wosh_connstring::TOKEN_LEN] {
+    let mut t = [0u8; wosh_connstring::TOKEN_LEN];
     getrandom::getrandom(&mut t).expect("system randomness (wasi:random) unavailable");
     t
 }
@@ -137,7 +137,7 @@ impl bindings::exports::wasi::cli::run::Guest for Component {
         match run_listener(cli).await {
             Ok(()) => Ok(()),
             Err(e) => {
-                eprintln!("irsh-listener: {e}");
+                eprintln!("wosh-listener: {e}");
                 Err(())
             }
         }
@@ -160,14 +160,14 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     let endpoint = Endpoint::bind(options).await.map_err(|e| format!("bind: {e:?}"))?;
 
     let pubkey = endpoint.id();
-    if pubkey.len() != irsh_connstring::PUBKEY_LEN {
+    if pubkey.len() != wosh_connstring::PUBKEY_LEN {
         return Err(format!(
             "endpoint id is {} bytes, expected {}",
             pubkey.len(),
-            irsh_connstring::PUBKEY_LEN
+            wosh_connstring::PUBKEY_LEN
         ));
     }
-    let mut pk = [0u8; irsh_connstring::PUBKEY_LEN];
+    let mut pk = [0u8; wosh_connstring::PUBKEY_LEN];
     pk.copy_from_slice(&pubkey);
 
     let connstring = ConnString {
@@ -229,7 +229,7 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
 async fn serve_connection(
     conn: &Connection,
     target: SocketAddr,
-    token: Option<[u8; irsh_connstring::TOKEN_LEN]>,
+    token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
 ) -> Result<String, String> {
     let (send, recv) = conn.accept_bi().await.map_err(|e| format!("accept-bi: {e:?}"))?;
     let leftover = tcp::read_token_prefix(&recv, token)

@@ -23,7 +23,7 @@ import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 const ROOT = new URL("../out/", import.meta.url).pathname;
-const PORT = Number(process.env.IRSH_HTTP_PORT ?? 8098);
+const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8098);
 
 const MIME = {
   ".html": "text/html",
@@ -126,7 +126,7 @@ try {
     const line = (await page.locator("#panel .key code").first()
       .textContent({ timeout: 120_000 }) ?? "").trim();
     console.log(`[3] identity: ${line}`);
-    if (!/^ssh-ed25519 AAAA[A-Za-z0-9+/]+=* irsh-browser$/.test(line)) {
+    if (!/^ssh-ed25519 AAAA[A-Za-z0-9+/]+=* wosh-browser$/.test(line)) {
       fail(`not a well-formed ed25519 authorized_keys line: ${line}`);
     }
     const again = await page.evaluate(async () => {
@@ -170,13 +170,13 @@ try {
   }
 
   const sw = await page.evaluate(async () => await (await fetch("./sw.js")).text());
-  if (/__IRSH_(VERSION|PRECACHE)__/.test(sw)) {
+  if (/__WOSH_(VERSION|PRECACHE)__/.test(sw)) {
     fail("sw.js shipped with unreplaced placeholders (would break every deployed visit)");
   } else {
     const version = sw.match(/const VERSION = "([^"]+)"/)?.[1];
     const precached = (sw.match(/const PRECACHE = \[([^\]]*)\]/)?.[1] ?? "")
       .split(",").filter(Boolean).length;
-    const hasWasm = /dist\/irsh-ssh-client\.wasm/.test(sw);
+    const hasWasm = /dist\/wosh-ssh-client\.wasm/.test(sw);
     if (!version || !precached) fail(`sw.js looks malformed (version=${version}, ${precached} entries)`);
     else if (!hasWasm) fail("sw.js does not precache the client component");
     else console.log(`[6] service worker: version ${version}, ${precached} files precached (component included)`);

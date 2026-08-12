@@ -1,4 +1,4 @@
-// The browser bundle entry: everything the page needs to host the irsh
+// The browser bundle entry: everything the page needs to host the wosh
 // SSH client component under deltic. Bundled to site/dist/deltic.js by
 // `just web-bundle` (deno bundle --platform browser); the page imports
 // that bundle and nothing here is served raw.
@@ -32,7 +32,7 @@ import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 export { WitError };
 
 /** The interface the client component exports; see wit/terminal.wit. */
-export const TERMINAL_INTERFACE = "irsh:terminal/terminal";
+export const TERMINAL_INTERFACE = "wosh:terminal/terminal";
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
   const resp = await fetch(url);
@@ -55,7 +55,7 @@ async function translate(wasmUrl: string, translatorUrl: string) {
 
 /**
  * Instantiate the composed SSH client and hand back its
- * `irsh:terminal/terminal` surface.
+ * `wosh:terminal/terminal` surface.
  *
  * Every export is Promise-shaped under deltic, including the ones the
  * WIT declares as plain functions.
@@ -64,7 +64,7 @@ async function translate(wasmUrl: string, translatorUrl: string) {
 export async function loadClient(wasmUrl: string, translatorUrl: string): Promise<any> {
   const artifacts = await translate(wasmUrl, translatorUrl);
   const imports = {
-    ...wasiShims({ cli: { args: ["irsh-client"], env: {} } }),
+    ...wasiShims({ cli: { args: ["wosh-client"], env: {} } }),
     ...webcryptoImports(),
     ...websocketImports(),
     ...webrtcImports(),

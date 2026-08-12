@@ -1,4 +1,4 @@
-// Package export_irsh_terminal_terminal implements irsh:terminal --
+// Package export_wosh_terminal_terminal implements wosh:terminal --
 // the whole browser SSH client, in one component.
 //
 // Shape: `golang.org/x/crypto/ssh` running over a real net.Conn that
@@ -18,7 +18,7 @@
 //     goroutine parked on a Go channel awaiting the next export call.
 //     `Keepalive` (below) deliberately never returns, so there is
 //     always a live task hosting the SSH goroutines.
-package export_irsh_terminal_terminal
+package export_wosh_terminal_terminal
 
 import (
 	"fmt"
@@ -29,7 +29,7 @@ import (
 	witTypes "go.bytecodealliance.org/pkg/wit/types"
 	"golang.org/x/crypto/ssh"
 
-	types "wit_component/irsh_terminal_terminal"
+	types "wit_component/wosh_terminal_terminal"
 	clock "wit_component/wasi_clocks_monotonic_clock"
 )
 
@@ -171,7 +171,7 @@ func (s *Session) run(user string) {
 		HostKeyCallback: s.hostKeyCallback,
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(s.conn, "irsh-tunnel:22", cfg)
+	sshConn, chans, reqs, err := ssh.NewClientConn(s.conn, "wosh-tunnel:22", cfg)
 	if err != nil {
 		s.fail("ssh: " + err.Error())
 		return

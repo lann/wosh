@@ -1,4 +1,4 @@
-//! The irsh pairing connection string.
+//! The wosh pairing connection string.
 //!
 //! Encodes exactly what a peer needs to dial the listener over iroh:
 //! its Ed25519 endpoint-id (the iroh pubkey / address), the relay URL

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent toolchain + dependency setup for irsh. Re-run freely.
+# Idempotent toolchain + dependency setup for wosh. Re-run freely.
 #
 # Everything external is pinned and built under .deps/ INSIDE the repo,
 # deliberately: these builds are load-bearing (nothing composes without
@@ -91,8 +91,8 @@ say "building the iroh endpoint component (cold: several minutes)"
 # The relay is only needed to RUN the gates, never to build the
 # components or the site -- and it is by far the most expensive thing
 # here. CI that only publishes the site skips it.
-if [ -n "${IRSH_SKIP_RELAY:-}" ]; then
-  say "skipping the local iroh-relay build (IRSH_SKIP_RELAY set)"
+if [ -n "${WOSH_SKIP_RELAY:-}" ]; then
+  say "skipping the local iroh-relay build (WOSH_SKIP_RELAY set)"
 else
   say "building a local iroh-relay (used by the gates)"
   (cd "$DEPS/polymorph-iroh/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
@@ -113,7 +113,7 @@ say "building deltic's translator shim"
 say "setup complete
 
   iroh endpoint : .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm
-  iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay${IRSH_SKIP_RELAY:+ (skipped)}
+  iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay${WOSH_SKIP_RELAY:+ (skipped)}
   deltic shim   : .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm
 
 next: just build"

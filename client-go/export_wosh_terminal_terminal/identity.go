@@ -1,4 +1,4 @@
-package export_irsh_terminal_terminal
+package export_wosh_terminal_terminal
 
 import (
 	"crypto/ed25519"
@@ -71,7 +71,7 @@ func IdentityOpenssh() witTypes.Result[string, string] {
 	if err != nil {
 		return witTypes.Err[string, string]("wrap ssh public key: " + err.Error())
 	}
-	line := fmt.Sprintf("%s %s irsh-browser",
+	line := fmt.Sprintf("%s %s wosh-browser",
 		pub.Type(), base64.StdEncoding.EncodeToString(pub.Marshal()))
 	return witTypes.Ok[string, string](line)
 }

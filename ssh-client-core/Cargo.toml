@@ -1,13 +1,13 @@
 [package]
-name = "irsh-ssh-client-core"
+name = "wosh-ssh-client-core"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The irsh browser SSH client glue: dials polymorph-iroh, bridges bytes to the irsh:ssh-engine Go component (x/crypto/ssh), and exports the irsh:terminal interface the website drives."
+description = "The wosh browser SSH client glue: dials polymorph-iroh, bridges bytes to the wosh:ssh-engine Go component (x/crypto/ssh), and exports the wosh:terminal interface the website drives."
 
 [dependencies]
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
-irsh-connstring = { path = "../connstring" }
+wosh-connstring = { path = "../connstring" }
 
 [lib]
 crate-type = ["cdylib"]

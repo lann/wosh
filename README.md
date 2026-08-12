@@ -1,4 +1,4 @@
-# irsh
+# wosh
 
 A real SSH session in a browser tab, tunnelled over [iroh][], reaching a
 machine with **no inbound port open** and no public address.
@@ -20,7 +20,7 @@ Two WebAssembly components:
   takes a connection string, dials the listener over iroh, and speaks
   SSH end-to-end to the target's `sshd` over the proxied stream. It
   drives an [xterm.js][] UI through a custom WIT interface
-  (`irsh:terminal`).
+  (`wosh:terminal`).
 
 The listener never sees SSH plaintext: it is a dumb pipe once the
 pairing token checks out. The SSH session is end-to-end between the
@@ -38,8 +38,8 @@ actually is" for what remains. Experiment-grade code.
 ```
 BROWSER (deltic)                          TARGET HOST
 ┌────────────────────────────┐            ┌──────────────────────────────┐
-│ xterm.js                   │            │ irsh-listener (native shell) │
-│   ↕ irsh:terminal (WIT)    │            │   wasmtime + polymorph hosts │
+│ xterm.js                   │            │ wosh-listener (native shell) │
+│   ↕ wosh:terminal (WIT)    │            │   wasmtime + polymorph hosts │
 │ client-go (x/crypto/ssh    │  iroh QUIC │   ┌──────────────────────────┐│
 │   over an iroh net.Conn)   │ ─────────► │   │ listener-core (wasi:cli) ││
 │   + polymorph-iroh endpoint│ relay /    │   │   + polymorph-iroh       ││
@@ -190,7 +190,7 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
 - `client-go/` — the browser SSH client, one Go component:
   `x/crypto/ssh` over a real `net.Conn` wrapping an iroh bi stream,
-  exporting `irsh:terminal`. No glue component and no sans-I/O
+  exporting `wosh:terminal`. No glue component and no sans-I/O
   shuttling — componentize-go surfaces the endpoint's async WIT methods
   as ordinary blocking Go calls, so it reads like a normal networked Go
   program.

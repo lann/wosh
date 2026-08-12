@@ -1,6 +1,6 @@
-package irsh:listener;
+package wosh:listener;
 
-/// The irsh listener: a wasi:cli component. It generates (or reuses)
+/// The wosh listener: a wasi:cli component. It generates (or reuses)
 /// an iroh identity, binds a polymorph-iroh endpoint on a configured
 /// relay, prints a QR code + link whose URL fragment carries the
 /// connection string (pubkey + relay + optional pairing token), and

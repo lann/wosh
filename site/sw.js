@@ -1,4 +1,4 @@
-// irsh service worker: version-keyed atomic precache of the whole site.
+// wosh service worker: version-keyed atomic precache of the whole site.
 //
 // Caching earns its place here more than in most PWAs: the tree ships
 // the composed SSH client component (~8.6 MB) and deltic's translator
@@ -14,15 +14,15 @@
 //
 // The two placeholders are injected by scripts/site-deploy-tree.sh when
 // the deploy tree is assembled:
-//   __IRSH_VERSION__   -- deploy identity (commit SHA); names the cache.
-//   __IRSH_PRECACHE__  -- JSON array of every file in the tree.
+//   __WOSH_VERSION__   -- deploy identity (commit SHA); names the cache.
+//   __WOSH_PRECACHE__  -- JSON array of every file in the tree.
 // The raw site/ dir keeps the placeholders, and registration is
 // https-gated in index.html, so local serving over http never installs
 // this and cannot confuse development or the browser gate.
 
-const VERSION = "__IRSH_VERSION__";
-const PRECACHE = __IRSH_PRECACHE__;
-const CACHE = `irsh-${VERSION}`;
+const VERSION = "__WOSH_VERSION__";
+const PRECACHE = __WOSH_PRECACHE__;
+const CACHE = `wosh-${VERSION}`;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -39,7 +39,7 @@ self.addEventListener("activate", (event) => {
       .keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((k) => k.startsWith("irsh-") && k !== CACHE).map((k) => caches.delete(k)),
+          keys.filter((k) => k.startsWith("wosh-") && k !== CACHE).map((k) => caches.delete(k)),
         ),
       )
       .then(() => self.clients.claim()),

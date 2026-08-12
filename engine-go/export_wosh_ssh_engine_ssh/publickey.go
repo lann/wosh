@@ -1,4 +1,4 @@
-package export_irsh_ssh_engine_ssh
+package export_wosh_ssh_engine_ssh
 
 // Publickey authentication whose private key lives OUTSIDE this
 // component.

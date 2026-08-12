@@ -80,11 +80,11 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'client-go/go.sum') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # IRSH_SKIP_RELAY: the relay is only needed to RUN the gates, and
+      # WOSH_SKIP_RELAY: the relay is only needed to RUN the gates, and
       # it is by far the most expensive build here.
       - name: Dependencies
         env:
-          IRSH_SKIP_RELAY: "1"
+          WOSH_SKIP_RELAY: "1"
         run: scripts/setup.sh
 
       - name: Build the site
@@ -100,11 +100,11 @@ jobs:
       # loads and then cannot do anything.
       - name: Sanity-check the tree
         run: |
-          test -s out/dist/irsh-ssh-client.wasm
+          test -s out/dist/wosh-ssh-client.wasm
           test -s out/dist/deltic.js
           test -s out/dist/deltic-translator-shim.wasm
-          ! grep -q '__IRSH_' out/sw.js
-          grep -q 'irsh-ssh-client.wasm' out/sw.js
+          ! grep -q '__WOSH_' out/sw.js
+          grep -q 'wosh-ssh-client.wasm' out/sw.js
           echo "tree ok: $(du -sh out | cut -f1)"
 
       - uses: actions/configure-pages@v5

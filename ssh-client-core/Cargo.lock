@@ -127,17 +127,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "irsh-connstring"
+name = "wosh-connstring"
 version = "0.1.0"
 dependencies = [
  "base64",
 ]
 
 [[package]]
-name = "irsh-ssh-client-core"
+name = "wosh-ssh-client-core"
 version = "0.1.0"
 dependencies = [
- "irsh-connstring",
+ "wosh-connstring",
  "wit-bindgen",
 ]
 

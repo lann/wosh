@@ -1,6 +1,6 @@
-//! The native host shell for `irsh-listener-core`.
+//! The native host shell for `wosh-listener-core`.
 //!
-//! The composed listener component (`irsh-listener-core` wac-plugged
+//! The composed listener component (`wosh-listener-core` wac-plugged
 //! with the polymorph-iroh endpoint component) needs three non-WASI
 //! imports the endpoint pulls in regardless of which transport paths
 //! are actually enabled: `polymorph:webcrypto` (Ed25519 identity
@@ -75,12 +75,12 @@ impl WasiWebsocketView for Ctx {
 /// Every argument except a leading `--component <path>` (this host's
 /// only own flag) passes straight through to the guest's `argv` --
 /// `--relay`, `--target`, `--token`, `--qr-base`, etc. are all parsed
-/// inside `irsh-listener-core`, not here.
+/// inside `wosh-listener-core`, not here.
 fn parse_host_args() -> (PathBuf, Vec<String>) {
     let default_component =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/components/irsh-listener.wasm");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/components/wosh-listener.wasm");
     let mut component = default_component;
-    let mut guest_args = vec!["irsh-listener".to_string()];
+    let mut guest_args = vec!["wosh-listener".to_string()];
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

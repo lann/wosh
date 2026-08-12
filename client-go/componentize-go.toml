@@ -1,2 +1,2 @@
-worlds = ["irsh:terminal/ssh-client"]
+worlds = ["wosh:terminal/ssh-client"]
 wit_paths = ["wit"]

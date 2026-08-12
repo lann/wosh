@@ -1,2 +1,2 @@
-worlds = ["irsh:ssh-engine/ssh-engine-world"]
+worlds = ["wosh:ssh-engine/ssh-engine-world"]
 wit_paths = ["wit"]

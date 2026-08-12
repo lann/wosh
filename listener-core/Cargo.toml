@@ -1,12 +1,12 @@
 [package]
-name = "irsh-listener-core"
+name = "wosh-listener-core"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The irsh listener: a wasi:cli component that prints a QR/link, accepts iroh connections, and proxies each to a configured TCP endpoint."
+description = "The wosh listener: a wasi:cli component that prints a QR/link, accepts iroh connections, and proxies each to a configured TCP endpoint."
 
 [dependencies]
-irsh-connstring = { path = "../connstring" }
+wosh-connstring = { path = "../connstring" }
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
 getrandom = "0.2"
 qrcode = { version = "0.14", default-features = false }

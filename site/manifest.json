@@ -1,6 +1,6 @@
 {
-  "name": "irsh",
-  "short_name": "irsh",
+  "name": "wosh",
+  "short_name": "wosh",
   "description": "SSH in the browser, tunnelled over iroh",
   "start_url": "./",
   "scope": "./",
