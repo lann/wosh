@@ -44,10 +44,12 @@ build: compose hosts
 relay:
     {{RELAY}} --dev
 
-# Run the listener. Extra args pass through, e.g.
-#   just listener --target 127.0.0.1:22 --no-token
+# Run the listener. Defaults to the public iroh relay and --target
+# 127.0.0.1:22; extra args pass through, e.g.
+#   just listener --no-token
+#   just listener --relay http://127.0.0.1:3340   # local dev (or RELAY_URL=)
 listener *args: build
-    target/release/wosh-listener --relay "${RELAY_URL:-http://127.0.0.1:3340}" {{args}}
+    target/release/wosh-listener {{args}}
 
 # --- the static site --------------------------------------------------
 
