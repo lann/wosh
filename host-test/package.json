@@ -1,0 +1,8 @@
+{
+  "name": "irsh-host-test",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Browser gates for irsh: drives the real static site in headless Chromium via playwright-core.",
+  "dependencies": { "playwright-core": "^1.56.0" }
+}

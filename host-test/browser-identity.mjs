@@ -1,0 +1,150 @@
+// Browser gate: does the SSH client component actually load and run in
+// a real browser under deltic?
+//
+// This is the leg no native test can cover. It drives the SAME artifact
+// the native gates use -- deltic is a runtime linker, so there is no
+// transpiled variant that could drift -- and asserts the two things
+// that must hold before any session can work in a page:
+//
+//   1. deltic instantiates the composed component, with the iroh
+//      endpoint's webcrypto/websocket/webrtc imports served by real
+//      browser APIs.
+//   2. `identity-openssh` mints an Ed25519 key through the browser's
+//      Web Crypto and returns a well-formed authorized_keys line. That
+//      exercises the whole guest->WIT->host crypto path, and it is the
+//      key SSH publickey auth will later sign with.
+//
+// Usage: node host-test/browser-identity.mjs [--keep]
+
+import { chromium } from "playwright-core";
+import { existsSync, readdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { join, extname } from "node:path";
+
+const ROOT = new URL("../out/", import.meta.url).pathname;
+const PORT = Number(process.env.IRSH_HTTP_PORT ?? 8098);
+
+const MIME = {
+  ".html": "text/html",
+  ".mjs": "text/javascript",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".wasm": "application/wasm",
+};
+
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  // Playwright-managed builds; newest wins.
+  const glob = `${process.env.HOME}/.cache/ms-playwright`;
+  const dirs = readdirSync(glob)
+    .filter((d) => d.startsWith("chromium-"))
+    .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
+  for (const d of dirs.reverse()) {
+    const p = join(glob, d, "chrome-linux", "chrome");
+    if (existsSync(p)) return p;
+  }
+  throw new Error("no Chromium found; set CHROME_PATH");
+}
+
+const server = createServer(async (req, res) => {
+  try {
+    const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
+    const file = join(ROOT, path === "/" ? "index.html" : path);
+    const body = await readFile(file);
+    res.writeHead(200, {
+      "content-type": MIME[extname(file)] ?? "application/octet-stream",
+      // The component is large; keep it uncached so a rebuild is picked up.
+      "cache-control": "no-store",
+    });
+    res.end(body);
+  } catch {
+    res.writeHead(404).end("not found");
+  }
+});
+
+const fail = (msg) => {
+  console.error(`FAIL: ${msg}`);
+  process.exitCode = 1;
+};
+
+await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+const browser = await chromium.launch({
+  executablePath: findChrome(),
+  args: ["--no-sandbox"],
+});
+
+try {
+  const page = await browser.newPage();
+  const consoleErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text());
+  });
+  page.on("pageerror", (e) => consoleErrors.push(String(e)));
+
+  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+
+  // 1. the page itself came up
+  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await page.waitForSelector(".xterm-screen", { timeout: 15_000 });
+  console.log("[1] page loaded: connect panel and xterm are live");
+
+  // 2. deltic really instantiates the component AND guest code runs.
+  //    Proven by feeding a deliberately malformed connection string and
+  //    requiring the error to come from OUR parser inside the guest --
+  //    a host-side or loader failure could not produce this message.
+  const parseErr = await page.evaluate(async () => {
+    const { connect } = await import("./app.mjs");
+    try {
+      await connect({
+        connstring: "not-a-valid-connstring",
+        user: "nobody",
+        ui: { confirmHostKey: () => false, getCredential: () => ({ kind: "password", password: "" }) },
+      });
+      return "<no error>";
+    } catch (e) {
+      return String(e?.payload?.val ?? e?.message ?? e);
+    }
+  });
+  console.log(`[2] guest-side parse of a bad connstring: ${parseErr}`);
+  if (!/connection string/i.test(parseErr)) {
+    fail(`expected a guest-side connection-string error, got: ${parseErr}`);
+  } else {
+    console.log("[2] the component instantiated and executed guest code in-page");
+  }
+
+  // 3. Publickey/WebCrypto identity, when this build has it.
+  const caps = await page.evaluate(async () => {
+    const { capabilities } = await import("./app.mjs");
+    return await capabilities();
+  });
+  if (!caps.publickey) {
+    console.log("[3] SKIP: this component build has no WebCrypto identity yet " +
+                "(password-only); publickey auth is the unfinished leg");
+  } else {
+    await page.click("text=show this browser's public key");
+    const line = (await page.locator("#panel .key code").first()
+      .textContent({ timeout: 120_000 }) ?? "").trim();
+    console.log(`[3] identity: ${line}`);
+    if (!/^ssh-ed25519 AAAA[A-Za-z0-9+/]+=* irsh-browser$/.test(line)) {
+      fail(`not a well-formed ed25519 authorized_keys line: ${line}`);
+    }
+    const again = await page.evaluate(async () => {
+      const { identity } = await import("./app.mjs");
+      return await identity();
+    });
+    if (again !== line) fail(`identity not stable across calls:\n  ${line}\n  ${again}`);
+    else console.log("[4] identity is well-formed and stable across calls");
+  }
+
+  if (consoleErrors.length) {
+    fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
+  }
+
+  if (!process.exitCode) {
+    console.log("\nBROWSER GATE PASS: deltic runs the SSH client component in-page");
+  }
+} finally {
+  if (!process.argv.includes("--keep")) await browser.close();
+  server.close();
+}

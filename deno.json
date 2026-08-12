@@ -1,0 +1,16 @@
+{
+  "//": [
+    "The import map for the browser bundle. deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; mapping it ONCE here means the whole module graph shares one copy, so `instanceof WitError` holds across every boundary. Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
+    "All paths point into .deps/, which scripts/setup.sh pins and builds."
+  ],
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@deltic/runtime/embedder": "./.deps/deltic/runtime/src/embedder/mod.ts",
+    "@deltic/runtime/shim": "./.deps/deltic/runtime/src/shim/mod.ts",
+    "@deltic/wasi-shims": "./.deps/deltic/wasi-shims/src/mod.ts",
+    "@polymorph/webcrypto-deltic": "./.deps/polymorph-iroh/.deps/webcrypto/js/deltic/src/mod.ts",
+    "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
+    "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
+    "@polymorph/iroh-sockets-stubs": "./.deps/polymorph-iroh/host-deltic/src/sockets.ts"
+  }
+}

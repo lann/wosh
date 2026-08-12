@@ -1,0 +1,286 @@
+// irsh browser client: xterm.js in front of the SSH client component,
+// runtime-linked by deltic (./dist/deltic.js, built by `just web-bundle`).
+//
+// The page is deliberately thin. Everything protocol-shaped -- parsing
+// the connection string, dialing iroh, the SSH transport, the host-key
+// gate, authentication, the pty -- lives inside the component behind
+// `irsh:terminal`. The page feeds keystrokes, paints output, reports
+// resizes, and renders the two decisions a human has to make: whether
+// the host key is the expected one, and which credential to offer.
+//
+// Every component export is Promise-shaped under deltic (including the
+// ones the WIT declares as plain functions), so the output pump is a
+// single async loop with ONE drainer -- two concurrent drains could
+// interleave screen bytes out of order.
+
+import { initMobile, transformInput } from "./mobile.mjs";
+import { OverlayAddon } from "./overlay.mjs";
+
+const DIST = {
+  translator: "./dist/deltic-translator-shim.wasm",
+  client: "./dist/irsh-ssh-client.wasm",
+};
+
+const statusEl = () => document.getElementById("status");
+const status = (msg) => {
+  statusEl().textContent = msg;
+};
+
+// Test hook, also the single place a failure is recorded.
+window.__irsh = { failure: null, paintStats: null };
+
+const fatal = (msg) => {
+  status(`FAILED: ${msg}`);
+  window.__irsh.failure = String(msg);
+  throw new Error(msg);
+};
+
+// --- terminal ---------------------------------------------------------------
+const term = new Terminal({
+  fontSize: 14,
+  cursorBlink: true,
+  scrollback: 1000,
+});
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+const overlay = new OverlayAddon();
+term.loadAddon(overlay);
+term.open(document.getElementById("term"));
+fit.fit(); // synchronous: connect reads term.cols/rows immediately
+term.focus();
+
+// Refits beyond the first belong to the observer: everything that moves
+// the terminal's BOX funnels through it -- the boot panel rendering
+// (async, grows #panel), the extra-keys bar filling in, mobile.mjs
+// resizing to the visual viewport, plain window resizes. A one-shot
+// startup fit goes stale on the first of those.
+new ResizeObserver(() => fit.fit()).observe(document.getElementById("term"));
+addEventListener("resize", () => fit.fit()); // zoom edge cases; harmless overlap
+initMobile(term); // soft-keyboard viewport glue + extra-keys bar
+term.onResize(({ cols, rows }) => overlay.showOverlay(`${cols}×${rows}`, 500));
+
+// --- painting ---------------------------------------------------------------
+// rAF-coalesced writes, flushed rather than shed: pty output is a byte
+// stream the remote believes arrived, so dropping is never correct.
+// rAF starves in background tabs while the pump keeps draining on
+// throttled timers, so a timer bounds the queue and hiding the tab
+// flushes synchronously.
+let chunks = [];
+let rafId = null;
+let flushTimer = null;
+const paintStats = { peak: 0, flushes: 0, timerFlushes: 0 };
+window.__irsh.paintStats = paintStats;
+
+const flush = (viaTimer = false) => {
+  if (rafId !== null) cancelAnimationFrame(rafId);
+  if (flushTimer !== null) clearTimeout(flushTimer);
+  rafId = null;
+  flushTimer = null;
+  paintStats.flushes++;
+  if (viaTimer) paintStats.timerFlushes++;
+  const batch = chunks;
+  chunks = [];
+  for (const c of batch) term.write(c);
+};
+
+const paint = (out) => {
+  if (!out || !out.length) return;
+  chunks.push(out);
+  if (chunks.length > paintStats.peak) paintStats.peak = chunks.length;
+  if (rafId === null) {
+    rafId = requestAnimationFrame(() => flush());
+    flushTimer = setTimeout(() => flush(true), 250);
+  }
+};
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && chunks.length) flush(true);
+});
+
+// A sleep the input path can cut short, so a keystroke's echo paints
+// without waiting out the poll interval.
+let wake = null;
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    const t = setTimeout(() => {
+      wake = null;
+      resolve();
+    }, ms);
+    wake = () => {
+      clearTimeout(t);
+      wake = null;
+      resolve();
+    };
+  });
+const wakeNow = () => wake?.();
+
+// --- component --------------------------------------------------------------
+let terminalApi = null;
+let currentSession = null;
+
+async function api() {
+  if (!terminalApi) {
+    const { loadClient } = await import(new URL("./dist/deltic.js", import.meta.url));
+    status("loading the client component…");
+    terminalApi = await loadClient(DIST.client, DIST.translator);
+  }
+  return terminalApi;
+}
+
+/**
+ * Which credential kinds the loaded component actually supports.
+ *
+ * Publickey auth (and the WebCrypto identity behind it) is part of the
+ * target interface but not yet implemented by every build, so the page
+ * feature-detects rather than assuming: an older component still drives
+ * a perfectly good password session.
+ */
+export async function capabilities() {
+  const t = await api();
+  return {
+    publickey: typeof t.identityOpenssh === "function",
+    password: true,
+  };
+}
+
+/**
+ * This browser's SSH identity as an `authorized_keys` line. The private
+ * half is a non-extractable WebCrypto key: the component can sign with
+ * it, nothing can export it.
+ */
+export async function identity() {
+  const t = await api();
+  if (typeof t.identityOpenssh !== "function") {
+    throw new Error("this build of the client component has no WebCrypto identity yet");
+  }
+  return await t.identityOpenssh();
+}
+
+// Input wiring is re-established per session and the old handlers
+// disposed, so a superseded session's handlers cannot keep feeding a
+// dead object.
+let wired = null;
+const wireInput = (session, fail) => {
+  wired?.data.dispose();
+  wired?.resize.dispose();
+  wired = {
+    data: term.onData((s) => {
+      if (currentSession !== session || window.__irsh.failure) return;
+      // transformInput applies mobile.mjs's sticky Ctrl/Alt (identity
+      // unless armed).
+      session
+        .writeInput(new TextEncoder().encode(transformInput(s)))
+        .then(wakeNow, fail);
+    }),
+    resize: term.onResize(({ cols, rows }) => {
+      if (currentSession !== session) return;
+      session.resize(cols, rows).catch(fail);
+    }),
+  };
+};
+
+const statusOf = (s) => (typeof s === "string" ? s : s?.tag ?? "unknown");
+
+/** Poll `status` until it leaves `connecting`, or time out. */
+async function settle(session, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const st = await session.status();
+    const tag = statusOf(st);
+    if (tag !== "connecting") return st;
+    if (Date.now() > deadline) throw new Error("timed out during connect");
+    await sleep(50);
+  }
+}
+
+/**
+ * Connect and run the session. `ui` supplies the two human decisions:
+ *
+ *   confirmHostKey(fingerprint) -> boolean
+ *   getCredential()            -> {kind: "publickey"} | {kind: "password", password}
+ */
+export async function connect({ connstring, user, ui }) {
+  const t = await api();
+  status("dialing over iroh…");
+
+  // deltic maps a WIT resource to a PascalCase class, with the WIT
+  // static as a static method on it.
+  const session = await t.Session.connect(connstring, user, term.cols, term.rows);
+  currentSession = session;
+
+  let st = await settle(session);
+  if (statusOf(st) === "closed") fatal(`connect: ${st.val ?? "closed"}`);
+
+  // --- the host-key gate: nothing has been sent to the server yet ---
+  if (statusOf(st) === "host-key-check") {
+    const fp = await session.hostKeyFingerprint();
+    status("waiting for host key confirmation");
+    const ok = await ui.confirmHostKey(fp ?? "(unavailable)");
+    await session.confirmHostKey(!!ok);
+    if (!ok) {
+      status("host key rejected; nothing was sent");
+      currentSession = null;
+      return null;
+    }
+  }
+
+  // --- credentials --------------------------------------------------
+  status("authenticating…");
+  const cred = await ui.getCredential();
+  try {
+    if (cred.kind === "password") {
+      // `authenticate-password` is the target name; older builds expose
+      // the password path as plain `authenticate`.
+      await (session.authenticatePassword
+        ? session.authenticatePassword(cred.password)
+        : session.authenticate(cred.password));
+    } else {
+      await session.authenticatePublickey();
+    }
+  } catch (e) {
+    fatal(`authentication: ${e?.payload?.val ?? e.message ?? e}`);
+  }
+
+  status(`connected as ${user}`);
+  term.focus();
+  wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
+
+  // The single output drainer for this session.
+  (async () => {
+    try {
+      for (;;) {
+        if (currentSession !== session) return; // superseded
+        paint(await session.drainOutput());
+        if (await session.exited()) {
+          const code = await session.exitStatus();
+          sessionEnded(session, code === undefined ? "session ended" : `exited (${code})`);
+          return;
+        }
+        await sleep(8);
+      }
+    } catch (e) {
+      sessionEnded(session, `pump: ${e.message ?? e}`);
+    }
+  })();
+
+  return session;
+}
+
+function sessionEnded(session, why) {
+  if (currentSession !== session) return;
+  currentSession = null;
+  flush(true);
+  status(why);
+}
+
+/** Tear the session down and close the iroh connection. */
+export async function detach() {
+  const s = currentSession;
+  if (!s) return;
+  currentSession = null;
+  try {
+    await s.detach();
+  } finally {
+    status("detached");
+  }
+}

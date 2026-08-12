@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- resizes-content: Android shrinks the layout viewport under the
+       soft keyboard (fit() then runs off the resize); iOS ignores the
+       token and mobile.mjs sizes off visualViewport instead. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#000000" />
+  <title>irsh</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./xterm/xterm.css" />
+  <style>
+    html, body { height: 100%; margin: 0; background: #000; }
+    #status {
+      font: 12px system-ui, sans-serif; color: #9a9a9a; background: #111;
+      padding: 4px 8px; border-bottom: 1px solid #222;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #wrap { display: flex; flex-direction: column; height: 100%; }
+    #panel {
+      font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
+      padding: 6px 8px; border-bottom: 1px solid #222;
+    }
+    #panel button { font-size: 11px; }
+    #panel input {
+      background: #000; color: #ddd; border: 1px solid #333;
+      font: 12px monospace; padding: 2px 4px;
+    }
+    #panel label { display: inline-block; min-width: 8em; }
+    #panel .row { margin-top: 4px; }
+    #panel .notice { color: #d90; margin-top: 4px; }
+    #panel .confirm { color: #d90; margin-top: 4px; }
+    #panel .confirm code, #panel .key code { color: #fd5; }
+    #panel .key {
+      margin-top: 4px; font: 11px monospace; color: #8c8;
+      word-break: break-all; user-select: all;
+    }
+    #term { flex: 1; min-height: 0; padding: 2px; }
+    /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
+       keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. */
+    #keys { display: none; }
+    @media (pointer: coarse) {
+      #keys {
+        display: flex; align-items: stretch; flex: none; gap: 4px;
+        padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+        background: #111; border-top: 1px solid #222;
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+      }
+      #keys-strip {
+        display: flex; gap: 4px; flex: 1; min-width: 0;
+        overflow-x: auto; scrollbar-width: none;
+      }
+      #keys button {
+        flex: none; min-width: 44px; height: 38px; touch-action: manipulation;
+        font: 14px system-ui, sans-serif; color: #ccc; background: #1c1c1c;
+        border: 1px solid #333; border-radius: 6px; padding: 0 10px;
+      }
+      #keys button.armed { color: #fff; background: #2d5e9e; border-color: #4a7ec0; }
+      /* 16px stops the iOS focus auto-zoom on the connect panel */
+      #panel input { font-size: 16px; }
+      #panel button { font-size: 14px; min-height: 32px; }
+    }
+  </style>
+  <script src="./xterm/xterm.js"></script>
+  <script src="./xterm/addon-fit.js"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="status">idle</div>
+    <div id="panel"></div>
+    <div id="term"></div>
+    <div id="keys"></div>
+  </div>
+  <script type="module">
+    import { connect } from "./app.mjs";
+    import { initBoot } from "./boot.mjs";
+    window.__irshBoot = await initBoot(document.getElementById("panel"), { onConnect: connect });
+  </script>
+</body>
+</html>

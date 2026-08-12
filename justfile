@@ -54,6 +54,30 @@ relay:
 listener *args: build
     target/release/irsh-listener --relay "${RELAY_URL:-http://127.0.0.1:3340}" {{args}}
 
+# --- the static site --------------------------------------------------
+
+# Bundle the deltic host layer for the page. The Deno-only WebRTC
+# backends stay external: in a browser the module uses the platform's
+# RTCPeerConnection and those dynamic imports never execute.
+web-bundle:
+    mkdir -p site/dist
+    deno bundle --platform browser --format esm --config deno.json \
+        --external node-datachannel --external node-datachannel/polyfill --external werift \
+        -o site/dist/deltic.js site/deltic-entry.ts
+
+# xterm assets + the browser-gate driver (once).
+web-deps:
+    cd site && npm install --no-fund --no-audit
+    npm install --prefix host-test --no-fund --no-audit
+
+# Assemble a servable tree in out/.
+site out="out": compose web-bundle
+    scripts/site-deploy-tree.sh {{out}}
+
+# Serve it locally.
+serve out="out": (site out)
+    python3 -m http.server -d {{out}} 8080
+
 # --- gates ------------------------------------------------------------
 
 # The connection-string format (shared by both ends).
@@ -80,4 +104,9 @@ spike-async:
 e2e *args: build
     target/release/irsh-smoke-test {{args}}
 
-check: test-connstring spike-async
+# Browser gate: deltic instantiates the SSH client component in a real
+# headless Chromium and runs guest code in-page. Needs `just site` first.
+browser: site
+    node host-test/browser-identity.mjs
+
+check: test-connstring spike-async browser
