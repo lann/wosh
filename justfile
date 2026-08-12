@@ -20,21 +20,16 @@ setup:
 listener-core:
     cargo build --target wasm32-wasip2 --release --manifest-path listener-core/Cargo.toml
 
-# The sans-I/O ssh engine (x/crypto/ssh via componentize-go).
-engine:
-    cd engine-go && componentize-go build
-
-# The browser client's Rust glue.
-client-core:
-    cargo build --target wasm32-wasip2 --release --manifest-path ssh-client-core/Cargo.toml
+# The browser SSH client: x/crypto/ssh over iroh, one Go component.
+client:
+    cd client-go && componentize-go build
 
 # Fuse each component with the polymorph-iroh endpoint.
-compose: listener-core engine client-core
+compose: listener-core client
     mkdir -p target/components
     wac plug target/wasm32-wasip2/release/irsh_listener_core.wasm \
         --plug {{ENDPOINT}} -o target/components/irsh-listener.wasm
-    wac plug target/wasm32-wasip2/release/irsh_ssh_client_core.wasm \
-        --plug engine-go/main.wasm --plug {{ENDPOINT}} \
+    wac plug client-go/main.wasm --plug {{ENDPOINT}} \
         -o target/components/irsh-ssh-client.wasm
 
 # Native hosts.
@@ -99,14 +94,34 @@ spike-async:
         spikes/go-async/main.wasm
 
 # End to end: the composed client under wasmtime, over real iroh,
-# through the listener, into a real OpenSSH sshd. Needs a relay and an
-# sshd; see smoke-test/README.
-e2e *args: build
-    target/release/irsh-smoke-test {{args}}
+# through the listener, into a REAL OpenSSH sshd, authenticated with
+# the non-extractable WebCrypto key the component mints for itself.
+#
+# Brings up everything it needs: a local relay, a throwaway sshd, and a
+# listener pointed at it. smoke-test is excluded from the workspace
+# (it drives an artifact rather than being one), so it builds via its
+# own manifest.
+e2e: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --manifest-path smoke-test/Cargo.toml
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'irsh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/irsh-listener --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/irsh-e2e-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/irsh-e2e-listener.log | cut -d" " -f2)
+    smoke-test/target/release/irsh-smoke-test \
+        --component target/components/irsh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
 
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
 browser: site
     node host-test/browser-identity.mjs
 
-check: test-connstring spike-async browser
+check: test-connstring spike-async e2e browser

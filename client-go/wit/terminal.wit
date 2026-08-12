@@ -1,0 +1,129 @@
+package irsh:terminal;
+
+/// The browser-facing SSH terminal surface: what the static site drives
+/// (through deltic) to run an interactive shell over the iroh tunnel.
+///
+/// Everything behind this interface -- parsing the connection string,
+/// dialing iroh, the SSH transport, authentication, the pty -- happens
+/// inside one Go component. It imports polymorph-iroh's endpoint
+/// surface directly and runs `golang.org/x/crypto/ssh` over a real
+/// `net.Conn` wrapping an iroh bi stream, so there is no sans-I/O
+/// shuttling and no glue component in between.
+///
+/// Every function here is `async` deliberately. A goroutine may only
+/// call an async import (an iroh read or write, a webcrypto signature)
+/// while an async-lifted export task is on the stack; doing it under a
+/// synchronously-lifted export traps outright.
+interface terminal {
+  /// Where the session currently stands.
+  variant status {
+    /// Dialing over iroh, or the SSH transport handshake is running.
+    connecting,
+    /// Key exchange finished: `host-key-fingerprint` is readable and
+    /// the session is parked here until `confirm-host-key` resolves
+    /// it. Nothing has been sent to the server yet -- not a password,
+    /// not even a public-key probe.
+    host-key-check,
+    /// The host key was accepted; authentication is in flight.
+    authenticating,
+    /// Pty and shell are up; `write-input`/`drain-output` carry the
+    /// interactive session.
+    ready,
+    /// Terminal state: the dial, handshake, auth, or shell failed, or
+    /// the session ended. The string is a human-readable reason.
+    closed(string),
+  }
+
+  /// Hold this component's async runtime open. Call it ONCE, as early
+  /// as possible, and never await it: it does not return.
+  ///
+  /// This is load-bearing, not ceremony. componentize-go ends an
+  /// async task as soon as the guest goes idle with no Component-Model
+  /// waitable outstanding -- and "idle with nothing pending" also
+  /// describes a background goroutine blocked on a Go channel waiting
+  /// for the next export call. Without a task deliberately kept alive,
+  /// the SSH goroutines lose their host task the moment they park, and
+  /// the next export call traps with "async-lifted export failed to
+  /// produce a result".
+  ///
+  /// This function parks on a timer forever, so its task always has a
+  /// pending subtask; the host keeps resuming it, and every resume runs
+  /// all runnable goroutines. Rust's wit-bindgen does this bookkeeping
+  /// automatically (it tracks spawned futures); componentize-go has no
+  /// equivalent, so the caller supplies one. Dropping or awaiting this
+  /// call silently stops all background I/O.
+  keepalive: async func();
+
+  /// This browser's SSH identity, as an OpenSSH `authorized_keys` line
+  /// (`ssh-ed25519 AAAA... irsh-browser`).
+  ///
+  /// The key pair is minted through `polymorph:webcrypto` and the
+  /// private half is created NON-EXTRACTABLE: this component can ask
+  /// the authenticator to sign with it, but nothing -- not this
+  /// component, not the page, not an XSS payload -- can read it out.
+  /// Signing during SSH publickey auth goes back through that same
+  /// handle. Minted once per instance and cached.
+  identity-openssh: async func() -> result<string, string>;
+
+  resource session {
+    /// Parse `connstring` (as printed and QR-encoded by the listener),
+    /// dial that peer over iroh, open the tunnel stream, present the
+    /// pairing token when the connstring carries one, and start the
+    /// SSH transport handshake. `cols`/`rows` size the pty requested
+    /// once authenticated. Resolves once the dial either succeeded
+    /// (poll `status` from here) or failed outright.
+    connect: static async func(connstring: string, user: string, cols: u16, rows: u16) -> result<session, string>;
+
+    status: async func() -> status;
+
+    /// The server's host key fingerprint, in the form `ssh-keygen -lf`
+    /// prints (`SHA256:...`), so it can be compared by eye against
+    /// what the listener's operator published.
+    host-key-fingerprint: async func() -> option<string>;
+
+    /// The user's verdict on that fingerprint. Rejecting tears the
+    /// connection down having sent no credentials at all. Accepting
+    /// merely records consent -- authentication begins when one of the
+    /// `authenticate-*` calls supplies a credential.
+    confirm-host-key: async func(accept: bool);
+
+    /// Offer a password. Fails immediately if the host key has not been
+    /// confirmed. Otherwise it latches the credential and RESOLVES AT
+    /// ONCE -- authentication runs in the background, so poll `status`
+    /// until `ready` or `closed`. (These calls cannot wait for the
+    /// outcome: an async export that blocks on an in-language primitive
+    /// can have its task declared complete out from under it.)
+    authenticate-password: async func(password: string) -> result<_, string>;
+
+    /// Authenticate with this browser's non-extractable WebCrypto key
+    /// (see `identity-openssh`, whose line must be installed in the
+    /// target account's `authorized_keys`). The signature is produced
+    /// by the authenticator; the private key is never in this
+    /// component's memory. Same host-key gating, and the same
+    /// resolve-immediately-then-poll contract as
+    /// `authenticate-password`.
+    authenticate-publickey: async func() -> result<_, string>;
+
+    /// Keystrokes or pasted bytes from the terminal (xterm.js
+    /// `onData`). No local echo or line editing happens here -- the
+    /// remote pty owns both, exactly like a real terminal.
+    write-input: async func(data: list<u8>);
+
+    /// Propagate a terminal resize (xterm.js `onResize`).
+    resize: async func(cols: u16, rows: u16);
+
+    /// Pty output accumulated since the last call: raw bytes, in
+    /// order, to be written straight to xterm.js. Returns promptly
+    /// with whatever is buffered, possibly empty.
+    drain-output: async func() -> list<u8>;
+
+    /// True once the remote shell exited or the connection died.
+    exited: async func() -> bool;
+
+    /// The shell's exit status, once known.
+    exit-status: async func() -> option<s32>;
+
+    /// Stop the session and close the iroh connection.
+    detach: async func();
+  }
+}

@@ -137,6 +137,18 @@ Poll::Ready(()) => { assert!(me.tasks.is_empty());
 Poll::Pending  => { assert!(!me.tasks.is_empty()); ... Wait }
 ```
 
+There is a sharper corollary, and it cost real debugging time: **an
+async-lifted export must never block on an in-language primitive.** The
+exit decision is per-task, so an export whose closure is parked on a Go
+channel gets declared complete the instant nothing Component-Model
+visible is pending *for that task* — never calling task-return, which
+surfaces as the same `async-lifted export failed to produce a result`.
+The keepalive keeps *background* goroutines running; it cannot rescue a
+blocked export closure. Hence `authenticate-password` and
+`authenticate-publickey` latch a credential and resolve at once, and the
+caller polls `status` — the sans-I/O discipline, arrived at the hard
+way.
+
 **This is a library-design difference, not a Component Model limit.** A
 Rust future is a value the binding owns and can enumerate; a goroutine
 is opaque — once you `go f()`, the runtime owns it, and there is no
@@ -168,14 +180,12 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 - `listener-core/` — the `wasi:cli@0.3.1` listener component.
 - `listener-host/` — its native shell: wasmtime + the polymorph
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
-- `engine-go/` — `x/crypto/ssh` as a sans-I/O component
-  (componentize-go): the host feeds it bytes and drives a tick; it
-  never performs I/O or blocks. Publickey signing is brokered out
-  (`pending-signature`/`provide-signature`) so the private key can live
-  in the browser's authenticator instead of in the component.
-- `ssh-client-core/` — the Rust glue: owns the iroh connection, pumps
-  bytes to the engine, performs webcrypto signatures, and exports
-  `irsh:terminal` to the page.
+- `client-go/` — the browser SSH client, one Go component:
+  `x/crypto/ssh` over a real `net.Conn` wrapping an iroh bi stream,
+  exporting `irsh:terminal`. No glue component and no sans-I/O
+  shuttling — componentize-go surfaces the endpoint's async WIT methods
+  as ordinary blocking Go calls, so it reads like a normal networked Go
+  program.
 - `smoke-test/` — the end-to-end gate: the composed client under
   wasmtime, over real iroh, through the listener, into a real OpenSSH
   `sshd`.
@@ -202,11 +212,13 @@ Verified working:
 - The listener, end to end: identity minted through webcrypto, endpoint
   bound on a live relay, connstring + QR + link printed, pairing token
   enforced, and a peer's bytes proxied to a TCP service and back.
-- The client's transport and SSH handshake against a **real OpenSSH
-  sshd**: it minted its non-extractable WebCrypto key, emitted a valid
-  `authorized_keys` line, dialed over iroh, and reported a host-key
-  fingerprint matching the sshd host key — i.e. the SSH transport
-  handshake completed through the tunnel.
+- **The whole thing, end to end** (`just e2e`): the browser client
+  component under wasmtime mints its non-extractable WebCrypto key,
+  emits an `authorized_keys` line, dials the listener over real iroh,
+  verifies the host key fingerprint against the real sshd's,
+  authenticates by **publickey with a signature produced by that
+  WebCrypto key**, gets an interactive pty, round-trips a command
+  through the tunnel, resizes, and detaches cleanly.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs
@@ -216,13 +228,13 @@ Verified working:
 
 Not finished:
 
-- The client's auth-and-shell leg. It needs the keepalive from finding
-  3 (or the sans-I/O split it currently has) wired end to end; the gate
-  in `smoke-test/` drives all seven steps and currently reaches step 3.
-- Wiring the page's terminal to a live session: the site drives
-  `irsh:terminal` already, but the composed component still exposes
-  password auth only, so the panel feature-detects and hides the
-  publickey option until Component B grows it.
+- The page has not yet been driven through a full live session in a
+  browser: `just browser` proves the component loads and runs guest
+  code in-page, and `just e2e` proves the same component completes a
+  real SSH session, but nothing yet asserts the two together.
+- Host-key pinning across visits (the fingerprint is confirmed every
+  time), and any persistence of the browser's identity — it is minted
+  fresh per instance today.
 - CI.
 
 ## Licence and provenance

@@ -88,6 +88,7 @@ fn parse_args() -> Result<Args> {
             "--user" => a.user = v()?,
             "--authorized-keys" => a.authorized_keys = PathBuf::from(v()?),
             "--expect-host-key" => a.expect_host_key = Some(v()?),
+            "--keepalive-only" => {}
             other => bail!("unknown flag {other}"),
         }
     }
@@ -135,6 +136,26 @@ async fn main() -> Result<()> {
         .run_concurrent(async move |acc| -> Result<()> {
             let iface = client.irsh_terminal_terminal();
             let session = iface.session();
+
+            // The keepalive task holds the guest's async runtime open;
+            // without it the SSH goroutines lose their host task the
+            // moment they park (see README "Findings" 3). It never
+            // returns, so it is raced against the gate rather than
+            // awaited.
+            let keepalive = iface.call_keepalive(acc);
+
+            // Isolation probe: run ONLY the keepalive, so its ticks are
+            // unambiguous evidence it is (or is not) being driven.
+            if std::env::args().any(|a| a == "--keepalive-only") {
+                futures::pin_mut!(keepalive);
+                let timer = tokio::time::sleep(Duration::from_secs(3));
+                futures::pin_mut!(timer);
+                futures::future::select(keepalive, timer).await;
+                println!("(keepalive-only probe done)");
+                return Ok(());
+            }
+
+            let gate = async {
 
             // --- 1. the browser's own SSH identity -----------------
             let line = iface
@@ -186,7 +207,20 @@ async fn main() -> Result<()> {
                 .call_authenticate_publickey(acc, s)
                 .await?
                 .map_err(|e| anyhow!("publickey auth: {e}"))?;
-            println!("[4] authenticated (signature produced by the WebCrypto key)");
+
+            // The call latches the credential and returns at once;
+            // authentication and the pty/shell setup run in the
+            // background, so readiness is observed by polling.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                match session.call_status(acc, s).await? {
+                    Status::Ready => break,
+                    Status::Closed(why) => bail!("authentication failed: {why}"),
+                    _ if Instant::now() > deadline => bail!("timed out waiting for the shell"),
+                    _ => tokio::time::sleep(Duration::from_millis(25)).await,
+                }
+            }
+            println!("[4] authenticated (signature produced by the WebCrypto key); shell is up");
 
             // --- 5. interactive shell -----------------------------
             let marker = "IRSH_E2E_OK";
@@ -219,7 +253,17 @@ async fn main() -> Result<()> {
 
             session.call_detach(acc, s).await?;
             println!("[7] detached cleanly");
-            Ok(())
+            Ok::<(), anyhow::Error>(())
+            };
+
+            futures::pin_mut!(keepalive, gate);
+            match futures::future::select(keepalive, gate).await {
+                futures::future::Either::Left((r, _)) => {
+                    r?;
+                    bail!("keepalive returned; it must run for the session's lifetime");
+                }
+                futures::future::Either::Right((r, _)) => r,
+            }
         })
         .await?;
 
