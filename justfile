@@ -38,10 +38,10 @@ spike-async-deltic: spike-async-build
 spikes: spike-sync-wasmtime spike-sync-deltic spike-async-wasmtime spike-async-deltic spike-keepalive-deltic spike-compose-wasmtime spike-compose-deltic
 
 # Keep-alive probes (settlement pump / embedder-api A11): goroutine liveness
-# between export calls — finding 31, wosh#25. Runs on the LOCAL deltic
-# checkout (deno-local-deltic.json): A11 has no JSR prerelease yet.
+# between export calls — finding 31, wosh#25. A11 family convergence done:
+# runs on the root config like every other deltic leg.
 spike-keepalive-deltic: spike-async-build
-    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config deno-local-deltic.json --no-lock -A run-keepalive-deltic.mjs
+    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../../../deno.json --frozen -A run-keepalive-deltic.mjs
 
 # --- composition spike (D7) ----------------------------------------------
 

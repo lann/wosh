@@ -103,7 +103,7 @@ fi
 # Post-#44: event-driven endpoint wakeups (the jco-era polling pump is
 # gone); #40 retired their jco host, #43 adopted deltic's parking kernel.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=6c18c780e401e17e1d3e9230db269c1d6969e6f9
+PIROH_PIN=b18c9d9e21d396c90163484c424d74530f66abcd
 PIROH_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/polymorph-iroh"
 if [ ! -d "$PIROH_DIR/.git" ]; then
   say "cloning polymorph-iroh @ ${PIROH_PIN:0:12}"

@@ -109,21 +109,21 @@ wholesale and shipped the previously A3-blocked browser leg:
   (#2), throwaway_num quench (#3); polymorph-iroh per-path datagram
   ceiling (polymorph-iroh#47) and peer close-info accessor for the
   Error-then-close race (polymorph-iroh#48).
-- **deltic A11 family convergence** (2026-08-12, findings 31-32): A10
-  convergence LANDED — polymorph-iroh bumped to 6c18c78 (their #58) and
-  wosh's module graph now converges on the exact JSR prerelease the
-  sibling configs pin (`0.1.0-pre.g078aa15`, A10; root deno.json maps
-  `@deltic/*` onto it, matching upstream's convention). What remains:
-  no post-A11 prerelease exists yet (`0.1.0-pre.ga2f84a5` unpublished),
-  so the keep-alive spike still rides the LOCAL `.deps/deltic` checkout
-  (a2f84a5) via `runner/deno-local-deltic.json`, and the translator
-  shim builds from that same checkout (translator sources identical
-  across the two commits — plan-format coupling holds). When deltic
-  publishes a post-a2f84a5 prerelease and the polymorph family bumps to
-  it, update the root deno.json versions, fold the spike onto the root
-  config, and delete deno-local-deltic.json. wosh's own A10 surface
-  (deltic-host.ts, web entry/app, compose runner) migrated in the same
-  move.
+- **deltic A11 family convergence: DONE** (2026-08-12, findings 31-33).
+  The whole family now names `@deltic/*@0.1.0-pre.ga2f84a5` (A11, the
+  settlement pump): deltic main went green after a node-datachannel
+  prebuild flake on x64 was re-run and the release job published the
+  prerelease; sibling bumps webcrypto#380 / websocket#51 / webrtc#157;
+  polymorph-iroh#62 (sibling pins + own configs — lock regen must
+  follow the sibling checkouts, not precede them: the lockfile links
+  section records the siblings' @deltic/runtime dependency); wosh
+  flipped the root deno.json version, folded the keep-alive spike onto
+  the root config, and deleted deno-local-deltic.json. The local
+  .deps/deltic checkout remains for exactly one thing: the
+  translator-shim build, at the same commit the jsr prerelease names.
+  Next bump of this shape: sed the version in root deno.json + sibling
+  configs' repos, setup.sh BEFORE deno install, spikes+m1+m4+m5
+  locally, CI for the rest.
 - `just m5-netem` rerun 2026-08-11: all five cells green (RTO adapts
   250→684 ms under 100 ms delay; dial survives 10% loss). Needs
   passwordless sudo for tc; measurement matrix, not a regression
