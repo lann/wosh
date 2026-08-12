@@ -18,7 +18,7 @@ setup:
 
 # The wasi:cli@0.3.1 listener component.
 listener-core:
-    cargo build --target wasm32-wasip2 --release --manifest-path listener-core/Cargo.toml
+    cargo build --target wasm32-wasip2 --release -p irsh-listener-core
 
 # The browser SSH client: x/crypto/ssh over iroh, one Go component.
 client:
@@ -104,7 +104,7 @@ spike-async:
 e2e: compose
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release --manifest-path smoke-test/Cargo.toml
+    cargo build --release -p irsh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
     pkill -f 'irsh-listene[r]' 2>/dev/null || true
@@ -113,7 +113,7 @@ e2e: compose
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/irsh-e2e-listener.log 2>&1 &
     sleep 7
     cs=$(grep '^connstring: ' /tmp/irsh-e2e-listener.log | cut -d" " -f2)
-    smoke-test/target/release/irsh-smoke-test \
+    target/release/irsh-smoke-test \
         --component target/components/irsh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \

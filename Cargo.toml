@@ -1,21 +1,30 @@
 [workspace]
 resolver = "2"
+
 members = [
     "connstring",
+    "listener-core",
     "listener-host",
+    "smoke-test",
     "spikes/go-async-host",
 ]
 
-# Built only for wasm32-wasip2 (they are `cdylib` components and do not
-# link for the host target); `just compose` drives them:
-#   listener-core, ssh-client-core
+# `listener-core` is a `cdylib` component: it builds only for
+# wasm32-wasip2 and does not link for the host. Keeping it a MEMBER (so
+# it shares the workspace target directory and `-p` works) while leaving
+# it out of the defaults means a bare `cargo build` skips it and
+# `just compose` builds it explicitly for the right target.
 #
-# `smoke-test` is the end-to-end gate for the browser client. It is
-# written against the interface Component B must expose once finished
-# (identity-openssh + publickey auth) and is deliberately left out of
-# the default workspace until that lands -- see README "Where this
-# actually is".
-exclude = ["listener-core", "ssh-client-core", "smoke-test"]
+# Membership matters more than it looks: an excluded crate builds into
+# its OWN target/ directory, so `wac plug` and any recipe referring to
+# target/wasm32-wasip2/... silently reads a stale artifact or none at
+# all -- which is exactly how this broke in CI.
+default-members = [
+    "connstring",
+    "listener-host",
+    "smoke-test",
+    "spikes/go-async-host",
+]
 
 [workspace.package]
 edition = "2021"
