@@ -23,9 +23,15 @@ interface types {
     /// transport ID, so they survive round trips through parties that
     /// do not understand them.
     variant transport-addr {
-        /// A relay server the peer keeps a connection open to (a URL).
+        /// A relay server the peer keeps a connection open to: an
+        /// `http` or `https` base URL. Use one spelling per relay —
+        /// implementations normalize at most minimally (equality is
+        /// implementation-defined beyond the exact string).
         relay(string),
-        /// A direct socket address, `ip:port`.
+        /// A direct socket address, `ip:port`: IPv4 dotted-quad or
+        /// bracketed IPv6 (`[2001:db8::1]:443`); IPv6 scope-id support
+        /// is implementation-defined. An entry that does not parse is
+        /// ignored for dialing but preserved.
         ip(string),
         /// Reachable over a WebRTC data channel, negotiated by signaling
         /// through the given relay server (a URL). Both peers must hold
@@ -114,9 +120,19 @@ interface types {
         /// reset code.
         reset(u64),
         /// Connection establishment failed: the relay was unreachable,
-        /// the handshake failed, the peer refused every offered ALPN,
-        /// or the attempt timed out.
+        /// the handshake failed, or the peer refused the connection or
+        /// every offered ALPN.
         connect-failed(string),
+        /// The attempt timed out: the peer, or the relay being opened,
+        /// did not answer within the deadline.
+        timed-out(string),
+        /// The deployment does not serve a capability the operation
+        /// needs: a transport this host does not provide.
+        not-supported(string),
+        /// The operation conflicts with another user of the stream
+        /// half: a `read` or `write` already in flight, or a
+        /// `read-via-stream`/`write-via-stream` claim.
+        in-use(string),
         /// A supplied argument is invalid: an `endpoint-id` that is not
         /// 32 bytes, or a malformed relay URL. The operation had no
         /// effect.
@@ -187,6 +203,14 @@ interface identity-from-keys {
 
 /// The stateful endpoint surface: one identity, its connections, and
 /// their streams.
+///
+/// Every `async` function is cancellable: the caller can cancel the
+/// in-progress call (a component-model subtask) while it waits.
+/// Unless a function's doc says otherwise, cancellation has no
+/// effect — nothing is consumed, opened, or lost. The exceptions are
+/// `connect` (the attempt is abandoned and the dial closed) and the
+/// two write paths (an unspecified prefix is committed; see
+/// `send-stream.write`).
 interface endpoint {
     use types.{endpoint-id, endpoint-addr, connection-state, close-info, path-kind, error};
     use identity.{identity};
@@ -213,6 +237,9 @@ interface endpoint {
         /// direct peers can dial in. Unset binds no socket. A port of
         /// zero picks a free port; read the result with
         /// `endpoint.direct-addr`.
+        ///
+        /// Not every deployment provides UDP (the browser profile has
+        /// none): there, `bind` with this set fails `not-supported`.
         udp-bind-addr: func(addr: string);
 
         /// Enables the WebRTC wire: `webrtc` address entries become
@@ -220,6 +247,11 @@ interface endpoint {
         /// on its relay connections. When disabled (the default),
         /// `webrtc` entries are ignored for dialing and inbound
         /// signaling is discarded.
+        ///
+        /// A deployment that stubs the WebRTC import does not detect
+        /// that at `bind`: enabling this there leaves `webrtc` entries
+        /// non-functional — upgrades do not occur and connections stay
+        /// on their dial path.
         webrtc: func(enabled: bool);
     }
 
@@ -247,10 +279,12 @@ interface endpoint {
         /// key fails `connect-failed`, never connects. The connection's
         /// ALPN is `alpn`, refused by the peer if it does not serve it.
         ///
-        /// The dial path: the first parseable `ip` entry when a UDP
-        /// socket is bound, the relay otherwise. There is no fallback
-        /// between dial paths: a chosen path that does not answer fails
-        /// `connect-failed` by timeout.
+        /// Dial-path selection from `addr.addrs` is
+        /// implementation-defined: an implementation may prefer one
+        /// entry, race several, or fall back between them. A dial
+        /// that exhausts its selection without an answer fails
+        /// `timed-out`; a refusal or a handshake failure fails
+        /// `connect-failed`.
         ///
         /// A `webrtc` entry (with `endpoint-options.webrtc` set)
         /// upgrades a relay-dialed connection in the background: the
@@ -258,6 +292,10 @@ interface endpoint {
         /// move to the data channel once it opens — `connection.path`
         /// reports the move. A failed upgrade leaves the connection on
         /// the relay; a channel that later dies moves it back.
+        ///
+        /// Cancelling the call abandons the attempt and closes the
+        /// dial; the peer may observe a connection that opens and
+        /// promptly closes.
         connect: async func(addr: endpoint-addr, alpn: list<u8>) -> result<connection, error>;
 
         /// The next accepted connection.
@@ -266,7 +304,15 @@ interface endpoint {
         /// it with `connection.peer` — and the negotiated ALPN is one
         /// of `endpoint-options.alpns`. Concurrent calls are supported;
         /// concurrently pending acceptors are each handed one
-        /// connection, in an implementation-defined order.
+        /// connection, in an implementation-defined order. Cancelling
+        /// a pending `accept` loses nothing: an undelivered connection
+        /// stays queued.
+        ///
+        /// Connections finish their handshake and queue before any
+        /// acceptor exists — a peer's `connect` can resolve while this
+        /// endpoint is busy — up to an implementation-defined backlog.
+        /// Past the backlog, new attempts are refused and the dialer
+        /// fails `connect-failed`; accepting drains it.
         accept: async func() -> result<connection, error>;
 
         /// Close the endpoint: new connections are refused and existing
@@ -292,11 +338,24 @@ interface endpoint {
         /// The wire currently carrying this connection's packets. Not
         /// latched: a background upgrade moves a relay-dialed
         /// connection to `webrtc` when its channel opens, and back to
-        /// `relay` if the channel dies (see `endpoint.connect`).
+        /// `relay` if the channel dies (see `endpoint.connect`). To
+        /// follow the moves rather than poll, use `path-changes`.
         path: func() -> path-kind;
 
+        /// A stream of path changes, behaving as a coalescing watch:
+        /// each element was the connection's path when it was
+        /// produced. Consecutive elements are always distinct;
+        /// intermediate paths may be coalesced away, never invented.
+        /// The stream ends when the connection closes — the lifecycle
+        /// itself lives on `wait-closed`.
+        ///
+        /// The stream may be taken once: the first call returns it,
+        /// and every later call returns a stream that ends immediately
+        /// without yielding anything.
+        path-changes: func() -> stream<path-kind>;
+
         /// Open a bidirectional stream. Resolves when stream credit is
-        /// available.
+        /// available. Cancelling a pending open opens nothing.
         open-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
 
         /// Open a unidirectional (outgoing) stream.
@@ -306,7 +365,8 @@ interface endpoint {
         ///
         /// Concurrent calls are supported; concurrently pending
         /// acceptors are each handed one stream, in an
-        /// implementation-defined order.
+        /// implementation-defined order. Cancelling a pending accept
+        /// loses nothing: an undelivered stream stays queued.
         accept-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
 
         /// The next peer-initiated unidirectional stream.
@@ -352,6 +412,7 @@ interface endpoint {
         /// buffered datagrams are dropped. Concurrent calls are
         /// supported; concurrently pending receivers are each handed
         /// one datagram, in an implementation-defined order.
+        /// Cancelling a pending receive consumes nothing.
         recv-datagram: async func() -> result<list<u8>, error>;
 
         /// Close the connection with an application code and reason.
@@ -372,29 +433,60 @@ interface endpoint {
     }
 
     /// The send half of a QUIC stream.
+    ///
+    /// One in-flight `write` (or `write-via-stream`) at a time: a
+    /// second concurrent call fails `error.in-use` immediately.
+    /// Concurrent writes would interleave at flow-control boundaries —
+    /// silent corruption for framed payloads — so the surface refuses
+    /// them. Dropping the resource without `finish` or `reset` implies
+    /// `reset(0)`: an abandoned stream must not leave the peer
+    /// waiting.
     resource send-stream {
         /// Write `bytes`, applying the stream's flow-control
         /// backpressure through the async ABI. Resolves when the bytes
         /// are accepted for delivery, not when they are delivered.
+        ///
+        /// Cancelling an in-flight `write` commits an unspecified
+        /// prefix of `bytes`; its length cannot be learned. `reset` is
+        /// the framing-safe recovery.
         write: async func(bytes: list<u8>) -> result<_, error>;
 
         /// Finish the stream: a FIN after all accepted writes. No
-        /// writes may follow.
+        /// writes may follow. Fails `error.in-use` while a `write` is
+        /// in flight — a FIN under it would truncate the payload.
         finish: func() -> result<_, error>;
 
         /// Abandon the stream, notifying the peer with `code`. QUIC
         /// carries codes up to 2^62 - 1; larger values saturate to
-        /// that ceiling.
+        /// that ceiling. Always available: it is the recovery for a
+        /// cancelled or abandoned write path.
         reset: func(code: u64);
 
         /// Send the whole remaining payload through a byte stream,
-        /// then finish. One-shot: after this call the resource accepts
-        /// no further writes; the returned future resolves when every
-        /// byte has been accepted and the FIN sent.
+        /// then finish. One-shot: after it, `write` and `finish` fail
+        /// `error.in-use` (the claim is not taken when the call is
+        /// refused for an in-flight `write`). Resolves when every byte
+        /// has been accepted and the FIN sent.
+        ///
+        /// The data stream's end is the payload's end: `finish`
+        /// follows automatically. A byte stream carries no failure
+        /// signal, so a producer that dies mid-payload finishes a
+        /// truncated payload — a protocol that must tell the two apart
+        /// frames its payload, or calls `reset` on failure.
+        /// Cancelling the call commits an unspecified prefix and
+        /// leaves the stream claimed and unfinished; recover with
+        /// `reset`.
         write-via-stream: async func(data: stream<u8>) -> result<_, error>;
     }
 
     /// The receive half of a QUIC stream.
+    ///
+    /// One in-flight `read` at a time: a second concurrent call fails
+    /// `error.in-use` immediately (concurrent reads would split the
+    /// byte sequence between callers). Dropping the resource before
+    /// the stream's end implies `stop(0)`; a stream whose end was
+    /// consumed, or whose bytes a `read-via-stream` owns, needs
+    /// nothing.
     resource recv-stream {
         /// Up to `max` bytes of the stream, in order; `none` at the
         /// peer's FIN. The FIN is the only clean end.
@@ -405,7 +497,9 @@ interface endpoint {
         /// FIN — bytes the connection already delivered drain first.
         /// Either outcome is terminal and repeats on every later call:
         /// a close after a consumed FIN never turns the clean end into
-        /// a failure.
+        /// a failure. Cancelling a `read` consumes nothing; a `read`
+        /// with `max` 0 resolves `some([])` without waiting or
+        /// consuming.
         read: async func(max: u32) -> result<option<list<u8>>, error>;
 
         /// Stop reading, notifying the peer with `code`. QUIC carries
@@ -416,7 +510,7 @@ interface endpoint {
         /// Take the stream's remaining bytes as a byte stream, with a
         /// future reporting how the stream ended. May be called once:
         /// after it, any call to it or to `read` fails with
-        /// `error.other`.
+        /// `error.in-use`.
         ///
         /// The byte stream ends at the peer's FIN, at a reset, and at
         /// a connection close alike; the future tells them apart. It
@@ -430,12 +524,20 @@ interface endpoint {
 
 /// One iroh endpoint: transports and time in, peer connectivity out.
 ///
-/// The crypto imports (`polymorph:webcrypto`) are mostly consumed by
-/// the implementation directly and do not appear here; the `signature`
-/// interface does appear, because `identity-from-keys` accepts its key
-/// handles. The UDP direct path uses `wasi:sockets/types@0.3.0`, whose
-/// `udp-socket` resource carries the socket operations in the 0.3
-/// draft.
+/// This world names the interfaces the implementation binds
+/// deliberately; it is not the component's complete import set. The
+/// language toolchain adds a `wasi` 0.2 tail (io, cli, clocks,
+/// filesystem, random — `bind` draws its reset and token keys from
+/// `wasi:random` through the language's entropy source), and further
+/// `polymorph:webcrypto` interfaces arrive through the
+/// implementation's own bindings. The composed artifact's embedded
+/// WIT is the authoritative import manifest; read it with
+/// `wasm-tools component wit <component>`.
+///
+/// The `signature` interface appears because `identity-from-keys`
+/// accepts its key handles. The UDP direct path uses
+/// `wasi:sockets/types@0.3.0`, whose `udp-socket` resource carries
+/// the socket operations in the 0.3 draft.
 world iroh-endpoint {
     import polymorph:webcrypto/signature@0.1.0;
     import polymorph:webrtc-datachannels/connections@0.1.0;
