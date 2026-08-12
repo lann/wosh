@@ -42,6 +42,33 @@ interface ssh {
     /// legibly instead of silently hanging.
     authenticate: func(password: string);
 
+    /// Offer publickey authentication instead of a password, with
+    /// `public-key-blob` in SSH wire format (exactly what an
+    /// `authorized_keys` line base64-decodes to).
+    ///
+    /// The private key is deliberately NOT in this component. When the
+    /// ssh stack needs a signature it parks, `pending-signature`
+    /// surfaces the bytes to be signed, and the embedder answers with
+    /// `provide-signature`. That indirection is what lets the key live
+    /// in the browser's authenticator as a non-extractable WebCrypto
+    /// handle: this component only ever sees the public half and a
+    /// finished signature.
+    authenticate-publickey: func(public-key-blob: list<u8>);
+
+    /// The bytes the ssh stack is currently waiting to have signed,
+    /// if it is parked on a signature. Poll after feeding bytes and
+    /// after granting credentials.
+    pending-signature: func() -> option<list<u8>>;
+
+    /// Hand back the raw 64-byte Ed25519 signature over the bytes
+    /// `pending-signature` returned, resuming the handshake.
+    provide-signature: func(signature: list<u8>);
+
+    /// Abandon a parked signature (the authenticator refused or is
+    /// unavailable) so authentication fails legibly instead of
+    /// hanging forever.
+    fail-signature: func(reason: string);
+
     /// Bytes that arrived from the forwarded stream.
     feed: func(data: list<u8>);
 

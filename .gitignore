@@ -16,3 +16,5 @@ site/dist/
 # Editor / OS
 .DS_Store
 *.swp
+spikes/go-async/main.wasm
+spikes/go-async/go.sum

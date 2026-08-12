@@ -1,0 +1,83 @@
+set shell := ["bash", "-cu"]
+
+# componentize-go installs to GOBIN, and needs a newer Go than most
+# distributions ship; prefer a locally-installed one.
+export PATH := env_var('HOME') + "/.local/go/bin:" + env_var('HOME') + "/go/bin:" + env_var('PATH')
+
+ENDPOINT := ".deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm"
+RELAY    := ".deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay"
+
+default:
+    @just --list
+
+# Pins + builds every external dependency into .deps/ (idempotent).
+setup:
+    scripts/setup.sh
+
+# --- components -------------------------------------------------------
+
+# The wasi:cli@0.3.1 listener component.
+listener-core:
+    cargo build --target wasm32-wasip2 --release --manifest-path listener-core/Cargo.toml
+
+# The sans-I/O ssh engine (x/crypto/ssh via componentize-go).
+engine:
+    cd engine-go && componentize-go build
+
+# The browser client's Rust glue.
+client-core:
+    cargo build --target wasm32-wasip2 --release --manifest-path ssh-client-core/Cargo.toml
+
+# Fuse each component with the polymorph-iroh endpoint.
+compose: listener-core engine client-core
+    mkdir -p target/components
+    wac plug target/wasm32-wasip2/release/irsh_listener_core.wasm \
+        --plug {{ENDPOINT}} -o target/components/irsh-listener.wasm
+    wac plug target/wasm32-wasip2/release/irsh_ssh_client_core.wasm \
+        --plug engine-go/main.wasm --plug {{ENDPOINT}} \
+        -o target/components/irsh-ssh-client.wasm
+
+# Native hosts.
+hosts:
+    cargo build --release -p irsh-listener-host
+
+build: compose hosts
+
+# --- running ----------------------------------------------------------
+
+# A local relay, for development and the gates.
+relay:
+    {{RELAY}} --dev
+
+# Run the listener. Extra args pass through, e.g.
+#   just listener --target 127.0.0.1:22 --no-token
+listener *args: build
+    target/release/irsh-listener --relay "${RELAY_URL:-http://127.0.0.1:3340}" {{args}}
+
+# --- gates ------------------------------------------------------------
+
+# The connection-string format (shared by both ends).
+test-connstring:
+    cargo test -p irsh-connstring
+
+# The three componentize-go async measurements behind this design; see
+# README "Findings". The lifting probe is two direct wasmtime invokes
+# because the first is expected to trap.
+spike-async:
+    cd spikes/go-async && componentize-go build
+    cargo build --release -p irsh-spike-go-async-host
+    target/release/irsh-spike-go-async-host spikes/go-async/main.wasm all
+    @echo "--- lifting: a SYNC export calling an async import must TRAP ---"
+    @! wasmtime run -W component-model-async=y --invoke 'sync-calls-async(50)' \
+        spikes/go-async/main.wasm 2>&1 | grep -q 'unreachable' \
+        && echo "UNEXPECTED: it did not trap" && exit 1 || echo "traps, as expected"
+    wasmtime run -W component-model-async=y --invoke 'async-calls-async(50)' \
+        spikes/go-async/main.wasm
+
+# End to end: the composed client under wasmtime, over real iroh,
+# through the listener, into a real OpenSSH sshd. Needs a relay and an
+# sshd; see smoke-test/README.
+e2e *args: build
+    target/release/irsh-smoke-test {{args}}
+
+check: test-connstring spike-async

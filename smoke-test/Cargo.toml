@@ -1,0 +1,19 @@
+[package]
+name = "irsh-smoke-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "End-to-end gate: the composed browser SSH client under wasmtime, over real iroh, through the listener, into a real OpenSSH sshd, authenticated by its own WebCrypto key."
+
+[dependencies]
+anyhow = "1"
+wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
+wasmtime-wasi = { version = "47", features = ["p3"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "5dc3d4184d2ab82b98aa0ff82a218f9ed1e080eb" }
+polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", rev = "a0c924d3f10cc598e9ea2e754dc4f13f162dc749" }
+wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "a3b7fb1d0231c110b0bebb493276d23308642537" }
+
+[[bin]]
+name = "irsh-smoke-test"
+path = "src/main.rs"

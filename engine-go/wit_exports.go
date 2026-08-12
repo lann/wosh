@@ -43,6 +43,63 @@ func wasm_export_irsh_ssh_engine_ssh_method_session_authenticate(arg0 uintptr, a
 
 }
 
+//go:wasmexport irsh:ssh-engine/ssh#[method]session.authenticate-publickey
+func wasm_export_irsh_ssh_engine_ssh_method_session_authenticate_publickey(arg0 uintptr, arg1 uintptr, arg2 uint32) {
+
+	value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	(export_irsh_ssh_engine_ssh.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePublickey(value)
+
+}
+
+//go:wasmexport irsh:ssh-engine/ssh#[method]session.pending-signature
+func wasm_export_irsh_ssh_engine_ssh_method_session_pending_signature(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_irsh_ssh_engine_ssh.SessionFromBorrowHandle(int32(uintptr(arg0)))).PendingSignature()
+
+	switch result.Tag() {
+	case witTypes.OptionNone:
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.OptionSome:
+		payload := result.Some()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+		data := unsafe.Pointer(unsafe.SliceData(payload))
+		pinner.Pin(data)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(data)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_irsh:ssh-engine/ssh#[method]session.pending-signature
+func wasm_export_post_return_irsh_ssh_engine_ssh_method_session_pending_signature(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport irsh:ssh-engine/ssh#[method]session.provide-signature
+func wasm_export_irsh_ssh_engine_ssh_method_session_provide_signature(arg0 uintptr, arg1 uintptr, arg2 uint32) {
+
+	value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	(export_irsh_ssh_engine_ssh.SessionFromBorrowHandle(int32(uintptr(arg0)))).ProvideSignature(value)
+
+}
+
+//go:wasmexport irsh:ssh-engine/ssh#[method]session.fail-signature
+func wasm_export_irsh_ssh_engine_ssh_method_session_fail_signature(arg0 uintptr, arg1 uintptr, arg2 uint32) {
+
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	(export_irsh_ssh_engine_ssh.SessionFromBorrowHandle(int32(uintptr(arg0)))).FailSignature(value)
+
+}
+
 //go:wasmexport irsh:ssh-engine/ssh#[method]session.feed
 func wasm_export_irsh_ssh_engine_ssh_method_session_feed(arg0 uintptr, arg1 uintptr, arg2 uint32) {
 

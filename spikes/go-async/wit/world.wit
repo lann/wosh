@@ -1,0 +1,41 @@
+package spike:goasync;
+
+/// The three measurements that decided this project's architecture.
+/// Go has no async/await, so componentize-go maps WIT async imports
+/// onto goroutines plus the Component Model callback ABI. These probes
+/// pin down exactly what that does and does not permit.
+interface probe {
+  /// (1) A SYNC-lifted export calling an async import. Expected to
+  /// TRAP: the ABI forbids a synchronously-lifted task from blocking.
+  sync-calls-async: func(ms: u64) -> string;
+
+  /// (1) The same call from an ASYNC-lifted export. Expected to work.
+  async-calls-async: async func(ms: u64) -> string;
+
+  /// (2) Park a goroutine on a Go channel, then RETURN from the
+  /// export. The sans-I/O engine design depends on this surviving.
+  park: async func();
+
+  /// (2) Resume the goroutine parked by a PREVIOUS, separate export
+  /// call.
+  release: async func(v: u64) -> string;
+
+  /// (3) An async export that never returns: it sleeps in a loop via
+  /// an async import, so its task always has a pending subtask and
+  /// the host keeps resuming it.
+  keepalive: async func();
+
+  /// (3) Spawn a background goroutine that repeatedly performs async
+  /// imports. Whether it progresses with NO export call active is the
+  /// question that decides whether a pure-Go component can own
+  /// long-lived network I/O.
+  start-bg: async func();
+
+  /// (3) How many background iterations have completed.
+  bg-count: async func() -> u64;
+}
+
+world spike {
+  import wasi:clocks/monotonic-clock@0.3.0;
+  export probe;
+}

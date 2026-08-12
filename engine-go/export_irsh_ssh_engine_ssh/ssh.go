@@ -177,6 +177,12 @@ type Session struct {
 	// engine-go for the full rationale (identical shape here).
 	password string
 	credsSet bool
+	credKind string // "password" (default) or "publickey"
+
+	// Publickey auth with an embedder-held key (see publickey.go).
+	signer     *externalSigner
+	sigRequest []byte
+	sigReply   chan sigReply
 
 	cols, rows uint16 // pty size at connect; Resize updates it live
 
@@ -224,6 +230,7 @@ func SessionConnect(user string, cols uint16, rows uint16) *Session {
 		conn:            newShuttleConn(),
 		state:           stateConnecting,
 		hostKeyDecision: make(chan bool),
+		sigReply:        make(chan sigReply, 1),
 		stdin:           &lockedBuf{},
 		cols:            cols,
 		rows:            rows,
@@ -235,15 +242,37 @@ func SessionConnect(user string, cols uint16, rows uint16) *Session {
 	go func() {
 		cfg := &ssh.ClientConfig{
 			User: user,
-			Auth: []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
-				s.mu.Lock()
-				set, pw := s.credsSet, s.password
-				s.mu.Unlock()
-				if !set {
-					return "", fmt.Errorf("host key accepted without credentials (authenticate was never called)")
-				}
-				return pw, nil
-			})},
+			Auth: []ssh.AuthMethod{
+				// Both methods are registered because x/crypto/ssh
+				// snapshots its config before the handshake begins.
+				// Each declines unless the embedder selected it, and
+				// x/crypto records a declining method's error and
+				// moves on to the next.
+				ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+					s.mu.Lock()
+					set, kind, signer := s.credsSet, s.credKind, s.signer
+					s.mu.Unlock()
+					if !set {
+						return nil, fmt.Errorf("host key accepted without credentials")
+					}
+					if kind != "publickey" || signer == nil {
+						return nil, fmt.Errorf("publickey auth not selected")
+					}
+					return []ssh.Signer{signer}, nil
+				}),
+				ssh.PasswordCallback(func() (string, error) {
+					s.mu.Lock()
+					set, kind, pw := s.credsSet, s.credKind, s.password
+					s.mu.Unlock()
+					if !set {
+						return "", fmt.Errorf("host key accepted without credentials (authenticate was never called)")
+					}
+					if kind == "publickey" {
+						return "", fmt.Errorf("password auth not selected")
+					}
+					return pw, nil
+				}),
+			},
 			HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 				sum := sha256.Sum256(key.Marshal())
 				s.mu.Lock()
@@ -350,6 +379,7 @@ func SessionConnect(user string, cols uint16, rows uint16) *Session {
 func (s *Session) Authenticate(password string) {
 	s.mu.Lock()
 	s.password = strings.Clone(password)
+	s.credKind = "password"
 	s.credsSet = true
 	s.mu.Unlock()
 }
