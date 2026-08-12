@@ -1,4 +1,4 @@
-package irsh:terminal;
+package wosh:terminal;
 
 /// What the browser SSH client builds against. `polymorph:iroh` is
 /// satisfied by `wac plug`-ing the endpoint component in;

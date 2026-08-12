@@ -1,9 +1,9 @@
-package irsh:terminal;
+package wosh:terminal;
 
 /// The browser-facing SSH terminal surface: what the static website's
 /// JS talks to (via deltic) to drive an interactive shell over the
 /// iroh tunnel. This is deliberately a thin, stable contract -- the
-/// actual SSH protocol work happens in the imported `irsh:ssh-engine`
+/// actual SSH protocol work happens in the imported `wosh:ssh-engine`
 /// Go component and the iroh dial in `polymorph:iroh`; this interface
 /// hides both behind session lifecycle + raw terminal I/O.
 interface terminal {
@@ -77,7 +77,7 @@ interface terminal {
 }
 
 world ssh-client-world {
-  import irsh:ssh-engine/ssh;
+  import wosh:ssh-engine/ssh;
   import polymorph:iroh/identity-generate@0.1.0;
   import polymorph:iroh/endpoint@0.1.0;
   export terminal;

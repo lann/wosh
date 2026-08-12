@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DIR="$(pwd)/.deps/test-sshd"
-PORT="${IRSH_SSHD_PORT:-2222}"
+PORT="${WOSH_SSHD_PORT:-2222}"
 
 ensure() {
   mkdir -p "$DIR"

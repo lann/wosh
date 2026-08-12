@@ -1,4 +1,4 @@
-// Package export_irsh_ssh_engine_ssh implements the irsh:ssh-engine/ssh
+// Package export_wosh_ssh_engine_ssh implements the wosh:ssh-engine/ssh
 // export: x/crypto/ssh (Go's well-vetted, widely production-used SSH
 // client) as a fully synchronous, sans-I/O component export. This
 // mirrors wosh's own M7 ssh engine shape almost exactly (see that
@@ -14,7 +14,7 @@
 // exec. Deliberately still v0-scoped: password auth only (see the
 // project README for why publickey-via-WebCrypto is a follow-up, not
 // implemented here) and one shell per session.
-package export_irsh_ssh_engine_ssh
+package export_wosh_ssh_engine_ssh
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	types "wit_component/irsh_ssh_engine_ssh"
+	types "wit_component/wosh_ssh_engine_ssh"
 )
 
 // gosched gives parked-but-runnable goroutines bounded scheduler

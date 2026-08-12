@@ -1,8 +1,8 @@
-//! The irsh browser SSH client glue (Rust component, wac-composed with
-//! the Go `irsh:ssh-engine` component and the polymorph-iroh
+//! The wosh browser SSH client glue (Rust component, wac-composed with
+//! the Go `wosh:ssh-engine` component and the polymorph-iroh
 //! endpoint): dials the listener over iroh using a parsed connection
 //! string, bridges bytes between that connection and the Go engine's
-//! sans-I/O session, and exports the stable `irsh:terminal` interface
+//! sans-I/O session, and exports the stable `wosh:terminal` interface
 //! the website drives via deltic.
 //!
 //! Concurrency shape (deliberate, and the reason this file is
@@ -37,16 +37,16 @@ use std::future::Future;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use bindings::exports::irsh::terminal::terminal::{Guest, GuestSession, Status};
-use bindings::irsh::ssh_engine::ssh::{Session as EngineSession, Status as EngineStatus};
+use bindings::exports::wosh::terminal::terminal::{Guest, GuestSession, Status};
+use bindings::wosh::ssh_engine::ssh::{Session as EngineSession, Status as EngineStatus};
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions};
 use bindings::polymorph::iroh::identity_generate::generate as identity_generate;
 use bindings::polymorph::iroh::types::{EndpointAddr, TransportAddr};
 
-use irsh_connstring::ConnString;
+use wosh_connstring::ConnString;
 
 /// v0 connection ALPN. Must match the listener's.
-const ALPN: &[u8] = b"irsh/1";
+const ALPN: &[u8] = b"wosh/1";
 
 fn err<E: std::fmt::Debug>(what: &str) -> impl FnOnce(E) -> String + '_ {
     move |e| format!("{what}: {e:?}")
@@ -157,7 +157,7 @@ impl GuestSession for Session {
         user: String,
         cols: u16,
         rows: u16,
-    ) -> Result<bindings::exports::irsh::terminal::terminal::Session, String> {
+    ) -> Result<bindings::exports::wosh::terminal::terminal::Session, String> {
         let parsed =
             ConnString::decode(&connstring).map_err(|e| format!("connection string: {e}"))?;
 
@@ -277,7 +277,7 @@ impl GuestSession for Session {
             });
         }
 
-        Ok(bindings::exports::irsh::terminal::terminal::Session::new(
+        Ok(bindings::exports::wosh::terminal::terminal::Session::new(
             Session {
                 inner,
                 writer_signal,

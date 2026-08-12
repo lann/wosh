@@ -7,7 +7,7 @@
 //     wasi:clocks@0.3.0
 //     wasi:sockets@0.3.0
 //     polymorph:iroh@0.1.0
-//     irsh:terminal
+//     wosh:terminal
 
 package polymorph_iroh_endpoint
 

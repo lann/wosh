@@ -1,4 +1,4 @@
-package irsh:ssh-engine;
+package wosh:ssh-engine;
 
 /// The ssh client engine: x/crypto/ssh (Go, well-vetted, real-world
 /// production use) as a fully synchronous, sans-I/O component export --

@@ -1,9 +1,9 @@
 {
-  "name": "irsh-site",
+  "name": "wosh-site",
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Static site for irsh: xterm.js in front of the SSH client component, runtime-linked by deltic. Bundle with `just web-bundle`; assemble a deployable tree with scripts/site-deploy-tree.sh.",
+  "description": "Static site for wosh: xterm.js in front of the SSH client component, runtime-linked by deltic. Bundle with `just web-bundle`; assemble a deployable tree with scripts/site-deploy-tree.sh.",
   "dependencies": {
     "@xterm/xterm": "^6.0.0",
     "@xterm/addon-fit": "^0.11.0"

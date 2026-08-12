@@ -15,7 +15,7 @@ dest="${1:?usage: scripts/site-deploy-tree.sh <dest-dir>}"
 mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons"
 
 bundle="$ROOT/site/dist/deltic.js"
-client="$ROOT/target/components/irsh-ssh-client.wasm"
+client="$ROOT/target/components/wosh-ssh-client.wasm"
 translator="$ROOT/.deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm"
 
 for f in "$bundle" "$client" "$translator"; do
@@ -37,7 +37,7 @@ else
 fi
 
 cp "$bundle"     "$dest/dist/deltic.js"
-cp "$client"     "$dest/dist/irsh-ssh-client.wasm"
+cp "$client"     "$dest/dist/wosh-ssh-client.wasm"
 cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 
 # The service worker's precache manifest is generated FROM the assembled
@@ -46,13 +46,13 @@ cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 # cache, so one deploy is one complete cache and a client can never mix
 # files from two deploys -- load-bearing, because deltic runtime-links
 # the wasm against the page bundle.
-version="${IRSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
+version="${WOSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
 files=$(cd "$dest" && find . -type f ! -name sw.js | LC_ALL=C sort | sed 's|^\./||')
 precache=$(printf '"%s",' $files)
 precache="[${precache%,}]"
-sed -e "s|__IRSH_VERSION__|$version|" -e "s|__IRSH_PRECACHE__|$precache|" site/sw.js > "$dest/sw.js"
+sed -e "s|__WOSH_VERSION__|$version|" -e "s|__WOSH_PRECACHE__|$precache|" site/sw.js > "$dest/sw.js"
 
-if grep -q '__IRSH_' "$dest/sw.js"; then
+if grep -q '__WOSH_' "$dest/sw.js"; then
   echo "sw.js still contains unreplaced placeholders" >&2
   exit 1
 fi

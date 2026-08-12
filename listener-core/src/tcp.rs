@@ -49,7 +49,7 @@ fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
 /// (the caller closes the connection without ceremony).
 pub async fn read_token_prefix(
     recv: &RecvStream,
-    expected: Option<[u8; irsh_connstring::TOKEN_LEN]>,
+    expected: Option<[u8; wosh_connstring::TOKEN_LEN]>,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut buf = Vec::new();
     while buf.is_empty() {

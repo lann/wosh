@@ -7,7 +7,7 @@
 //     wasi:clocks@0.3.0
 //     wasi:sockets@0.3.0
 //     polymorph:iroh@0.1.0
-//     irsh:terminal
+//     wosh:terminal
 
 package main
 
@@ -17,38 +17,38 @@ import (
 	witTypes "go.bytecodealliance.org/pkg/wit/types"
 	"runtime"
 	"unsafe"
-	"wit_component/export_irsh_terminal_terminal"
-	"wit_component/irsh_terminal_terminal"
+	"wit_component/export_wosh_terminal_terminal"
+	"wit_component/wosh_terminal_terminal"
 )
 
 var staticPinner = runtime.Pinner{}
 var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, 0, 1))
 var syncExportPinner = runtime.Pinner{}
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#keepalive
-func wasm_export_irsh_terminal_terminal_keepalive() int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#keepalive
+func wasm_export_wosh_terminal_terminal_keepalive() int32 {
 	return int32(witAsync.Run(func() {
 
-		export_irsh_terminal_terminal.Keepalive()
-		wasm_export_task_return_irsh_terminal_terminal_keepalive()
+		export_wosh_terminal_terminal.Keepalive()
+		wasm_export_task_return_wosh_terminal_terminal_keepalive()
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#keepalive
-func wasm_export_callback_irsh_terminal_terminal_keepalive(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#keepalive
+func wasm_export_callback_wosh_terminal_terminal_keepalive(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return]keepalive
-func wasm_export_task_return_irsh_terminal_terminal_keepalive()
+//go:wasmimport [export]wosh:terminal/terminal [task-return]keepalive
+func wasm_export_task_return_wosh_terminal_terminal_keepalive()
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#identity-openssh
-func wasm_export_irsh_terminal_terminal_identity_openssh() int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#identity-openssh
+func wasm_export_wosh_terminal_terminal_identity_openssh() int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
-		result := export_irsh_terminal_terminal.IdentityOpenssh()
+		result := export_wosh_terminal_terminal.IdentityOpenssh()
 		var option int32
 		var option1 uintptr
 		var option2 uint32
@@ -72,28 +72,28 @@ func wasm_export_irsh_terminal_terminal_identity_openssh() int32 {
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_identity_openssh(option, option1, option2)
+		wasm_export_task_return_wosh_terminal_terminal_identity_openssh(option, option1, option2)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#identity-openssh
-func wasm_export_callback_irsh_terminal_terminal_identity_openssh(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#identity-openssh
+func wasm_export_callback_wosh_terminal_terminal_identity_openssh(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return]identity-openssh
-func wasm_export_task_return_irsh_terminal_terminal_identity_openssh(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return]identity-openssh
+func wasm_export_task_return_wosh_terminal_terminal_identity_openssh(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[static]session.connect
-func wasm_export_irsh_terminal_terminal_static_session_connect(arg0 uintptr, arg1 uint32, arg2 uintptr, arg3 uint32, arg4 int32, arg5 int32) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[static]session.connect
+func wasm_export_wosh_terminal_terminal_static_session_connect(arg0 uintptr, arg1 uint32, arg2 uintptr, arg3 uint32, arg4 int32, arg5 int32) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
 		value := unsafe.String((*uint8)(unsafe.Pointer(arg0)), arg1)
 		value0 := unsafe.String((*uint8)(unsafe.Pointer(arg2)), arg3)
 		witRuntime.Unpin()
-		result := export_irsh_terminal_terminal.SessionConnect(value, value0, uint16(arg4), uint16(arg5))
+		result := export_wosh_terminal_terminal.SessionConnect(value, value0, uint16(arg4), uint16(arg5))
 		var option int32
 		var option1 uintptr
 		var option2 uint32
@@ -115,54 +115,54 @@ func wasm_export_irsh_terminal_terminal_static_session_connect(arg0 uintptr, arg
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_static_session_connect(option, option1, option2)
+		wasm_export_task_return_wosh_terminal_terminal_static_session_connect(option, option1, option2)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[static]session.connect
-func wasm_export_callback_irsh_terminal_terminal_static_session_connect(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[static]session.connect
+func wasm_export_callback_wosh_terminal_terminal_static_session_connect(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][static]session.connect
-func wasm_export_task_return_irsh_terminal_terminal_static_session_connect(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][static]session.connect
+func wasm_export_task_return_wosh_terminal_terminal_static_session_connect(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.status
-func wasm_export_irsh_terminal_terminal_method_session_status(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.status
+func wasm_export_wosh_terminal_terminal_method_session_status(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Status()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Status()
 		var variant int32
 		var variant0 uintptr
 		var variant1 uint32
 		switch result.Tag() {
-		case irsh_terminal_terminal.StatusConnecting:
+		case wosh_terminal_terminal.StatusConnecting:
 
 			variant = int32(0)
 			variant0 = 0
 			variant1 = 0
 
-		case irsh_terminal_terminal.StatusHostKeyCheck:
+		case wosh_terminal_terminal.StatusHostKeyCheck:
 
 			variant = int32(1)
 			variant0 = 0
 			variant1 = 0
 
-		case irsh_terminal_terminal.StatusAuthenticating:
+		case wosh_terminal_terminal.StatusAuthenticating:
 
 			variant = int32(2)
 			variant0 = 0
 			variant1 = 0
 
-		case irsh_terminal_terminal.StatusReady:
+		case wosh_terminal_terminal.StatusReady:
 
 			variant = int32(3)
 			variant0 = 0
 			variant1 = 0
 
-		case irsh_terminal_terminal.StatusClosed:
+		case wosh_terminal_terminal.StatusClosed:
 			payload := result.Closed()
 			utf8 := unsafe.Pointer(unsafe.StringData(payload))
 			pinner.Pin(utf8)
@@ -174,25 +174,25 @@ func wasm_export_irsh_terminal_terminal_method_session_status(arg0 uintptr) int3
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_status(variant, variant0, variant1)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_status(variant, variant0, variant1)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.status
-func wasm_export_callback_irsh_terminal_terminal_method_session_status(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.status
+func wasm_export_callback_wosh_terminal_terminal_method_session_status(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.status
-func wasm_export_task_return_irsh_terminal_terminal_method_session_status(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.status
+func wasm_export_task_return_wosh_terminal_terminal_method_session_status(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.host-key-fingerprint
-func wasm_export_irsh_terminal_terminal_method_session_host_key_fingerprint(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.host-key-fingerprint
+func wasm_export_wosh_terminal_terminal_method_session_host_key_fingerprint(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).HostKeyFingerprint()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).HostKeyFingerprint()
 		var option int32
 		var option0 uintptr
 		var option1 uint32
@@ -213,45 +213,45 @@ func wasm_export_irsh_terminal_terminal_method_session_host_key_fingerprint(arg0
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_host_key_fingerprint(option, option0, option1)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_host_key_fingerprint(option, option0, option1)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.host-key-fingerprint
-func wasm_export_callback_irsh_terminal_terminal_method_session_host_key_fingerprint(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.host-key-fingerprint
+func wasm_export_callback_wosh_terminal_terminal_method_session_host_key_fingerprint(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.host-key-fingerprint
-func wasm_export_task_return_irsh_terminal_terminal_method_session_host_key_fingerprint(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.host-key-fingerprint
+func wasm_export_task_return_wosh_terminal_terminal_method_session_host_key_fingerprint(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.confirm-host-key
-func wasm_export_irsh_terminal_terminal_method_session_confirm_host_key(arg0 uintptr, arg1 int32) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.confirm-host-key
+func wasm_export_wosh_terminal_terminal_method_session_confirm_host_key(arg0 uintptr, arg1 int32) int32 {
 	return int32(witAsync.Run(func() {
 
-		(export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).ConfirmHostKey((arg1 != 0))
-		wasm_export_task_return_irsh_terminal_terminal_method_session_confirm_host_key()
+		(export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).ConfirmHostKey((arg1 != 0))
+		wasm_export_task_return_wosh_terminal_terminal_method_session_confirm_host_key()
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.confirm-host-key
-func wasm_export_callback_irsh_terminal_terminal_method_session_confirm_host_key(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.confirm-host-key
+func wasm_export_callback_wosh_terminal_terminal_method_session_confirm_host_key(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.confirm-host-key
-func wasm_export_task_return_irsh_terminal_terminal_method_session_confirm_host_key()
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.confirm-host-key
+func wasm_export_task_return_wosh_terminal_terminal_method_session_confirm_host_key()
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.authenticate-password
-func wasm_export_irsh_terminal_terminal_method_session_authenticate_password(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.authenticate-password
+func wasm_export_wosh_terminal_terminal_method_session_authenticate_password(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
 		value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
 		witRuntime.Unpin()
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePassword(value)
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePassword(value)
 		var option int32
 		var option0 uintptr
 		var option1 uint32
@@ -272,25 +272,25 @@ func wasm_export_irsh_terminal_terminal_method_session_authenticate_password(arg
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_authenticate_password(option, option0, option1)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_password(option, option0, option1)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.authenticate-password
-func wasm_export_callback_irsh_terminal_terminal_method_session_authenticate_password(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.authenticate-password
+func wasm_export_callback_wosh_terminal_terminal_method_session_authenticate_password(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.authenticate-password
-func wasm_export_task_return_irsh_terminal_terminal_method_session_authenticate_password(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.authenticate-password
+func wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_password(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.authenticate-publickey
-func wasm_export_irsh_terminal_terminal_method_session_authenticate_publickey(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.authenticate-publickey
+func wasm_export_wosh_terminal_terminal_method_session_authenticate_publickey(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePublickey()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePublickey()
 		var option int32
 		var option0 uintptr
 		var option1 uint32
@@ -311,107 +311,107 @@ func wasm_export_irsh_terminal_terminal_method_session_authenticate_publickey(ar
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_authenticate_publickey(option, option0, option1)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_publickey(option, option0, option1)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.authenticate-publickey
-func wasm_export_callback_irsh_terminal_terminal_method_session_authenticate_publickey(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.authenticate-publickey
+func wasm_export_callback_wosh_terminal_terminal_method_session_authenticate_publickey(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.authenticate-publickey
-func wasm_export_task_return_irsh_terminal_terminal_method_session_authenticate_publickey(arg0 int32, arg1 uintptr, arg2 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.authenticate-publickey
+func wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_publickey(arg0 int32, arg1 uintptr, arg2 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.write-input
-func wasm_export_irsh_terminal_terminal_method_session_write_input(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.write-input
+func wasm_export_wosh_terminal_terminal_method_session_write_input(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
 	return int32(witAsync.Run(func() {
 
 		value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
 		witRuntime.Unpin()
-		(export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).WriteInput(value)
-		wasm_export_task_return_irsh_terminal_terminal_method_session_write_input()
+		(export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).WriteInput(value)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_write_input()
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.write-input
-func wasm_export_callback_irsh_terminal_terminal_method_session_write_input(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.write-input
+func wasm_export_callback_wosh_terminal_terminal_method_session_write_input(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.write-input
-func wasm_export_task_return_irsh_terminal_terminal_method_session_write_input()
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.write-input
+func wasm_export_task_return_wosh_terminal_terminal_method_session_write_input()
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.resize
-func wasm_export_irsh_terminal_terminal_method_session_resize(arg0 uintptr, arg1 int32, arg2 int32) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.resize
+func wasm_export_wosh_terminal_terminal_method_session_resize(arg0 uintptr, arg1 int32, arg2 int32) int32 {
 	return int32(witAsync.Run(func() {
 
-		(export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Resize(uint16(arg1), uint16(arg2))
-		wasm_export_task_return_irsh_terminal_terminal_method_session_resize()
+		(export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Resize(uint16(arg1), uint16(arg2))
+		wasm_export_task_return_wosh_terminal_terminal_method_session_resize()
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.resize
-func wasm_export_callback_irsh_terminal_terminal_method_session_resize(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.resize
+func wasm_export_callback_wosh_terminal_terminal_method_session_resize(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.resize
-func wasm_export_task_return_irsh_terminal_terminal_method_session_resize()
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.resize
+func wasm_export_task_return_wosh_terminal_terminal_method_session_resize()
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.drain-output
-func wasm_export_irsh_terminal_terminal_method_session_drain_output(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.drain-output
+func wasm_export_wosh_terminal_terminal_method_session_drain_output(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 		pinner := &runtime.Pinner{}
 		defer pinner.Unpin()
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).DrainOutput()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).DrainOutput()
 		data := unsafe.Pointer(unsafe.SliceData(result))
 		pinner.Pin(data)
-		wasm_export_task_return_irsh_terminal_terminal_method_session_drain_output(uintptr(data), uint32(len(result)))
+		wasm_export_task_return_wosh_terminal_terminal_method_session_drain_output(uintptr(data), uint32(len(result)))
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.drain-output
-func wasm_export_callback_irsh_terminal_terminal_method_session_drain_output(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.drain-output
+func wasm_export_callback_wosh_terminal_terminal_method_session_drain_output(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.drain-output
-func wasm_export_task_return_irsh_terminal_terminal_method_session_drain_output(arg0 uintptr, arg1 uint32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.drain-output
+func wasm_export_task_return_wosh_terminal_terminal_method_session_drain_output(arg0 uintptr, arg1 uint32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.exited
-func wasm_export_irsh_terminal_terminal_method_session_exited(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.exited
+func wasm_export_wosh_terminal_terminal_method_session_exited(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Exited()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Exited()
 		var result0 int32
 		if result {
 			result0 = 1
 		} else {
 			result0 = 0
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_exited(result0)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_exited(result0)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.exited
-func wasm_export_callback_irsh_terminal_terminal_method_session_exited(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.exited
+func wasm_export_callback_wosh_terminal_terminal_method_session_exited(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.exited
-func wasm_export_task_return_irsh_terminal_terminal_method_session_exited(arg0 int32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.exited
+func wasm_export_task_return_wosh_terminal_terminal_method_session_exited(arg0 int32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.exit-status
-func wasm_export_irsh_terminal_terminal_method_session_exit_status(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.exit-status
+func wasm_export_wosh_terminal_terminal_method_session_exit_status(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 
-		result := (export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).ExitStatus()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).ExitStatus()
 		var option int32
 		var option0 int32
 		switch result.Tag() {
@@ -427,36 +427,36 @@ func wasm_export_irsh_terminal_terminal_method_session_exit_status(arg0 uintptr)
 		default:
 			panic("unreachable")
 		}
-		wasm_export_task_return_irsh_terminal_terminal_method_session_exit_status(option, option0)
+		wasm_export_task_return_wosh_terminal_terminal_method_session_exit_status(option, option0)
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.exit-status
-func wasm_export_callback_irsh_terminal_terminal_method_session_exit_status(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.exit-status
+func wasm_export_callback_wosh_terminal_terminal_method_session_exit_status(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.exit-status
-func wasm_export_task_return_irsh_terminal_terminal_method_session_exit_status(arg0 int32, arg1 int32)
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.exit-status
+func wasm_export_task_return_wosh_terminal_terminal_method_session_exit_status(arg0 int32, arg1 int32)
 
-//go:wasmexport [async-lift]irsh:terminal/terminal#[method]session.detach
-func wasm_export_irsh_terminal_terminal_method_session_detach(arg0 uintptr) int32 {
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.detach
+func wasm_export_wosh_terminal_terminal_method_session_detach(arg0 uintptr) int32 {
 	return int32(witAsync.Run(func() {
 
-		(export_irsh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Detach()
-		wasm_export_task_return_irsh_terminal_terminal_method_session_detach()
+		(export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).Detach()
+		wasm_export_task_return_wosh_terminal_terminal_method_session_detach()
 
 	}))
 }
 
-//go:wasmexport [callback][async-lift]irsh:terminal/terminal#[method]session.detach
-func wasm_export_callback_irsh_terminal_terminal_method_session_detach(event0 uint32, event1 uint32, event2 uint32) uint32 {
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.detach
+func wasm_export_callback_wosh_terminal_terminal_method_session_detach(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	return witAsync.Callback(event0, event1, event2)
 }
 
-//go:wasmimport [export]irsh:terminal/terminal [task-return][method]session.detach
-func wasm_export_task_return_irsh_terminal_terminal_method_session_detach()
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.detach
+func wasm_export_task_return_wosh_terminal_terminal_method_session_detach()
 
 // Unused, but present to make the compiler happy
 func main() {}

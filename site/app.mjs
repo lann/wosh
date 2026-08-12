@@ -1,10 +1,10 @@
-// irsh browser client: xterm.js in front of the SSH client component,
+// wosh browser client: xterm.js in front of the SSH client component,
 // runtime-linked by deltic (./dist/deltic.js, built by `just web-bundle`).
 //
 // The page is deliberately thin. Everything protocol-shaped -- parsing
 // the connection string, dialing iroh, the SSH transport, the host-key
 // gate, authentication, the pty -- lives inside the component behind
-// `irsh:terminal`. The page feeds keystrokes, paints output, reports
+// `wosh:terminal`. The page feeds keystrokes, paints output, reports
 // resizes, and renders the two decisions a human has to make: whether
 // the host key is the expected one, and which credential to offer.
 //
@@ -18,7 +18,7 @@ import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
   translator: "./dist/deltic-translator-shim.wasm",
-  client: "./dist/irsh-ssh-client.wasm",
+  client: "./dist/wosh-ssh-client.wasm",
 };
 
 const statusEl = () => document.getElementById("status");
@@ -27,11 +27,11 @@ const status = (msg) => {
 };
 
 // Test hook, also the single place a failure is recorded.
-window.__irsh = { failure: null, paintStats: null };
+window.__wosh = { failure: null, paintStats: null };
 
 const fatal = (msg) => {
   status(`FAILED: ${msg}`);
-  window.__irsh.failure = String(msg);
+  window.__wosh.failure = String(msg);
   throw new Error(msg);
 };
 
@@ -69,7 +69,7 @@ let chunks = [];
 let rafId = null;
 let flushTimer = null;
 const paintStats = { peak: 0, flushes: 0, timerFlushes: 0 };
-window.__irsh.paintStats = paintStats;
+window.__wosh.paintStats = paintStats;
 
 const flush = (viaTimer = false) => {
   if (rafId !== null) cancelAnimationFrame(rafId);
@@ -165,7 +165,7 @@ const wireInput = (session, fail) => {
   wired?.resize.dispose();
   wired = {
     data: term.onData((s) => {
-      if (currentSession !== session || window.__irsh.failure) return;
+      if (currentSession !== session || window.__wosh.failure) return;
       // transformInput applies mobile.mjs's sticky Ctrl/Alt (identity
       // unless armed).
       session

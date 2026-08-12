@@ -1,13 +1,13 @@
 [package]
-name = "irsh-connstring"
+name = "wosh-connstring"
 version = "0.1.0"
 edition = "2021"
-description = "The irsh pairing connection string: iroh pubkey + relay URL + optional token, as one base64url blob."
+description = "The wosh pairing connection string: iroh pubkey + relay URL + optional token, as one base64url blob."
 publish = false
 
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 [lib]
-name = "irsh_connstring"
+name = "wosh_connstring"
 path = "src/lib.rs"

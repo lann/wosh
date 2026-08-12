@@ -18,7 +18,7 @@ setup:
 
 # The wasi:cli@0.3.1 listener component.
 listener-core:
-    cargo build --target wasm32-wasip2 --release -p irsh-listener-core
+    cargo build --target wasm32-wasip2 --release -p wosh-listener-core
 
 # The browser SSH client: x/crypto/ssh over iroh, one Go component.
 client:
@@ -27,14 +27,14 @@ client:
 # Fuse each component with the polymorph-iroh endpoint.
 compose: listener-core client
     mkdir -p target/components
-    wac plug target/wasm32-wasip2/release/irsh_listener_core.wasm \
-        --plug {{ENDPOINT}} -o target/components/irsh-listener.wasm
+    wac plug target/wasm32-wasip2/release/wosh_listener_core.wasm \
+        --plug {{ENDPOINT}} -o target/components/wosh-listener.wasm
     wac plug client-go/main.wasm --plug {{ENDPOINT}} \
-        -o target/components/irsh-ssh-client.wasm
+        -o target/components/wosh-ssh-client.wasm
 
 # Native hosts.
 hosts:
-    cargo build --release -p irsh-listener-host
+    cargo build --release -p wosh-listener-host
 
 build: compose hosts
 
@@ -47,7 +47,7 @@ relay:
 # Run the listener. Extra args pass through, e.g.
 #   just listener --target 127.0.0.1:22 --no-token
 listener *args: build
-    target/release/irsh-listener --relay "${RELAY_URL:-http://127.0.0.1:3340}" {{args}}
+    target/release/wosh-listener --relay "${RELAY_URL:-http://127.0.0.1:3340}" {{args}}
 
 # --- the static site --------------------------------------------------
 
@@ -77,15 +77,15 @@ serve out="out": (site out)
 
 # The connection-string format (shared by both ends).
 test-connstring:
-    cargo test -p irsh-connstring
+    cargo test -p wosh-connstring
 
 # The three componentize-go async measurements behind this design; see
 # README "Findings". The lifting probe is two direct wasmtime invokes
 # because the first is expected to trap.
 spike-async:
     cd spikes/go-async && componentize-go build
-    cargo build --release -p irsh-spike-go-async-host
-    target/release/irsh-spike-go-async-host spikes/go-async/main.wasm all
+    cargo build --release -p wosh-spike-go-async-host
+    target/release/wosh-spike-go-async-host spikes/go-async/main.wasm all
     @echo "--- lifting: a SYNC export calling an async import must TRAP ---"
     @! wasmtime run -W component-model-async=y --invoke 'sync-calls-async(50)' \
         spikes/go-async/main.wasm 2>&1 | grep -q 'unreachable' \
@@ -104,17 +104,17 @@ spike-async:
 e2e: compose
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -p irsh-smoke-test
+    cargo build --release -p wosh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'irsh-listene[r]' 2>/dev/null || true
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
     sleep 1
-    target/release/irsh-listener --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/irsh-e2e-listener.log 2>&1 &
+    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-listener.log 2>&1 &
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/irsh-e2e-listener.log | cut -d" " -f2)
-    target/release/irsh-smoke-test \
-        --component target/components/irsh-ssh-client.wasm \
+    cs=$(grep '^connstring: ' /tmp/wosh-e2e-listener.log | cut -d" " -f2)
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"

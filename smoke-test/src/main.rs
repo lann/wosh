@@ -4,7 +4,7 @@
 //! WebCrypto key the component mints for itself.
 //!
 //! Everything the browser would do, minus the browser: the same
-//! composed artifact, the same `irsh:terminal` interface, the same
+//! composed artifact, the same `wosh:terminal` interface, the same
 //! polymorph host implementations. What a browser adds on top is
 //! deltic and xterm.js, not different component behaviour.
 
@@ -28,7 +28,7 @@ mod bindings {
     });
 }
 
-use bindings::exports::irsh::terminal::terminal::Status;
+use bindings::exports::wosh::terminal::terminal::Status;
 
 struct Ctx {
     wasi: WasiCtx,
@@ -73,7 +73,7 @@ struct Args {
 
 fn parse_args() -> Result<Args> {
     let mut a = Args {
-        component: PathBuf::from("target/components/irsh-ssh-client.wasm"),
+        component: PathBuf::from("target/components/wosh-ssh-client.wasm"),
         connstring: String::new(),
         user: std::env::var("USER").unwrap_or_else(|_| "root".into()),
         authorized_keys: PathBuf::new(),
@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
 
     let outcome = store
         .run_concurrent(async move |acc| -> Result<()> {
-            let iface = client.irsh_terminal_terminal();
+            let iface = client.wosh_terminal_terminal();
             let session = iface.session();
 
             // The keepalive task holds the guest's async runtime open;
@@ -223,7 +223,7 @@ async fn main() -> Result<()> {
             println!("[4] authenticated (signature produced by the WebCrypto key); shell is up");
 
             // --- 5. interactive shell -----------------------------
-            let marker = "IRSH_E2E_OK";
+            let marker = "WOSH_E2E_OK";
             session
                 .call_write_input(acc, s, format!("echo {marker}\n").into_bytes())
                 .await?;

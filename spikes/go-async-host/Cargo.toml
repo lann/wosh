@@ -1,5 +1,5 @@
 [package]
-name = "irsh-spike-go-async-host"
+name = "wosh-spike-go-async-host"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -13,5 +13,5 @@ wasmtime-wasi = { version = "47", features = ["p3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [[bin]]
-name = "irsh-spike-go-async-host"
+name = "wosh-spike-go-async-host"
 path = "src/main.rs"

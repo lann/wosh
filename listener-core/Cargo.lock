@@ -144,18 +144,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "irsh-connstring"
+name = "wosh-connstring"
 version = "0.1.0"
 dependencies = [
  "base64",
 ]
 
 [[package]]
-name = "irsh-listener-core"
+name = "wosh-listener-core"
 version = "0.1.0"
 dependencies = [
  "getrandom",
- "irsh-connstring",
+ "wosh-connstring",
  "qrcode",
  "wit-bindgen",
 ]

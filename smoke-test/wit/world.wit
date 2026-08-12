@@ -1,4 +1,4 @@
-package irsh:terminal;
+package wosh:terminal;
 
 /// The composed browser-client artifact as a NATIVE host sees it:
 /// `wac plug` has already fused the iroh endpoint in, so only the

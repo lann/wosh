@@ -1,6 +1,6 @@
 package polymorph:iroh@0.1.0;
 
-/// Trimmed vendor copy for irsh-listener-core: only the interfaces
+/// Trimmed vendor copy for wosh-listener-core: only the interfaces
 /// this component actually imports (`identity-generate`, `endpoint`).
 /// The full upstream package (vendored unabridged for ssh-client-core
 /// and engine-go, which don't also pull in wasi:cli@0.3.1) also

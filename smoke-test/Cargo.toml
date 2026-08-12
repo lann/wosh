@@ -1,5 +1,5 @@
 [package]
-name = "irsh-smoke-test"
+name = "wosh-smoke-test"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -16,5 +16,5 @@ polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/
 wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "a3b7fb1d0231c110b0bebb493276d23308642537" }
 
 [[bin]]
-name = "irsh-smoke-test"
+name = "wosh-smoke-test"
 path = "src/main.rs"

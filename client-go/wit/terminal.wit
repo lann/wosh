@@ -1,4 +1,4 @@
-package irsh:terminal;
+package wosh:terminal;
 
 /// The browser-facing SSH terminal surface: what the static site drives
 /// (through deltic) to run an interactive shell over the iroh tunnel.
@@ -55,7 +55,7 @@ interface terminal {
   keepalive: async func();
 
   /// This browser's SSH identity, as an OpenSSH `authorized_keys` line
-  /// (`ssh-ed25519 AAAA... irsh-browser`).
+  /// (`ssh-ed25519 AAAA... wosh-browser`).
   ///
   /// The key pair is minted through `polymorph:webcrypto` and the
   /// private half is created NON-EXTRACTABLE: this component can ask

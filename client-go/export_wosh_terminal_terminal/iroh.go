@@ -1,4 +1,4 @@
-package export_irsh_terminal_terminal
+package export_wosh_terminal_terminal
 
 import (
 	"encoding/base64"
@@ -15,7 +15,7 @@ import (
 )
 
 // alpn must match the listener's.
-const alpn = "irsh/1"
+const alpn = "wosh/1"
 
 // These mirror the `connstring` Rust crate the listener uses to PRODUCE
 // these strings. The format is deliberately tiny and versioned, so a
@@ -172,7 +172,7 @@ func (c *irohConn) Write(p []byte) (int, error) {
 
 func (c *irohConn) Close() error {
 	c.closeOnce.Do(func() {
-		c.conn.Close(0, "irsh session over")
+		c.conn.Close(0, "wosh session over")
 		// Close-then-await: a bare close races the CONNECTION_CLOSE
 		// frame reaching the wire, and the peer would then only learn
 		// of the close via idle timeout.
@@ -184,7 +184,7 @@ func (c *irohConn) Close() error {
 type irohAddr struct{}
 
 func (irohAddr) Network() string { return "iroh" }
-func (irohAddr) String() string  { return "irsh-tunnel" }
+func (irohAddr) String() string  { return "wosh-tunnel" }
 
 func (c *irohConn) LocalAddr() net.Addr  { return irohAddr{} }
 func (c *irohConn) RemoteAddr() net.Addr { return irohAddr{} }
