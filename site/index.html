@@ -8,7 +8,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
   <meta name="theme-color" content="#000000" />
   <title>irsh</title>
-  <link rel="icon" href="data:," />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
     html, body { height: 100%; margin: 0; background: #000; }
@@ -76,6 +78,13 @@
     import { connect } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
     window.__irshBoot = await initBoot(document.getElementById("panel"), { onConnect: connect });
+    // PWA shell: https only. Local serving stays http, so development
+    // and the browser gate never install the worker and a stale cache
+    // can never confuse them. The deployed sw.js is version-keyed by
+    // scripts/site-deploy-tree.sh.
+    if (location.protocol === "https:" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("sw:", e));
+    }
   </script>
 </body>
 </html>

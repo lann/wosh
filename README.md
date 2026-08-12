@@ -59,9 +59,17 @@ its host-key callback returns.
 
 ```sh
 scripts/setup.sh          # pins + builds the external chain into .deps/
+just web-deps             # xterm + the browser-gate driver (once)
 just build                # both components + native hosts
-just listener --target 127.0.0.1:22
+just listener --target 127.0.0.1:22   # prints a QR code and a link
+just serve                # the site on :8080 (or `just site out/` to deploy)
 ```
+
+The listener prints a QR code and a link. Open it, confirm the
+fingerprint, and connect. Served over https the site installs as a PWA;
+over plain http (local development) the service worker deliberately
+never registers, so a stale cache cannot confuse iteration or the
+browser gate.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
@@ -171,6 +179,14 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 - `smoke-test/` — the end-to-end gate: the composed client under
   wasmtime, over real iroh, through the listener, into a real OpenSSH
   `sshd`.
+- `site/` — the static site: xterm.js in front of the client component,
+  runtime-linked in-page by deltic. Installable as a PWA: the service
+  worker precaches the tree version-keyed, which matters because the
+  tree carries ~12 MB of wasm (the component plus deltic's translator)
+  and because deltic runtime-links the component against the page
+  bundle, so a cache mixing two deploys would be incoherent.
+- `host-test/` — browser gates driven by playwright-core against the
+  real assembled site.
 - `spikes/go-async/` — the three measurements above, as runnable code.
 - `wit/` — vendored upstream WIT (polymorph-iroh, polymorph-webcrypto,
   WASI 0.3.1), plus this project's own interfaces.
@@ -192,13 +208,21 @@ Verified working:
   fingerprint matching the sshd host key — i.e. the SSH transport
   handshake completed through the tunnel.
 - All three spike measurements above.
+- The site in real headless Chromium (`just browser`): the page loads,
+  xterm mounts, deltic instantiates the composed component and runs
+  guest code in-page, and the PWA shell is coherent (manifest parsed,
+  icons resolve, service worker version-keyed with the component in its
+  precache).
 
 Not finished:
 
 - The client's auth-and-shell leg. It needs the keepalive from finding
   3 (or the sans-I/O split it currently has) wired end to end; the gate
   in `smoke-test/` drives all seven steps and currently reaches step 3.
-- The static site: xterm.js UI and the deltic host wiring.
+- Wiring the page's terminal to a live session: the site drives
+  `irsh:terminal` already, but the composed component still exposes
+  password auth only, so the panel feature-detects and hides the
+  publickey option until Component B grows it.
 - CI.
 
 ## Licence and provenance

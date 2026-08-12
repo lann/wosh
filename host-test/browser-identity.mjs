@@ -137,6 +137,51 @@ try {
     else console.log("[4] identity is well-formed and stable across calls");
   }
 
+  // 5. the PWA shell. Registration itself is https-gated on purpose --
+  //    local serving is http, so a stale worker can never confuse
+  //    development or this gate -- so assert the shipped assets are
+  //    coherent instead: a manifest the browser actually parsed, icons
+  //    that resolve, and a service worker whose placeholders were
+  //    substituted (an unreplaced one is a syntax error that would
+  //    break every deployed visit).
+  const manifest = await page.evaluate(async () => {
+    const href = document.querySelector('link[rel=manifest]')?.href;
+    if (!href) return { error: "no manifest link" };
+    const m = await (await fetch(href)).json();
+    const icons = await Promise.all(
+      (m.icons ?? []).map(async (i) => ({
+        src: i.src,
+        ok: (await fetch(new URL(i.src, href))).ok,
+      })),
+    );
+    return { name: m.name, display: m.display, start_url: m.start_url, icons };
+  });
+  if (manifest.error) {
+    fail(`manifest: ${manifest.error}`);
+  } else {
+    const bad = manifest.icons.filter((i) => !i.ok).map((i) => i.src);
+    if (bad.length) fail(`manifest icons do not resolve: ${bad.join(", ")}`);
+    else {
+      console.log(
+        `[5] manifest ok: "${manifest.name}", display=${manifest.display}, ` +
+          `${manifest.icons.length} icons resolve`,
+      );
+    }
+  }
+
+  const sw = await page.evaluate(async () => await (await fetch("./sw.js")).text());
+  if (/__IRSH_(VERSION|PRECACHE)__/.test(sw)) {
+    fail("sw.js shipped with unreplaced placeholders (would break every deployed visit)");
+  } else {
+    const version = sw.match(/const VERSION = "([^"]+)"/)?.[1];
+    const precached = (sw.match(/const PRECACHE = \[([^\]]*)\]/)?.[1] ?? "")
+      .split(",").filter(Boolean).length;
+    const hasWasm = /dist\/irsh-ssh-client\.wasm/.test(sw);
+    if (!version || !precached) fail(`sw.js looks malformed (version=${version}, ${precached} entries)`);
+    else if (!hasWasm) fail("sw.js does not precache the client component");
+    else console.log(`[6] service worker: version ${version}, ${precached} files precached (component included)`);
+  }
+
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }

@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 dest="${1:?usage: scripts/site-deploy-tree.sh <dest-dir>}"
-mkdir -p "$dest/xterm" "$dest/dist"
+mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons"
 
 bundle="$ROOT/site/dist/deltic.js"
 client="$ROOT/target/components/irsh-ssh-client.wasm"
@@ -23,6 +23,8 @@ for f in "$bundle" "$client" "$translator"; do
 done
 
 cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs "$dest/"
+cp site/manifest.json "$dest/"
+cp site/icons/*.png "$dest/icons/"
 
 # xterm ships as npm packages; copy the three files the page loads.
 XTERM="$ROOT/site/node_modules"
@@ -38,5 +40,22 @@ cp "$bundle"     "$dest/dist/deltic.js"
 cp "$client"     "$dest/dist/irsh-ssh-client.wasm"
 cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 
-echo "site tree ready: $dest"
+# The service worker's precache manifest is generated FROM the assembled
+# tree, so it cannot drift from what actually ships: a new file is
+# picked up here without anyone editing sw.js. The version keys the
+# cache, so one deploy is one complete cache and a client can never mix
+# files from two deploys -- load-bearing, because deltic runtime-links
+# the wasm against the page bundle.
+version="${IRSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
+files=$(cd "$dest" && find . -type f ! -name sw.js | LC_ALL=C sort | sed 's|^\./||')
+precache=$(printf '"%s",' $files)
+precache="[${precache%,}]"
+sed -e "s|__IRSH_VERSION__|$version|" -e "s|__IRSH_PRECACHE__|$precache|" site/sw.js > "$dest/sw.js"
+
+if grep -q '__IRSH_' "$dest/sw.js"; then
+  echo "sw.js still contains unreplaced placeholders" >&2
+  exit 1
+fi
+
+echo "site tree ready: $dest (sw version $version, $(wc -w <<<"$files") files precached)"
 echo "serve it with any static file server, e.g.:  python3 -m http.server -d $dest 8080"
