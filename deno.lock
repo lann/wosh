@@ -1,11 +1,15 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5": "0.1.0-pre.ga2f84a5",
     "jsr:@deltic/runtime@0.1.0-pre.ga67ee83": "0.1.0-pre.ga67ee83",
     "npm:node-datachannel@0.32.3": "0.32.3",
     "npm:werift@0.22.2": "0.22.2"
   },
   "jsr": {
+    "@deltic/runtime@0.1.0-pre.ga2f84a5": {
+      "integrity": "c9abb811d0c814c819924e92d57eed5f68b7bad35593edc5dcf3fc656022f4e1"
+    },
     "@deltic/runtime@0.1.0-pre.ga67ee83": {
       "integrity": "2a2b0949031747a2340dc186299e654ea9f361ae39ac6bd633019940682db4ed"
     }
@@ -579,25 +583,25 @@
   "workspace": {
     "links": {
       "jsr:@deltic/ct-runner@0.1.0": {},
-      "jsr:@deltic/protocol@0.1.0": {},
+      "jsr:@deltic/protocol@0.2.0": {},
       "jsr:@deltic/runtime@0.1.0": {},
       "jsr:@deltic/translator@0.1.0": {},
       "jsr:@deltic/wasi-shims@0.1.0": {},
       "jsr:@polymorph/webcrypto-deltic@0.0.0": {
         "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga67ee83"
+          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5"
         ]
       },
       "jsr:@polymorph/webrtc-datachannels-deltic@0.0.0": {
         "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga67ee83",
+          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5",
           "npm:node-datachannel@0.32.3",
           "npm:werift@0.22.2"
         ]
       },
       "jsr:@polymorph/websocket-deltic@0.0.0": {
         "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga67ee83"
+          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5"
         ]
       }
     }

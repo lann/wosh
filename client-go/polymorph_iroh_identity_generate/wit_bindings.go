@@ -58,12 +58,27 @@ func Generate() witTypes.Result[*polymorph_iroh_identity.Identity, polymorph_iro
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")

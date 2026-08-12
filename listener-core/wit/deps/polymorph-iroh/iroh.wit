@@ -57,6 +57,9 @@ interface types {
         closed,
         reset(u64),
         connect-failed(string),
+        timed-out(string),
+        not-supported(string),
+        in-use(string),
         invalid-argument(string),
         other(string),
     }
@@ -103,6 +106,7 @@ interface endpoint {
         alpn: func() -> list<u8>;
         state: func() -> connection-state;
         path: func() -> path-kind;
+        path-changes: func() -> stream<path-kind>;
         open-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;
         open-uni: async func() -> result<send-stream, error>;
         accept-bi: async func() -> result<tuple<send-stream, recv-stream>, error>;

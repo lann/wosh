@@ -21,15 +21,17 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # listener-host/Cargo.toml and smoke-test/Cargo.toml must match the ones
 # it checks out, since the native hosts link those crates directly.
 #
-# Short hashes: these are the revisions this project was developed and
-# verified against. Git resolves them fine; expand them to full SHAs
-# once this is running in CI.
+# Full SHAs: these are the revisions this project was developed and
+# verified against.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=0565d8b
+PIROH_PIN=b18c9d9e21d396c90163484c424d74530f66abcd
 
 # deltic is the JS component host that runs the browser client in-page.
+# The pin matches what polymorph-iroh's deltic host modules are written
+# against (their deno.jsons name jsr @deltic/*@0.1.0-pre.g<shorthash> of
+# the same commit); our root deno.json maps @deltic/* to this checkout.
 DELTIC_REPO=https://github.com/lann/deltic
-DELTIC_PIN=3402055
+DELTIC_PIN=a2f84a5e9a4ef44aaa64a8141bdea8e1103047d3
 
 # --- required tools ---------------------------------------------------
 # componentize-go installs to GOBIN, and componentize-go itself needs a
