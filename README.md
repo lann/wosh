@@ -1,7 +1,13 @@
 # irsh
 
 A real SSH session in a browser tab, tunnelled over [iroh][], reaching a
-machine that has **no inbound port open** and no public address.
+machine with **no inbound port open** and no public address.
+
+That is the point: the target sits behind NAT or a firewall, opens
+nothing, and forwards nothing. It makes an outbound connection to a
+relay and is reachable by its public key. Nothing is listening on the
+internet to be scanned, brute-forced, or caught by the next
+`sshd` CVE — and you get to it from a phone by scanning a QR code.
 
 Two WebAssembly components:
 
@@ -10,20 +16,22 @@ Two WebAssembly components:
   endpoint on a relay, prints a connection string as a link *and* a
   terminal QR code, then accepts iroh connections and byte-proxies each
   one to a configured TCP endpoint (your `sshd`).
-- **the client** (`ssh-client-core` + `engine-go`) — runs in the browser
-  under [deltic][], takes a connection string, dials the listener over
-  iroh, and speaks SSH end-to-end to the target's `sshd` over the
-  proxied stream. It drives an [xterm.js][] UI through a custom WIT
-  interface (`irsh:terminal`).
+- **the client** (`client-go`) — runs in the browser under [deltic][],
+  takes a connection string, dials the listener over iroh, and speaks
+  SSH end-to-end to the target's `sshd` over the proxied stream. It
+  drives an [xterm.js][] UI through a custom WIT interface
+  (`irsh:terminal`).
 
 The listener never sees SSH plaintext: it is a dumb pipe once the
 pairing token checks out. The SSH session is end-to-end between the
 browser and `sshd`, so the tunnel is network reachability, not a trust
-boundary you have to take on faith.
+boundary you have to take on faith — the host key you confirm is the
+real `sshd`'s, checked through the tunnel, not the listener's.
 
-**Status: the listener is complete and verified end to end. The browser
-client is partially built** — see "Where this actually is" below. This
-is experiment-grade code.
+**Status: both components work.** `just e2e` drives the whole chain into
+a real OpenSSH `sshd`, authenticated by a non-extractable WebCrypto key;
+the client is live at <https://lann.github.io/wosh/>. See "Where this
+actually is" for what remains. Experiment-grade code.
 
 ## How it fits together
 
@@ -32,9 +40,9 @@ BROWSER (deltic)                          TARGET HOST
 ┌────────────────────────────┐            ┌──────────────────────────────┐
 │ xterm.js                   │            │ irsh-listener (native shell) │
 │   ↕ irsh:terminal (WIT)    │            │   wasmtime + polymorph hosts │
-│ ssh-client-core (Rust)     │  iroh QUIC │   ┌──────────────────────────┐│
-│   ↕ irsh:ssh-engine (WIT)  │ ─────────► │   │ listener-core (wasi:cli) ││
-│ engine-go (x/crypto/ssh)   │ relay /    │   │   + polymorph-iroh       ││
+│ client-go (x/crypto/ssh    │  iroh QUIC │   ┌──────────────────────────┐│
+│   over an iroh net.Conn)   │ ─────────► │   │ listener-core (wasi:cli) ││
+│   + polymorph-iroh endpoint│ relay /    │   │   + polymorph-iroh       ││
 │   + polymorph-iroh endpoint│ webrtc     │   └──────────┬───────────────┘│
 └────────────────────────────┘            │              ▼ TCP            │
          └──────────── SSH, end to end ───────────► sshd (127.0.0.1:22)   │
@@ -250,10 +258,25 @@ can open. Pass `--qr-base` to aim at your own copy:
 `scripts/site-deploy-tree.sh <dir>` produces a tree any static host can
 serve, and the whole thing is relative-path clean.
 
-Worth being explicit about the trust this implies: the origin serving
-the client can serve *different* client code, so it is part of the
-trusted computing base for new sessions. Self-hosting the tree removes
-that dependency.
+The origin serving the client is part of the trusted computing base, as
+it is for any web application: whoever controls it controls the code
+that runs. Trust has to start somewhere — with a web client it is the
+origin, with a native client it is your package manager and whoever
+signed the binary. Neither is free.
+
+What is worth knowing is where that trust *does not* have to extend.
+The listener is not trusted: SSH runs end-to-end, so it carries
+ciphertext and the host key you confirm is the target `sshd`'s. The
+relay is not trusted: it sees QUIC packets between two keys it cannot
+read. And the target exposes nothing to the internet at all, which is
+the substantive difference from port-forwarding `sshd` and hoping.
+
+If you would rather not depend on this origin,
+`scripts/site-deploy-tree.sh <dir>` produces a tree any static host can
+serve; the whole thing is relative-path clean and needs no build at the
+far end. Note the service worker does not help here — it caches a
+version-keyed tree for offline start-up, but it will happily install the
+next deploy, so it is a startup and coherency mechanism, not a pin.
 
 ## Licence and provenance
 
