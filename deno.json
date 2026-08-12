@@ -1,26 +1,27 @@
 {
   "//": [
     "The Deno-lane + browser-bundle config for the deltic host layer (the jco replacement).",
-    "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; this file maps that specifier ONCE for the whole module graph, so `instanceof WitError` holds across every boundary.",
-    "PINS: deltic is a git reference at .deps/deltic and the polymorph modules resolve into the pinned .deps/polymorph-iroh nested checkouts — scripts/setup.sh owns both pins and builds deltic's translator shim (justfile `_translator` prints its path).",
-    "MODULE-IDENTITY, second front: the sibling packages carry their own deno.json configs whose import maps pin @deltic/* to raw.githubusercontent URLs for STANDALONE use; Deno applies a package's own config to its files, so without the URL-prefix mappings below the graph (and the browser bundle) carried MULTIPLE deltic runtimes and `instanceof WitError` broke across the webcrypto/websocket boundaries (latent unbranded-throw traps). The prefix keys collapse every sibling-pinned deltic tree onto the local checkout; deno.lock must contain NO raw deltic URLs after `deno install` — when a sibling pin bump adds a new prefix, add it here (upstream convergence note in TASK.md).",
-    "The npm mappings serve the webrtc module's bare specifiers on the Deno lane; in-browser it uses stock RTCPeerConnection (the web bundle marks them external)."
+    "MODULE-IDENTITY CONSTRAINT: deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally, and their `instanceof ComponentException` checks require ONE module instance per graph. Since polymorph-iroh#58 the whole family converges on exact-pinned JSR prereleases: every config in the graph (this file AND the sibling packages' own deno.jsons under .deps/polymorph-iroh) must name the IDENTICAL @deltic version \u2014 currently 0.1.0-pre.g078aa15, the A10 rename commit. When bumping PIROH_PIN, re-check the sibling pins and update the versions here to match (TASK.md: deltic A11 family convergence).",
+    "PINS: polymorph-iroh is a git reference at .deps/polymorph-iroh (scripts/setup.sh owns it). The LOCAL deltic checkout at .deps/deltic (DELTIC_PIN, currently a2f84a5 = g078aa15 + the A11 settlement pump) serves exactly two things: the translator-shim wasm build (translator sources identical between the two commits, so the plan-format coupling holds) and the keep-alive spike's runtime (A11 has no JSR prerelease yet; the spike rides runner/deno-local-deltic.json).",
+    "minimumDependencyAge: Deno's default supply-chain gate stays for everything else; same-day @deltic prereleases are the family's release vehicle (mirrors .deps/polymorph-iroh/host-deltic/deno.json)."
   ],
   "nodeModulesDir": "auto",
   "imports": {
-    "@deltic/runtime/embedder": "./.deps/deltic/runtime/src/embedder/mod.ts",
-    "@deltic/runtime/shim": "./.deps/deltic/runtime/src/shim/mod.ts",
-    "@deltic/wasi-shims": "./.deps/deltic/wasi-shims/src/mod.ts",
+    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0-pre.g078aa15/embedder",
+    "@deltic/runtime/shim": "jsr:@deltic/runtime@0.1.0-pre.g078aa15/shim",
+    "@deltic/wasi-shims": "jsr:@deltic/wasi-shims@0.1.0-pre.g078aa15",
     "@polymorph/webcrypto-deltic": "./.deps/polymorph-iroh/.deps/webcrypto/js/deltic/src/mod.ts",
     "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
     "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
     "@polymorph/iroh-sockets-stubs": "./.deps/polymorph-iroh/host-deltic/src/sockets.ts",
-    "https://raw.githubusercontent.com/lann/deltic/pre-10cc776/": "./.deps/deltic/",
-    "https://raw.githubusercontent.com/lann/deltic/pre-58b2404/": "./.deps/deltic/",
-    "https://raw.githubusercontent.com/lann/deltic/pre-66a6b8c/": "./.deps/deltic/",
-    "https://raw.githubusercontent.com/lann/deltic/pre-a67ee83/": "./.deps/deltic/",
     "node-datachannel": "npm:node-datachannel@0.32.3",
     "node-datachannel/polyfill": "npm:node-datachannel@0.32.3/polyfill",
     "werift": "npm:werift@0.22.2"
+  },
+  "minimumDependencyAge": {
+    "age": "P1D",
+    "exclude": [
+      "jsr:@deltic/*"
+    ]
   }
 }

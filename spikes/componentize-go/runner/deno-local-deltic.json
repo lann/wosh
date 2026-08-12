@@ -1,0 +1,18 @@
+{
+  "//": [
+    "The keep-alive spike's OWN config: maps @deltic/* onto the LOCAL checkout",
+    ".deps/deltic (DELTIC_PIN a2f84a5 = A11 settlement pump), because the",
+    "between-calls ambient-liveness probe needs A11 and no JSR prerelease",
+    "carries it yet (the family converges on 0.1.0-pre.g078aa15, A10 — see the",
+    "root deno.json). Self-contained graph: no polymorph modules, no jsr",
+    "@deltic copies, so single-instance identity holds trivially. Delete this",
+    "file (recipe moves to the root config) when the family bumps to a",
+    "post-a2f84a5 prerelease — TASK.md: deltic A11 family convergence."
+  ],
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@deltic/runtime/embedder": "../../../.deps/deltic/runtime/src/embedder/mod.ts",
+    "@deltic/runtime/shim": "../../../.deps/deltic/runtime/src/shim/mod.ts",
+    "@deltic/wasi-shims": "../../../.deps/deltic/wasi-shims/src/mod.ts"
+  }
+}

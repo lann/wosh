@@ -210,6 +210,11 @@ async fn start_proxy(opts: ProxyOpts) -> Result<ProxyProc> {
     if opts.auto_accept {
         cmd.arg("--yes");
     }
+    // Pin the tunnel's datagram ceiling to the historic loopback value:
+    // polymorph-iroh#52's per-path MTU discovery raises the localhost
+    // ceiling above mosh's largest datagrams (~1252 B), which would leave
+    // the bulk phase fragment-free and the sub-framing assertion vacuous.
+    cmd.env("WOSH_DATAGRAM_CEILING", "1162");
     if opts.wedge_shutdown {
         cmd.env("WOSH_PROXY_TEST_WEDGE_SHUTDOWN", "1");
     }

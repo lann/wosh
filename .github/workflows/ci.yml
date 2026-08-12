@@ -57,13 +57,10 @@ jobs:
       - name: Check out pinned .deps (pins live in scripts/setup.sh)
         run: |
           deltic_pin=$(sed -n 's/^DELTIC_PIN=//p' scripts/setup.sh)
-          deltic_next_pin=$(sed -n 's/^DELTIC_NEXT_PIN=//p' scripts/setup.sh)
           piroh_pin=$(sed -n 's/^PIROH_PIN=//p' scripts/setup.sh)
-          [ -n "$deltic_pin" ] && [ -n "$deltic_next_pin" ] && [ -n "$piroh_pin" ]
+          [ -n "$deltic_pin" ] && [ -n "$piroh_pin" ]
           git clone https://github.com/lann/deltic .deps/deltic
           git -C .deps/deltic checkout --quiet "$deltic_pin"
-          git clone https://github.com/lann/deltic .deps/deltic-next
-          git -C .deps/deltic-next checkout --quiet "$deltic_next_pin"
           git clone https://github.com/polymorph-components/polymorph-iroh .deps/polymorph-iroh
           git -C .deps/polymorph-iroh checkout --quiet "$piroh_pin"
 
@@ -90,7 +87,6 @@ jobs:
             host-test/passkey-e2e -> target
             host-test/ssh-e2e -> target
             .deps/deltic -> target
-            .deps/deltic-next -> target
             .deps/polymorph-iroh -> target
             .deps/polymorph-iroh/.deps/iroh -> target
 

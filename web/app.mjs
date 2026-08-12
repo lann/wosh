@@ -283,7 +283,7 @@ async function wireSession(session, { relayUrl, endpointIdHex }) {
 export async function connectIroh({ relayUrl, endpointIdHex, token }) {
   if (sessionActive) throw new Error("a session is already running in this tab");
   status(`connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
-  const { loadClient, WitError } = await import(DIST.bundle);
+  const { loadClient, ComponentException } = await import(DIST.bundle);
   const client = await loadClient(DIST.client, DIST.translator);
 
   let session;
@@ -298,7 +298,7 @@ export async function connectIroh({ relayUrl, endpointIdHex, token }) {
       term.rows,
     );
   } catch (e) {
-    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    const msg = e instanceof ComponentException ? String(e.payload) : (e.message ?? String(e));
     status(`connect failed: ${msg}`);
     throw new Error(msg);
   }
@@ -324,7 +324,7 @@ export async function connectSshIroh({
 }) {
   if (sessionActive) throw new Error("a session is already running in this tab");
   status(`ssh-connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
-  const { loadClient, WitError } = await import(DIST.bundle);
+  const { loadClient, ComponentException } = await import(DIST.bundle);
   const client = await loadClient(DIST.client, DIST.translator);
 
   let session;
@@ -342,7 +342,7 @@ export async function connectSshIroh({
       term.rows,
     );
   } catch (e) {
-    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    const msg = e instanceof ComponentException ? String(e.payload) : (e.message ?? String(e));
     status(`connect failed: ${msg}`);
     throw new Error(msg);
   }
@@ -361,9 +361,9 @@ export async function connectSshIroh({
 export async function beginSshIroh({ relayUrl, endpointIdHex, token, user }) {
   if (sessionActive) throw new Error("a session is already running in this tab");
   status(`ssh-connecting to ${endpointIdHex.slice(0, 8)}… via ${relayUrl}`);
-  const { loadClient, WitError } = await import(DIST.bundle);
+  const { loadClient, ComponentException } = await import(DIST.bundle);
   const client = await loadClient(DIST.client, DIST.translator);
-  const witMsg = (e) => (e instanceof WitError ? String(e.payload) : (e.message ?? String(e)));
+  const witMsg = (e) => (e instanceof ComponentException ? String(e.payload) : (e.message ?? String(e)));
 
   let flow;
   try {
@@ -417,7 +417,7 @@ export async function persistCurrent() {
 export async function reattachIroh({ relayUrl, endpointIdHex, token, sessionId }) {
   if (sessionActive) throw new Error("a session is already running in this tab");
   status(`reattaching session ${sessionId} on ${endpointIdHex.slice(0, 8)}…`);
-  const { loadClient, WitError } = await import(DIST.bundle);
+  const { loadClient, ComponentException } = await import(DIST.bundle);
   const { reattachSession } = await import("./passkey.mjs");
   const client = await loadClient(DIST.client, DIST.translator);
   let session, escrow;
@@ -429,7 +429,7 @@ export async function reattachIroh({ relayUrl, endpointIdHex, token, sessionId }
       term.rows,
     ));
   } catch (e) {
-    const msg = e instanceof WitError ? String(e.payload) : (e.message ?? String(e));
+    const msg = e instanceof ComponentException ? String(e.payload) : (e.message ?? String(e));
     status(`reattach failed: ${msg}`);
     throw new Error(msg);
   }

@@ -58,7 +58,7 @@ say "deno: $(deno --version | head -1)"
 # deno.json maps @deltic/* into this checkout, and the translator shim
 # (the wasm build of its wasmtime-frontend translator) is built here.
 DELTIC_REPO=https://github.com/lann/deltic
-DELTIC_PIN=a18be734a55667c8a5d371649fd125629e665a0f
+DELTIC_PIN=a2f84a5e9a4ef44aaa64a8141bdea8e1103047d3
 DELTIC_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/deltic"
 if [ ! -d "$DELTIC_DIR/.git" ]; then
   say "cloning deltic @ ${DELTIC_PIN:0:12}"
@@ -83,37 +83,6 @@ else
   echo "$DELTIC_PIN" > "$DELTIC_STAMP"
 fi
 
-# --- deltic-next (pinned): settlement-pump evaluation lane ------------------
-# A SECOND deltic checkout, ahead of the main pin, used ONLY by the
-# componentize-go keep-alive spike (finding 31 / wosh#25): deltic PR #121
-# ("settlement pump", embedder-api amendment A11) gives guests between-calls
-# liveness, which is what makes the goroutine keep-alive ticker self-driving.
-# The main pin cannot advance past deltic A10 (WitError -> ComponentException,
-# payload {tag,val} -> {kind,value}) until the pinned polymorph modules
-# migrate — see TASK.md "deltic A10/A11 convergence". When the main pin
-# advances past a2f84a5, delete this stanza and fold the spike back onto
-# DELTIC_DIR.
-DELTIC_NEXT_PIN=a2f84a5e9a4ef44aaa64a8141bdea8e1103047d3
-DELTIC_NEXT_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/deltic-next"
-if [ ! -d "$DELTIC_NEXT_DIR/.git" ]; then
-  say "cloning deltic-next @ ${DELTIC_NEXT_PIN:0:12}"
-  git clone "$DELTIC_REPO" "$DELTIC_NEXT_DIR"
-fi
-if [ "$(git -C "$DELTIC_NEXT_DIR" rev-parse HEAD)" != "$DELTIC_NEXT_PIN" ]; then
-  git -C "$DELTIC_NEXT_DIR" fetch --quiet origin
-  git -C "$DELTIC_NEXT_DIR" checkout --quiet "$DELTIC_NEXT_PIN"
-fi
-say "deltic-next: $(git -C "$DELTIC_NEXT_DIR" log --oneline -1)"
-TRANSLATOR_NEXT="$DELTIC_NEXT_DIR/target/wasm32-unknown-unknown/release/translator_shim.wasm"
-DELTIC_NEXT_STAMP="$DELTIC_NEXT_DIR/.wosh-built-at"
-if [ -f "$TRANSLATOR_NEXT" ] && [ -f "$DELTIC_NEXT_STAMP" ] && [ "$(cat "$DELTIC_NEXT_STAMP")" = "$DELTIC_NEXT_PIN" ]; then
-  say "deltic-next translator shim already built"
-else
-  say "building the deltic-next translator shim"
-  (cd "$DELTIC_NEXT_DIR" && cargo build -p translator-shim --target wasm32-unknown-unknown --release)
-  echo "$DELTIC_NEXT_PIN" > "$DELTIC_NEXT_STAMP"
-fi
-
 # --- M1 conformance harness -----------------------------------------------
 command -v mosh-server >/dev/null 2>&1 || { echo "missing: mosh-server (apt install mosh) — M1 conformance gate needs it"; exit 1; }
 say "mosh-server: $(mosh-server --version 2>&1 | head -1)"
@@ -134,7 +103,7 @@ fi
 # Post-#44: event-driven endpoint wakeups (the jco-era polling pump is
 # gone); #40 retired their jco host, #43 adopted deltic's parking kernel.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=d8fdd039f5f78daef519985d484f546845555b7a
+PIROH_PIN=6c18c780e401e17e1d3e9230db269c1d6969e6f9
 PIROH_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/polymorph-iroh"
 if [ ! -d "$PIROH_DIR/.git" ]; then
   say "cloning polymorph-iroh @ ${PIROH_PIN:0:12}"
