@@ -1,10 +1,11 @@
-// Keep-alive probes, deltic-NEXT lane (finding 31, wosh#25): the goroutine
+// Keep-alive probes, deltic lane (finding 31, wosh#25): the goroutine
 // workaround evaluated against deltic's settlement pump (deltic#121,
-// embedder-api amendment A11 — between-calls guest liveness).
+// embedder-api amendment A11 — between-calls guest liveness; in the main
+// deltic pin since a2f84a5).
 //
-// Self-contained on purpose: host-test/deltic-host.ts drags the pinned
-// polymorph host modules, which have not migrated past deltic A10 yet.
-// This graph resolves @deltic/* to .deps/deltic-next alone (deno-next.json).
+// Deliberately self-contained (no host-test/deltic-host.ts): this runner
+// needs none of the polymorph host modules, and instantiating bare keeps
+// the probe's between-calls idle window free of unrelated machinery.
 import assert from "node:assert/strict";
 import { Translator } from "@deltic/runtime/shim";
 import { instantiate } from "@deltic/runtime/embedder";

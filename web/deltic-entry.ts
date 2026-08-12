@@ -12,17 +12,17 @@
 //    fail-on-call browser profile (no UDP in a page).
 //
 // MODULE-IDENTITY: the bundle carries exactly one copy of
-// @deltic/runtime/embedder, so `instanceof WitError` holds throughout.
+// @deltic/runtime/embedder, so `instanceof ComponentException` holds throughout.
 
 import { Translator } from "@deltic/runtime/shim";
-import { instantiate, WitError } from "@deltic/runtime/embedder";
+import { ComponentException, instantiate } from "@deltic/runtime/embedder";
 import { wasiShims } from "@deltic/wasi-shims";
 import { webcryptoImports } from "@polymorph/webcrypto-deltic";
 import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 
-export { WitError };
+export { ComponentException };
 
 export const ENGINE_INTERFACE = "experiment:mosh/engine";
 export const CLIENT_INTERFACE = "experiment:mosh-client/client";

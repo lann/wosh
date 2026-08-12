@@ -387,6 +387,17 @@ async fn run_session(
     let max_size = conn
         .max_datagram_size()
         .ok_or("peer accepts no datagrams")? as usize;
+    // Test-isolation knob (m4 sub-framing): polymorph-iroh#52's per-path MTU
+    // discovery lifts the loopback ceiling above mosh's largest datagrams
+    // (~1252 B), so on localhost nothing fragments and the sub-framing
+    // machinery would go unexercised. The cap only ever LOWERS the
+    // negotiated ceiling (production paths are unaffected: the variable is
+    // unset there).
+    let max_size = std::env::var("WOSH_DATAGRAM_CEILING")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 64)
+        .map_or(max_size, |cap| cap.min(max_size));
 
     let alive = Rc::new(Cell::new(true));
     let fragmented = Rc::new(Cell::new(0u64));

@@ -4,9 +4,9 @@
 // legs — see justfile "--- composition spike (D7) ---" section).
 //
 // Every export call is Promise-shaped under deltic; result<T, string> err
-// surfaces as a WitError with a `.payload` (host-test/run-conformance.mjs
+// surfaces as a ComponentException with a `.payload` (host-test/run-conformance.mjs
 // comment, ported here).
-import { loadArtifacts, describeError, WitError } from "../../../host-test/deltic-host.ts";
+import { ComponentException, describeError, loadArtifacts } from "../../../host-test/deltic-host.ts";
 import { instantiate } from "@deltic/runtime/embedder";
 import { wasiShims } from "@deltic/wasi-shims";
 
@@ -42,7 +42,7 @@ try {
   threw = e;
 }
 if (!threw) throw new Error("bad key did not error through composition");
-const msg = threw instanceof WitError ? String(threw.payload) : describeError(threw);
+const msg = threw instanceof ComponentException ? String(threw.payload) : describeError(threw);
 if (!msg.includes("bad key")) throw new Error(`unexpected bad-key error: ${msg}`);
 
 console.log(

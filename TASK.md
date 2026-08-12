@@ -109,18 +109,21 @@ wholesale and shipped the previously A3-blocked browser leg:
   (#2), throwaway_num quench (#3); polymorph-iroh per-path datagram
   ceiling (polymorph-iroh#47) and peer close-info accessor for the
   Error-then-close race (polymorph-iroh#48).
-- **deltic A10/A11 convergence** (2026-08-12, finding 31): the main
-  deltic pin is held BEFORE A10 (`WitError`→`ComponentException`,
-  payload `{tag,val}`→`{kind,value}`) because the pinned polymorph
-  host modules construct and read the old shapes (webrtc-impl,
-  sockets stubs, websocket/webcrypto error paths). The keep-alive
-  spike rides a second checkout (`.deps/deltic-next` @ a2f84a5,
-  settlement pump / A11) until polymorph migrates upstream and the
-  main pin can jump both amendments at once; then delete the
-  deltic-next stanza (setup.sh), `deno-next.json`, and fold
-  `spike-keepalive-deltic` onto `_translator`. wosh's own A10 surface
-  (host-test/deltic-host.ts, web/deltic-entry.ts + app.mjs,
-  run-compose-deltic.mjs) migrates in the same move.
+- **deltic A11 family convergence** (2026-08-12, findings 31-32): A10
+  convergence LANDED — polymorph-iroh bumped to 6c18c78 (their #58) and
+  wosh's module graph now converges on the exact JSR prerelease the
+  sibling configs pin (`0.1.0-pre.g078aa15`, A10; root deno.json maps
+  `@deltic/*` onto it, matching upstream's convention). What remains:
+  no post-A11 prerelease exists yet (`0.1.0-pre.ga2f84a5` unpublished),
+  so the keep-alive spike still rides the LOCAL `.deps/deltic` checkout
+  (a2f84a5) via `runner/deno-local-deltic.json`, and the translator
+  shim builds from that same checkout (translator sources identical
+  across the two commits — plan-format coupling holds). When deltic
+  publishes a post-a2f84a5 prerelease and the polymorph family bumps to
+  it, update the root deno.json versions, fold the spike onto the root
+  config, and delete deno-local-deltic.json. wosh's own A10 surface
+  (deltic-host.ts, web entry/app, compose runner) migrated in the same
+  move.
 - `just m5-netem` rerun 2026-08-11: all five cells green (RTO adapts
   250→684 ms under 100 ms delay; dial survives 10% loss). Needs
   passwordless sudo for tc; measurement matrix, not a regression

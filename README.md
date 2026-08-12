@@ -997,3 +997,29 @@ below reference it as the "jco era").
     `deltic-host.ts` there). Helpers retire when upstream Go
     integrates timers with the CM event loop (golang/go#76775
     successor work); the canaries flip loudly when that lands.
+
+32. **Polymorph upgrade + deltic A10 convergence: full matrix green
+    on the JSR-prerelease model.** polymorph-iroh d8fdd03 → 6c18c78
+    (their #45–#58: A10 migration, per-path datagram ceiling #52,
+    path-changes watch #57, accept-backlog #56, recv-stream error
+    surfacing) with sibling pins (webrtc/webcrypto/websocket) riding
+    along. Two structural consequences. (1) The family's deltic
+    consumption model flipped from raw-URL pins to **exact-pinned JSR
+    prereleases**, so wosh's module-identity collapse inverted with
+    it: the root deno.json now maps `@deltic/*` to the same
+    `0.1.0-pre.g078aa15` the sibling configs name (one jsr instance
+    per graph — `instanceof ComponentException` holds), instead of
+    collapsing sibling URLs onto the git checkout; `deno bundle`
+    resolves jsr natively, so the browser bundle path is unchanged.
+    wosh's own A10 rename (`WitError`→`ComponentException`,
+    `{tag,val}`→`{kind,value}`: deltic-host, web entry/app, compose
+    runner) landed in the same move; the local checkout (a2f84a5,
+    A11) remains only for the translator-shim build and the
+    keep-alive spike (finding 31) until a post-A11 prerelease ships
+    (TASK.md). (2) polymorph-iroh#52's per-path MTU discovery raises
+    the loopback datagram ceiling above mosh's largest datagrams
+    (~1252 B), which silently emptied m4's bulk-phase sub-framing
+    assertion — restored via a test-isolation knob
+    (`WOSH_DATAGRAM_CEILING`, proxy-core; the harness pins the
+    historic 1162 B, production paths unaffected). Swept: spikes,
+    m1–m7 including m6-browser and m7-browser.

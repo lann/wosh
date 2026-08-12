@@ -10,19 +10,19 @@
 //
 // MODULE-IDENTITY CONSTRAINT: everything here and in the polymorph host
 // modules imports @deltic/runtime/embedder through the ROOT deno.json's
-// import map, so there is exactly one WitError/Stream module instance and
+// import map, so there is exactly one ComponentException/Stream module instance and
 // `instanceof` holds across every boundary.
 
 import { Translator } from "@deltic/runtime/shim";
 import type { ComponentArtifacts } from "@deltic/runtime/embedder";
-import { instantiate, WitError } from "@deltic/runtime/embedder";
+import { ComponentException, instantiate } from "@deltic/runtime/embedder";
 import { wasiShims } from "@deltic/wasi-shims";
 import { webcryptoImports } from "@polymorph/webcrypto-deltic";
 import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 
-export { WitError };
+export { ComponentException };
 
 export const ENGINE_INTERFACE = "experiment:mosh/engine";
 export const SSH_INTERFACE = "experiment:mosh/ssh";
@@ -171,10 +171,10 @@ export function deadline<T>(
 
 /** Render a rejection, unwrapping the branded WIT error payload. */
 export function describeError(err: unknown): string {
-  if (err instanceof WitError) {
-    const p = err.payload as { tag?: string; val?: unknown } | string | undefined;
-    if (typeof p === "string") return `WitError: ${p}`;
-    return `WitError ${p?.tag ?? "?"}${p?.val === undefined ? "" : `(${String(p.val)})`}`;
+  if (err instanceof ComponentException) {
+    const p = err.payload as { kind?: string; value?: unknown } | string | undefined;
+    if (typeof p === "string") return `ComponentException: ${p}`;
+    return `ComponentException ${p?.kind ?? "?"}${p?.value === undefined ? "" : `(${String(p.value)})`}`;
   }
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
