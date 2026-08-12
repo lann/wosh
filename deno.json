@@ -1,9 +1,14 @@
 {
   "//": [
     "The import map for the browser bundle. deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; mapping it ONCE here means the whole module graph shares one copy, so `instanceof WitError` holds across every boundary. Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
-    "All paths point into .deps/, which scripts/setup.sh pins and builds."
+    "All paths point into .deps/, which scripts/setup.sh pins and builds.",
+    "minimumDependencyAge keeps Deno's default supply-chain gate for everything else while letting the exactly-pinned same-day @deltic prereleases resolve (the polymorph deltic host modules name them via their own nested deno.jsons; same convention as those configs)."
   ],
   "nodeModulesDir": "auto",
+  "minimumDependencyAge": {
+    "age": "P1D",
+    "exclude": ["jsr:@deltic/*"]
+  },
   "imports": {
     "@deltic/runtime/embedder": "./.deps/deltic/runtime/src/embedder/mod.ts",
     "@deltic/runtime/shim": "./.deps/deltic/runtime/src/shim/mod.ts",

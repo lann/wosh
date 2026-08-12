@@ -31,9 +31,15 @@ type CustomAddr struct {
 }
 
 const (
-	// A relay server the peer keeps a connection open to (a URL).
+	// A relay server the peer keeps a connection open to: an
+	// `http` or `https` base URL. Use one spelling per relay —
+	// implementations normalize at most minimally (equality is
+	// implementation-defined beyond the exact string).
 	TransportAddrRelay uint8 = 0
-	// A direct socket address, `ip:port`.
+	// A direct socket address, `ip:port`: IPv4 dotted-quad or
+	// bracketed IPv6 (`[2001:db8::1]:443`); IPv6 scope-id support
+	// is implementation-defined. An entry that does not parse is
+	// ignored for dialing but preserved.
 	TransportAddrIp uint8 = 1
 	// Reachable over a WebRTC data channel, negotiated by signaling
 	// through the given relay server (a URL). Both peers must hold
@@ -168,15 +174,25 @@ const (
 	// reset code.
 	ErrorReset uint8 = 1
 	// Connection establishment failed: the relay was unreachable,
-	// the handshake failed, the peer refused every offered ALPN,
-	// or the attempt timed out.
+	// the handshake failed, or the peer refused the connection or
+	// every offered ALPN.
 	ErrorConnectFailed uint8 = 2
+	// The attempt timed out: the peer, or the relay being opened,
+	// did not answer within the deadline.
+	ErrorTimedOut uint8 = 3
+	// The deployment does not serve a capability the operation
+	// needs: a transport this host does not provide.
+	ErrorNotSupported uint8 = 4
+	// The operation conflicts with another user of the stream
+	// half: a `read` or `write` already in flight, or a
+	// `read-via-stream`/`write-via-stream` claim.
+	ErrorInUse uint8 = 5
 	// A supplied argument is invalid: an `endpoint-id` that is not
 	// 32 bytes, or a malformed relay URL. The operation had no
 	// effect.
-	ErrorInvalidArgument uint8 = 3
+	ErrorInvalidArgument uint8 = 6
 	// An implementation-specific failure.
-	ErrorOther uint8 = 4
+	ErrorOther uint8 = 7
 )
 
 // Errors surfaced by the endpoint surface. The `string` payloads
@@ -203,6 +219,24 @@ func (self Error) ConnectFailed() string {
 	}
 	return self.value.(string)
 }
+func (self Error) TimedOut() string {
+	if self.tag != ErrorTimedOut {
+		panic("tag mismatch")
+	}
+	return self.value.(string)
+}
+func (self Error) NotSupported() string {
+	if self.tag != ErrorNotSupported {
+		panic("tag mismatch")
+	}
+	return self.value.(string)
+}
+func (self Error) InUse() string {
+	if self.tag != ErrorInUse {
+		panic("tag mismatch")
+	}
+	return self.value.(string)
+}
 func (self Error) InvalidArgument() string {
 	if self.tag != ErrorInvalidArgument {
 		panic("tag mismatch")
@@ -224,6 +258,15 @@ func MakeErrorReset(value uint64) Error {
 }
 func MakeErrorConnectFailed(value string) Error {
 	return Error{ErrorConnectFailed, value}
+}
+func MakeErrorTimedOut(value string) Error {
+	return Error{ErrorTimedOut, value}
+}
+func MakeErrorNotSupported(value string) Error {
+	return Error{ErrorNotSupported, value}
+}
+func MakeErrorInUse(value string) Error {
+	return Error{ErrorInUse, value}
 }
 func MakeErrorInvalidArgument(value string) Error {
 	return Error{ErrorInvalidArgument, value}

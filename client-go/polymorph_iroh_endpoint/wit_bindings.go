@@ -21,6 +21,59 @@ import (
 	"wit_component/polymorph_iroh_types"
 )
 
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [stream-new-0][method]connection.path-changes
+func wasm_stream_new_polymorph_iroh_types_path_kind() uint64
+
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [async-lower][stream-read-0][method]connection.path-changes
+func wasm_stream_read_polymorph_iroh_types_path_kind(handle int32, item unsafe.Pointer, count uint32) uint32
+
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [async-lower][stream-write-0][method]connection.path-changes
+func wasm_stream_write_polymorph_iroh_types_path_kind(handle int32, item unsafe.Pointer, count uint32) uint32
+
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [stream-drop-readable-0][method]connection.path-changes
+func wasm_stream_drop_readable_polymorph_iroh_types_path_kind(handle int32)
+
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [stream-drop-writable-0][method]connection.path-changes
+func wasm_stream_drop_writable_polymorph_iroh_types_path_kind(handle int32)
+
+func wasm_stream_lift_polymorph_iroh_types_path_kind(src unsafe.Pointer) polymorph_iroh_types.PathKind {
+
+	return uint8(uint8(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 0))))
+}
+
+func wasm_stream_lower_polymorph_iroh_types_path_kind(
+	pinner *runtime.Pinner,
+	value polymorph_iroh_types.PathKind,
+	dst unsafe.Pointer,
+) func() {
+	*(*int8)(unsafe.Add(unsafe.Pointer(dst), 0)) = int8(int32(value))
+
+	return func() {}
+}
+
+var wasm_stream_vtable_polymorph_iroh_types_path_kind = witTypes.StreamVtable[polymorph_iroh_types.PathKind]{
+	1,
+	1,
+	wasm_stream_read_polymorph_iroh_types_path_kind,
+	wasm_stream_write_polymorph_iroh_types_path_kind,
+	nil,
+	nil,
+	wasm_stream_drop_readable_polymorph_iroh_types_path_kind,
+	wasm_stream_drop_writable_polymorph_iroh_types_path_kind,
+	wasm_stream_lift_polymorph_iroh_types_path_kind,
+	wasm_stream_lower_polymorph_iroh_types_path_kind,
+}
+
+func MakeStreamPolymorphIrohTypesPathKind() (*witTypes.StreamWriter[polymorph_iroh_types.PathKind], *witTypes.StreamReader[polymorph_iroh_types.PathKind]) {
+	pair := wasm_stream_new_polymorph_iroh_types_path_kind()
+	return witTypes.MakeStreamWriter[polymorph_iroh_types.PathKind](&wasm_stream_vtable_polymorph_iroh_types_path_kind, int32(pair>>32)),
+		witTypes.MakeStreamReader[polymorph_iroh_types.PathKind](&wasm_stream_vtable_polymorph_iroh_types_path_kind, int32(pair&0xFFFFFFFF))
+}
+
+func LiftStreamPolymorphIrohTypesPathKind(handle int32) *witTypes.StreamReader[polymorph_iroh_types.PathKind] {
+	return witTypes.MakeStreamReader[polymorph_iroh_types.PathKind](&wasm_stream_vtable_polymorph_iroh_types_path_kind, handle)
+}
+
 //go:wasmimport polymorph:iroh/endpoint@0.1.0 [stream-new-0][method]send-stream.write-via-stream
 func wasm_stream_new_u8() uint64
 
@@ -99,12 +152,27 @@ func wasm_future_lift_result_unit_polymorph_iroh_types_error(src unsafe.Pointer)
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(src), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(src), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(src), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(src), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(src), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(src), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -151,21 +219,45 @@ func wasm_future_lower_result_unit_polymorph_iroh_types_error(
 			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
 			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf8)))
 
+		case polymorph_iroh_types.ErrorTimedOut:
+			payload := payload.TimedOut()
+			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(3))
+			utf85 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf85)
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf85)))
+
+		case polymorph_iroh_types.ErrorNotSupported:
+			payload := payload.NotSupported()
+			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(4))
+			utf86 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf86)
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf86)))
+
+		case polymorph_iroh_types.ErrorInUse:
+			payload := payload.InUse()
+			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(5))
+			utf87 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf87)
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf87)))
+
 		case polymorph_iroh_types.ErrorInvalidArgument:
 			payload := payload.InvalidArgument()
-			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(3))
-			utf82 := unsafe.Pointer(unsafe.StringData(payload))
-			pinner.Pin(utf82)
+			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(6))
+			utf88 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf88)
 			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
-			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf82)))
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf88)))
 
 		case polymorph_iroh_types.ErrorOther:
 			payload := payload.Other()
-			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(4))
-			utf83 := unsafe.Pointer(unsafe.StringData(payload))
-			pinner.Pin(utf83)
+			*(*int8)(unsafe.Add(unsafe.Pointer(dst), 8)) = int8(int32(7))
+			utf89 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf89)
 			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), (16 + 1*4))) = uint32(uint32(len(payload)))
-			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf83)))
+			*(*uint32)(unsafe.Add(unsafe.Pointer(dst), 16)) = uint32(uintptr(uintptr(utf89)))
 
 		default:
 			panic("unreachable")
@@ -348,6 +440,14 @@ func ConnectionFromBorrowHandle(handleValue int32) *Connection {
 func resourceDropSendStream(handle int32)
 
 // The send half of a QUIC stream.
+//
+// One in-flight `write` (or `write-via-stream`) at a time: a
+// second concurrent call fails `error.in-use` immediately.
+// Concurrent writes would interleave at flow-control boundaries —
+// silent corruption for framed payloads — so the surface refuses
+// them. Dropping the resource without `finish` or `reset` implies
+// `reset(0)`: an abandoned stream must not leave the peer
+// waiting.
 type SendStream struct {
 	handle *witRuntime.Handle
 }
@@ -392,6 +492,13 @@ func SendStreamFromBorrowHandle(handleValue int32) *SendStream {
 func resourceDropRecvStream(handle int32)
 
 // The receive half of a QUIC stream.
+//
+// One in-flight `read` at a time: a second concurrent call fails
+// `error.in-use` immediately (concurrent reads would split the
+// byte sequence between callers). Dropping the resource before
+// the stream's end implies `stop(0)`; a stream whose end was
+// consumed, or whose bytes a `read-via-stream` owns, needs
+// nothing.
 type RecvStream struct {
 	handle *witRuntime.Handle
 }
@@ -530,12 +637,27 @@ func EndpointBind(options *EndpointOptions) witTypes.Result[*Endpoint, polymorph
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -659,11 +781,11 @@ func (self *Endpoint) Connect(addr polymorph_iroh_types.EndpointAddr, alpn []uin
 	*(*uint32)(unsafe.Add(unsafe.Pointer(unsafe.Add(unsafe.Pointer(params), (5*4))), 0)) = uint32(uintptr(uintptr(data3)))
 
 	witAsync.SubtaskWait(uint32(wasm_import_method_endpoint_connect(uintptr(params), returnArea)))
-	var result6 witTypes.Result[*Connection, polymorph_iroh_types.Error]
+	var result9 witTypes.Result[*Connection, polymorph_iroh_types.Error]
 	switch uint8(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 0))) {
 	case 0:
 
-		result6 = witTypes.Ok[*Connection, polymorph_iroh_types.Error](ConnectionFromOwnHandle(int32(uintptr(*(*int32)(unsafe.Add(unsafe.Pointer(returnArea), 8))))))
+		result9 = witTypes.Ok[*Connection, polymorph_iroh_types.Error](ConnectionFromOwnHandle(int32(uintptr(*(*int32)(unsafe.Add(unsafe.Pointer(returnArea), 8))))))
 	case 1:
 		var variant polymorph_iroh_types.Error
 		switch uint8(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 8))) {
@@ -683,23 +805,38 @@ func (self *Endpoint) Connect(addr polymorph_iroh_types.EndpointAddr, alpn []uin
 		case 3:
 			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value4)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value4)
 
 		case 4:
 			value5 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value5)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value5)
+
+		case 5:
+			value6 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value6)
+
+		case 6:
+			value7 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value7)
+
+		case 7:
+			value8 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value8)
 
 		default:
 			panic("unreachable")
 		}
 
-		result6 = witTypes.Err[*Connection, polymorph_iroh_types.Error](variant)
+		result9 = witTypes.Err[*Connection, polymorph_iroh_types.Error](variant)
 	default:
 		panic("unreachable")
 	}
 
-	return result6
+	return result9
 
 }
 
@@ -737,12 +874,27 @@ func (self *Endpoint) Accept() witTypes.Result[*Connection, polymorph_iroh_types
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -816,6 +968,16 @@ func (self *Connection) Path() polymorph_iroh_types.PathKind {
 
 }
 
+//go:wasmimport polymorph:iroh/endpoint@0.1.0 [method]connection.path-changes
+func wasm_import_method_connection_path_changes(arg0 int32) int32
+
+func (self *Connection) PathChanges() *witTypes.StreamReader[polymorph_iroh_types.PathKind] {
+
+	result := wasm_import_method_connection_path_changes((self).Handle())
+	return LiftStreamPolymorphIrohTypesPathKind(result)
+
+}
+
 //go:wasmimport polymorph:iroh/endpoint@0.1.0 [async-lower][method]connection.open-bi
 func wasm_import_method_connection_open_bi(arg0 int32, arg1 uintptr) int32
 
@@ -850,12 +1012,27 @@ func (self *Connection) OpenBi() witTypes.Result[witTypes.Tuple2[*SendStream, *R
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -904,12 +1081,27 @@ func (self *Connection) OpenUni() witTypes.Result[*SendStream, polymorph_iroh_ty
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -958,12 +1150,27 @@ func (self *Connection) AcceptBi() witTypes.Result[witTypes.Tuple2[*SendStream, 
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1012,12 +1219,27 @@ func (self *Connection) AcceptUni() witTypes.Result[*RecvStream, polymorph_iroh_
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1092,12 +1314,27 @@ func (self *Connection) SendDatagram(data []uint8) witTypes.Result[witTypes.Unit
 		case 3:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value1)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value1)
 
 		case 4:
 			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value2)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value2)
+
+		case 5:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value3)
+
+		case 6:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value4)
+
+		case 7:
+			value5 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value5)
 
 		default:
 			panic("unreachable")
@@ -1107,8 +1344,8 @@ func (self *Connection) SendDatagram(data []uint8) witTypes.Result[witTypes.Unit
 	default:
 		panic("unreachable")
 	}
-	result3 := result
-	return result3
+	result6 := result
+	return result6
 
 }
 
@@ -1147,12 +1384,27 @@ func (self *Connection) RecvDatagram() witTypes.Result[[]uint8, polymorph_iroh_t
 		case 3:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value1)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value1)
 
 		case 4:
 			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value2)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value2)
+
+		case 5:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value3)
+
+		case 6:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value4)
+
+		case 7:
+			value5 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value5)
 
 		default:
 			panic("unreachable")
@@ -1243,12 +1495,27 @@ func (self *SendStream) Write(bytes []uint8) witTypes.Result[witTypes.Unit, poly
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1296,12 +1563,27 @@ func (self *SendStream) Finish() witTypes.Result[witTypes.Unit, polymorph_iroh_t
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1311,8 +1593,8 @@ func (self *SendStream) Finish() witTypes.Result[witTypes.Unit, polymorph_iroh_t
 	default:
 		panic("unreachable")
 	}
-	result2 := result
-	return result2
+	result5 := result
+	return result5
 
 }
 
@@ -1359,12 +1641,27 @@ func (self *SendStream) WriteViaStream(data *witTypes.StreamReader[uint8]) witTy
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1425,12 +1722,27 @@ func (self *RecvStream) Read(max uint32) witTypes.Result[witTypes.Option[[]uint8
 		case 3:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value1)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value1)
 
 		case 4:
 			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value2)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value2)
+
+		case 5:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value3)
+
+		case 6:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value4)
+
+		case 7:
+			value5 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value5)
 
 		default:
 			panic("unreachable")
@@ -1487,12 +1799,27 @@ func (self *RecvStream) ReadViaStream() witTypes.Result[witTypes.Tuple2[*witType
 		case 3:
 			value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value0)
+			variant = polymorph_iroh_types.MakeErrorTimedOut(value0)
 
 		case 4:
 			value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
 
-			variant = polymorph_iroh_types.MakeErrorOther(value1)
+			variant = polymorph_iroh_types.MakeErrorNotSupported(value1)
+
+		case 5:
+			value2 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInUse(value2)
+
+		case 6:
+			value3 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorInvalidArgument(value3)
+
+		case 7:
+			value4 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 16))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (16 + 1*4))))
+
+			variant = polymorph_iroh_types.MakeErrorOther(value4)
 
 		default:
 			panic("unreachable")
@@ -1502,7 +1829,7 @@ func (self *RecvStream) ReadViaStream() witTypes.Result[witTypes.Tuple2[*witType
 	default:
 		panic("unreachable")
 	}
-	result2 := result
-	return result2
+	result5 := result
+	return result5
 
 }
