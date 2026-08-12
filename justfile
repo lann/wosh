@@ -35,7 +35,13 @@ spike-async-deltic: spike-async-build
     cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator) deno run --config ../../../deno.json --frozen -A run-async-deltic.mjs
 
 # All spike legs, in gate order.
-spikes: spike-sync-wasmtime spike-sync-deltic spike-async-wasmtime spike-async-deltic spike-compose-wasmtime spike-compose-deltic
+spikes: spike-sync-wasmtime spike-sync-deltic spike-async-wasmtime spike-async-deltic spike-keepalive-deltic spike-compose-wasmtime spike-compose-deltic
+
+# Keep-alive probes under deltic-NEXT (.deps/deltic-next, settlement pump /
+# embedder-api A11): goroutine liveness between export calls — finding 31,
+# wosh#25. Self-contained config; see runner/deno-next.json.
+spike-keepalive-deltic: spike-async-build
+    cd spikes/componentize-go/runner && DELTIC_TRANSLATOR=$(just _translator-next) deno run --config deno-next.json --no-lock -A run-keepalive-deltic.mjs
 
 # --- composition spike (D7) ----------------------------------------------
 
@@ -72,6 +78,11 @@ engine-bindings:
 _translator:
     @test -f .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm || { echo ".deps/deltic translator shim missing — run scripts/setup.sh" >&2; exit 1; }
     @realpath .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm
+
+# Same, for the deltic-NEXT evaluation lane (spike-keepalive-deltic).
+_translator-next:
+    @test -f .deps/deltic-next/target/wasm32-unknown-unknown/release/translator_shim.wasm || { echo ".deps/deltic-next translator shim missing — run scripts/setup.sh" >&2; exit 1; }
+    @realpath .deps/deltic-next/target/wasm32-unknown-unknown/release/translator_shim.wasm
 
 # Engine instantiation smoke under wasmtime (version probe).
 engine-wasmtime-smoke: engine-build

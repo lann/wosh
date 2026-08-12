@@ -109,6 +109,18 @@ wholesale and shipped the previously A3-blocked browser leg:
   (#2), throwaway_num quench (#3); polymorph-iroh per-path datagram
   ceiling (polymorph-iroh#47) and peer close-info accessor for the
   Error-then-close race (polymorph-iroh#48).
+- **deltic A10/A11 convergence** (2026-08-12, finding 31): the main
+  deltic pin is held BEFORE A10 (`WitError`→`ComponentException`,
+  payload `{tag,val}`→`{kind,value}`) because the pinned polymorph
+  host modules construct and read the old shapes (webrtc-impl,
+  sockets stubs, websocket/webcrypto error paths). The keep-alive
+  spike rides a second checkout (`.deps/deltic-next` @ a2f84a5,
+  settlement pump / A11) until polymorph migrates upstream and the
+  main pin can jump both amendments at once; then delete the
+  deltic-next stanza (setup.sh), `deno-next.json`, and fold
+  `spike-keepalive-deltic` onto `_translator`. wosh's own A10 surface
+  (host-test/deltic-host.ts, web/deltic-entry.ts + app.mjs,
+  run-compose-deltic.mjs) migrates in the same move.
 - `just m5-netem` rerun 2026-08-11: all five cells green (RTO adapts
   250→684 ms under 100 ms delay; dial survives 10% loss). Needs
   passwordless sudo for tc; measurement matrix, not a regression

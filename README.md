@@ -961,3 +961,39 @@ below reference it as the "jco era").
     export calls recycle the backing buffer (observed as auth
     failures with the correct password). Swept: full suite — m1,
     m3, m4, m5×3, m6, m6-browser, m7 (×5 runs), m7-browser.
+
+31. **Async-world goroutine liveness between export calls: SOLVED by
+    keep-alive helpers + deltic's settlement pump (`just
+    spike-keepalive-deltic`, wosh#25).** The bridge
+    (`go.bytecodealliance.org/pkg` wit/async) maps scheduler-idle to
+    EXIT when the task has no pending CM waitables — goroutines
+    blocked on Go-native primitives are invisible, hence the
+    finding-3a trap (unresolved task) and silent stranding of
+    background goroutines (resolved task). Two wait-for-based helpers
+    (`spikes/componentize-go/async/keepalive`, the PLAN risk-3
+    contingency) fix both: a per-task **Guard** (pending
+    `wasi:clocks@0.3 wait-for` loop, armed at export entry, released
+    on return) converts EXIT to WAIT — `sleep-guarded(30)` returns
+    36ms where bare `sleep-echo(10)` still traps (the canary, both
+    lanes; deltic wording: `task finished all threads without
+    resolving`) — and an eternal instance **Ticker** gives stranded
+    goroutines a periodic slice. Between-calls progress additionally
+    needs the HOST to deliver timer completions while no call is in
+    flight: deltic does since its settlement pump (deltic#121,
+    embedder-api amendment A11, pinned as `.deps/deltic-next` @
+    a2f84a5) — the ambient probe's background goroutine (spawned by
+    `spawn-bg`, task long returned) fired **50ms after spawn, on
+    schedule, during a 300ms no-calls idle window** (driver-gated
+    behaviour would read ~300ms; guest-side timestamps
+    discriminate). wasmtime lane covers the guarded probes under
+    `--invoke` (36ms, same numbers); ambient-under-wasmtime needs a
+    dwelling `run_concurrent` host (wosh#25 follow-up). The main
+    deltic pin CANNOT yet advance past a2f84a5: deltic A10 renamed
+    `WitError`→`ComponentException` and payload `{tag,val}`→
+    `{kind,value}`, which the pinned polymorph host modules construct
+    AND read — convergence tracked in TASK.md; the spike rides a
+    second checkout (`scripts/setup.sh` deltic-next stanza,
+    `deno-next.json` self-contained import map — do not import
+    `deltic-host.ts` there). Helpers retire when upstream Go
+    integrates timers with the CM event loop (golang/go#76775
+    successor work); the canaries flip loudly when that lands.

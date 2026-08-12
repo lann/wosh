@@ -83,6 +83,37 @@ else
   echo "$DELTIC_PIN" > "$DELTIC_STAMP"
 fi
 
+# --- deltic-next (pinned): settlement-pump evaluation lane ------------------
+# A SECOND deltic checkout, ahead of the main pin, used ONLY by the
+# componentize-go keep-alive spike (finding 31 / wosh#25): deltic PR #121
+# ("settlement pump", embedder-api amendment A11) gives guests between-calls
+# liveness, which is what makes the goroutine keep-alive ticker self-driving.
+# The main pin cannot advance past deltic A10 (WitError -> ComponentException,
+# payload {tag,val} -> {kind,value}) until the pinned polymorph modules
+# migrate — see TASK.md "deltic A10/A11 convergence". When the main pin
+# advances past a2f84a5, delete this stanza and fold the spike back onto
+# DELTIC_DIR.
+DELTIC_NEXT_PIN=a2f84a5e9a4ef44aaa64a8141bdea8e1103047d3
+DELTIC_NEXT_DIR="$(cd "$(dirname "$0")/.." && pwd)/.deps/deltic-next"
+if [ ! -d "$DELTIC_NEXT_DIR/.git" ]; then
+  say "cloning deltic-next @ ${DELTIC_NEXT_PIN:0:12}"
+  git clone "$DELTIC_REPO" "$DELTIC_NEXT_DIR"
+fi
+if [ "$(git -C "$DELTIC_NEXT_DIR" rev-parse HEAD)" != "$DELTIC_NEXT_PIN" ]; then
+  git -C "$DELTIC_NEXT_DIR" fetch --quiet origin
+  git -C "$DELTIC_NEXT_DIR" checkout --quiet "$DELTIC_NEXT_PIN"
+fi
+say "deltic-next: $(git -C "$DELTIC_NEXT_DIR" log --oneline -1)"
+TRANSLATOR_NEXT="$DELTIC_NEXT_DIR/target/wasm32-unknown-unknown/release/translator_shim.wasm"
+DELTIC_NEXT_STAMP="$DELTIC_NEXT_DIR/.wosh-built-at"
+if [ -f "$TRANSLATOR_NEXT" ] && [ -f "$DELTIC_NEXT_STAMP" ] && [ "$(cat "$DELTIC_NEXT_STAMP")" = "$DELTIC_NEXT_PIN" ]; then
+  say "deltic-next translator shim already built"
+else
+  say "building the deltic-next translator shim"
+  (cd "$DELTIC_NEXT_DIR" && cargo build -p translator-shim --target wasm32-unknown-unknown --release)
+  echo "$DELTIC_NEXT_PIN" > "$DELTIC_NEXT_STAMP"
+fi
+
 # --- M1 conformance harness -----------------------------------------------
 command -v mosh-server >/dev/null 2>&1 || { echo "missing: mosh-server (apt install mosh) — M1 conformance gate needs it"; exit 1; }
 say "mosh-server: $(mosh-server --version 2>&1 | head -1)"
