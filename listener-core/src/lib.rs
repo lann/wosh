@@ -22,85 +22,67 @@ use std::net::SocketAddr;
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions};
 use bindings::polymorph::iroh::identity_generate::generate as identity_generate;
 
+use clap::Parser;
 use wosh_connstring::ConnString;
 
 /// v0 connection ALPN, shared with the browser client.
 const ALPN: &[u8] = b"wosh/1";
 
+/// n0's public NA-East relay, first of the defaults baked into iroh
+/// itself (`iroh::defaults::prod`; the others are usw1-1, euc1-1,
+/// aps1-1). Spelled without iroh's trailing FQDN dot: browsers accept
+/// either, but rustls-based websocket hosts reject a trailing dot in
+/// the TLS server name, and the connstring hands this exact string to
+/// both sides.
+const DEFAULT_RELAY: &str = "https://use1-1.relay.n0.iroh.link";
+
+/// Expose a local TCP endpoint (an sshd, by default) to the browser
+/// client as a QR code / link.
+#[derive(Parser)]
+#[command(name = "wosh-listener")]
 struct Cli {
+    /// Relay URL this endpoint homes on; embedded in the connection
+    /// string, so the browser client dials the same relay
+    #[arg(long, env = "RELAY_URL", default_value = DEFAULT_RELAY)]
     relay: String,
+
+    /// ip:port each paired connection is bridged to
+    #[arg(long, default_value = "127.0.0.1:22")]
     target: SocketAddr,
-    /// `None` = open mode (no pairing token required); anyone who has
-    /// the link can connect. Default is a fresh random token.
+
+    /// Pairing token, 32 hex chars [default: freshly random]
+    #[arg(long, value_parser = parse_token, conflicts_with = "no_token")]
     token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
+
+    /// Open mode: no pairing token; anyone with the link can connect
+    #[arg(long)]
+    no_token: bool,
+
+    /// Base URL the QR/link points at (the connection string rides its
+    /// #fragment). The QR code is the whole bootstrap, so this must be
+    /// a site a phone can open; point it at your own copy to avoid
+    /// depending on the default origin
+    #[arg(long, default_value = "https://lann.github.io/wosh/#")]
     qr_base: String,
+
+    /// Print the link only, no QR code
+    #[arg(long)]
     no_qr: bool,
 }
 
-fn usage() -> String {
-    "usage: wosh-listener-core --relay <url> --target <ip:port> \
-     [--qr-base <url>] [--token <hex>] [--no-token] [--no-qr]\n\
-     \n\
-     --qr-base defaults to the deployed client at \
-     https://lann.github.io/wosh/# ; point it at your own copy to avoid \
-     depending on that origin."
-        .into()
-}
-
-fn parse_args() -> Result<Cli, String> {
-    let mut relay = None;
-    let mut target = None;
-    let mut token: Option<Option<[u8; wosh_connstring::TOKEN_LEN]>> = None; // None = unset (generate); Some(None) = --no-token
-    let mut qr_base = None;
-    let mut no_qr = false;
-
-    let mut args = std::env::args().skip(1);
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().ok_or_else(usage);
-        match flag.as_str() {
-            "--relay" => relay = Some(value()?),
-            "--target" => {
-                let v = value()?;
-                target = Some(v.parse::<SocketAddr>().map_err(|e| format!("--target {v:?}: {e}"))?);
-            }
-            "--qr-base" => qr_base = Some(value()?),
-            "--token" => {
-                let v = value()?;
-                let bytes = decode_hex(&v).ok_or_else(|| format!("--token {v:?}: not valid hex"))?;
-                if bytes.len() != wosh_connstring::TOKEN_LEN {
-                    return Err(format!(
-                        "--token must be exactly {} bytes ({} hex chars), got {}",
-                        wosh_connstring::TOKEN_LEN,
-                        wosh_connstring::TOKEN_LEN * 2,
-                        bytes.len()
-                    ));
-                }
-                let mut t = [0u8; wosh_connstring::TOKEN_LEN];
-                t.copy_from_slice(&bytes);
-                token = Some(Some(t));
-            }
-            "--no-token" => token = Some(None),
-            "--no-qr" => no_qr = true,
-            "--help" | "-h" => return Err(usage()),
-            other => return Err(format!("unknown flag {other:?}\n{}", usage())),
-        }
+fn parse_token(s: &str) -> Result<[u8; wosh_connstring::TOKEN_LEN], String> {
+    const LEN: usize = wosh_connstring::TOKEN_LEN;
+    let bytes = decode_hex(s).ok_or("not valid hex")?;
+    if bytes.len() != LEN {
+        return Err(format!(
+            "must be exactly {} hex chars ({LEN} bytes), got {} bytes",
+            LEN * 2,
+            bytes.len()
+        ));
     }
-
-    let token = match token {
-        Some(t) => t, // explicit --token or --no-token
-        None => Some(random_token()), // default: a fresh random pairing token
-    };
-
-    Ok(Cli {
-        relay: relay.ok_or_else(usage)?,
-        target: target.ok_or_else(usage)?,
-        token,
-        // The deployed client. The QR code is the whole bootstrap, so
-        // this has to point at a site a phone can actually open; use
-        // --qr-base to aim at a self-hosted copy instead.
-        qr_base: qr_base.unwrap_or_else(|| "https://lann.github.io/wosh/#".into()),
-        no_qr,
-    })
+    let mut t = [0u8; LEN];
+    t.copy_from_slice(&bytes);
+    Ok(t)
 }
 
 fn random_token() -> [u8; wosh_connstring::TOKEN_LEN] {
@@ -127,13 +109,21 @@ struct Component;
 
 impl bindings::exports::wasi::cli::run::Guest for Component {
     async fn run() -> Result<(), ()> {
-        let cli = match parse_args() {
-            Ok(c) => c,
+        let mut cli = match Cli::try_parse() {
+            Ok(cli) => cli,
             Err(e) => {
-                eprintln!("{e}");
-                return Err(());
+                // clap renders help/version/errors itself, to the
+                // right stream; --help must still exit 0.
+                let real_error = e.use_stderr();
+                let _ = e.print();
+                return if real_error { Err(()) } else { Ok(()) };
             }
         };
+        // Default: a fresh random pairing token. After this point
+        // `token: None` means exactly open mode (`--no-token`).
+        if !cli.no_token && cli.token.is_none() {
+            cli.token = Some(random_token());
+        }
         match run_listener(cli).await {
             Ok(()) => Ok(()),
             Err(e) => {

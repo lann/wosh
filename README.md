@@ -69,18 +69,18 @@ its host-key callback returns.
 scripts/setup.sh          # pins + builds the external chain into .deps/
 just web-deps             # xterm + the browser-gate driver (once)
 just build                # both components + native hosts
-just listener --target 127.0.0.1:22   # prints a QR code and a link
+just listener             # SSH to this box via the public iroh relay
 just serve                # the site on :8080 (or `just site out/` to deploy)
 ```
 
-The listener prints a QR code and a link. Open it, confirm the
-fingerprint, and connect. Served over https the site installs as a PWA;
-over plain http (local development) the service worker deliberately
-never registers, so a stale cache cannot confuse iteration or the
-browser gate.
+`just listener` exposes 127.0.0.1:22 through n0's public relay; see
+`--help` for `--relay`, `--target`, and pairing-token options.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
+Served over https the site installs as a PWA; over plain http (local
+development) the service worker deliberately never registers, so a
+stale cache cannot confuse iteration or the browser gate.
 
 ## Findings
 
