@@ -24,6 +24,27 @@ interface async-probes {
   /// SYNC export calling the async import: the suspension shape a sync
   /// engine export would need for one-off async host calls.
   wait-for-in-sync: func(ms: u64) -> u64;
+
+  /// KEEP-ALIVE PROBES (finding 31, wosh#25): wait-for-based helpers that
+  /// keep the bridge's idle decision from EXITing a task whose goroutines
+  /// block on Go-native primitives (invisible to the CM waitable set).
+
+  /// sleep-echo under a per-task guard: the guard's pending wait-for turns
+  /// idle-with-empty-pending (the finding-3a EXIT trap) into a WAIT park,
+  /// so the Go timer fires at guard-period resolution. Returns elapsed ms.
+  sleep-guarded: async func(ms: u64) -> u64;
+  /// select { never-ready, time.After(ms) } under a guard: Go-native
+  /// timeouts fire. Returns true when the timeout arm was taken.
+  select-timeout-guarded: async func(ms: u64) -> bool;
+  /// Arms the eternal instance ticker, spawns a background goroutine
+  /// (sleep ms, then record time-since-spawn), returns immediately: the
+  /// goroutine outlives this task on purpose.
+  spawn-bg: async func(ms: u64);
+  /// Milliseconds from spawn-bg to the background goroutine's timer
+  /// actually firing; 0 while it has not fired. Ambient liveness reads
+  /// ~ms (+ ticker period); driver-gated liveness reads the gap to
+  /// whatever export call finally drove the store.
+  read-marker: async func() -> u64;
 }
 
 world async-probe {

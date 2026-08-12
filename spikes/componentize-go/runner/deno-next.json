@@ -1,0 +1,18 @@
+{
+  "//": [
+    "The deltic-NEXT lane config (settlement-pump evaluation, finding 31 / wosh#25):",
+    "maps @deltic/* onto .deps/deltic-next (scripts/setup.sh stanza) so ONLY the",
+    "keep-alive spike runs ahead of the main deltic pin. The graph must stay",
+    "self-contained: do NOT import host-test/deltic-host.ts here — it drags the",
+    "pinned polymorph host modules, which have not migrated past deltic A10",
+    "(WitError -> ComponentException, payload {tag,val} -> {kind,value}) yet.",
+    "Delete this file with the setup.sh stanza when the main pin advances past",
+    "a2f84a5 (TASK.md: deltic A10/A11 convergence)."
+  ],
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@deltic/runtime/embedder": "../../../.deps/deltic-next/runtime/src/embedder/mod.ts",
+    "@deltic/runtime/shim": "../../../.deps/deltic-next/runtime/src/shim/mod.ts",
+    "@deltic/wasi-shims": "../../../.deps/deltic-next/wasi-shims/src/mod.ts"
+  }
+}

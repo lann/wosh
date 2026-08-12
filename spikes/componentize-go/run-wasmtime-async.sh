@@ -29,6 +29,18 @@ got=$(invoke 'sleep-in-sync(30)')
 [ "$got" -ge 30 ] || { echo "FAIL sleep-in-sync: $got"; exit 1; }
 echo "ok: sleep-in-sync (Go timer in sync export) -> ${got}ms"
 
+# Keep-alive probes (finding 31, wosh#25). The ambient probe (spawn-bg /
+# read-marker) is NOT observable under --invoke — one call per process, no
+# between-calls window; ambient liveness needs a dwelling host (deltic lane:
+# run-keepalive-deltic.mjs; wasmtime dwelling host = wosh#25 follow-up).
+got=$(invoke 'sleep-guarded(30)')
+[ "$got" -ge 30 ] && [ "$got" -lt 200 ] || { echo "FAIL sleep-guarded: $got"; exit 1; }
+echo "ok: sleep-guarded (guarded Go timer in async export) -> ${got}ms"
+
+got=$(invoke 'select-timeout-guarded(30)')
+[ "$got" = true ] || { echo "FAIL select-timeout-guarded: $got"; exit 1; }
+echo "ok: select-timeout-guarded (Go timeout under guard took the timeout arm)"
+
 if out=$(wasmtime run -W "$W" --invoke 'sleep-echo(10)' main.wasm 2>&1); then
   echo "sleep-echo (Go timer in async export) WORKS NOW: $out — update README findings"
 else
