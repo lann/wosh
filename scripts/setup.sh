@@ -39,16 +39,24 @@ DELTIC_PIN=3402055
 export PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH"
 
 say "checking the toolchain"
-for t in cargo rustup wasmtime wasm-tools wac go componentize-go; do
+
+# Required to BUILD the components and the site.
+for t in cargo rustup go componentize-go wac; do
   command -v "$t" >/dev/null 2>&1 || {
     echo "missing: $t" >&2
     case "$t" in
       componentize-go) echo "  go install github.com/bytecodealliance/componentize-go@latest" >&2 ;;
       wac)             echo "  cargo binstall wac-cli" >&2 ;;
-      wasm-tools)      echo "  cargo binstall wasm-tools" >&2 ;;
     esac
     exit 1
   }
+done
+
+# Needed only to RUN the gates or inspect artifacts, so a build-only
+# environment (CI publishing the site) is not blocked on them.
+for t in wasmtime wasm-tools; do
+  command -v "$t" >/dev/null 2>&1 || \
+    echo "note: $t not found -- fine for building, needed for 'just e2e'/'just spike-async'" >&2
 done
 for target in wasm32-wasip2 wasm32-unknown-unknown; do
   rustup target list --installed | grep -q "$target" || rustup target add "$target"
