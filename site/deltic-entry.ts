@@ -15,21 +15,27 @@
 // is the fail-on-call browser profile -- a page has no UDP -- which is
 // safe here only because the client never asks the endpoint to bind
 // one (see ssh-client-core: it deliberately sets no udp-bind-addr).
+// The client's own `wosh:terminal/identity-store` import is served by
+// ./identity-store.ts: the browser's persistent SSH identity, a
+// non-extractable WebCrypto pair kept in IndexedDB.
 //
 // MODULE IDENTITY: the bundle must carry exactly one copy of
-// @deltic/runtime/embedder, or `instanceof WitError` stops holding
+// @deltic/runtime/embedder, or `instanceof` / brand checks stop holding
 // across module boundaries and real errors surface as unbranded
-// throws. deno.json's import map is what guarantees that.
+// throws. deno.json's import map is what guarantees that. It is also
+// what lets identity-store.ts mint `SigningKey` instances the
+// webcrypto host module recognises as its own.
 
 import { Translator } from "@deltic/runtime/shim";
-import { instantiate, WitError } from "@deltic/runtime/embedder";
+import { ComponentException, instantiate } from "@deltic/runtime/embedder";
 import { wasiShims } from "@deltic/wasi-shims";
 import { webcryptoImports } from "@polymorph/webcrypto-deltic";
 import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
+import { identityStoreImports } from "./identity-store.ts";
 
-export { WitError };
+export { ComponentException };
 
 /** The interface the client component exports; see wit/terminal.wit. */
 export const TERMINAL_INTERFACE = "wosh:terminal/terminal";
@@ -69,6 +75,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     ...websocketImports(),
     ...webrtcImports(),
     ...socketsImports(),
+    ...identityStoreImports(),
   };
   const instance = await instantiate(artifacts, imports);
   const api = instance.exports[TERMINAL_INTERFACE];

@@ -12,8 +12,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
-use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
-use wasmtime::component::{Component, Linker, ResourceTable};
+use polymorph_webcrypto_wasmtime::{
+    WasiWebcrypto, WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView,
+};
+use wasmtime::component::{Accessor, Component, Linker, Resource, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView};
@@ -25,10 +27,23 @@ mod bindings {
         world: "composed-client",
         imports: { default: async | store | trappable },
         exports: { default: async },
+        // `identity-store` uses the signature resources, and the handles
+        // it returns must be THE SAME host resource types the webcrypto
+        // linker entries registered -- so those interfaces map onto the
+        // polymorph crate's generated bindings instead of regenerating.
+        with: {
+            "polymorph:webcrypto/types@0.1.0": polymorph_webcrypto_wasmtime::bindings::webcrypto::types,
+            "polymorph:webcrypto/signature@0.1.0": polymorph_webcrypto_wasmtime::bindings::webcrypto::signature,
+        },
     });
 }
 
 use bindings::exports::wosh::terminal::terminal::Status;
+use bindings::wosh::terminal::identity_store;
+use polymorph_webcrypto_wasmtime::bindings::webcrypto::ed25519_sign;
+use polymorph_webcrypto_wasmtime::bindings::webcrypto::signature::{
+    HostSigningKeyOptions, SigningKey, VerifyingKey,
+};
 
 struct Ctx {
     wasi: WasiCtx,
@@ -56,6 +71,36 @@ impl WasiWebcryptoView for Ctx {
 impl WasiWebsocketView for Ctx {
     fn websocket(&mut self) -> WasiWebsocketCtxView<'_> {
         WasiWebsocketCtxView { ctx: &mut self.websocket, table: &mut self.table }
+    }
+}
+
+// `wosh:terminal/identity-store`, natively: mint a fresh pair per run
+// through the SAME webcrypto host implementation the component uses for
+// everything else. No persistence -- a gate run IS one browser visit;
+// what persistence adds in a real browser (IndexedDB) is exercised by
+// the browser gate. Implemented on `WasiWebcrypto` (the polymorph
+// crate's data marker) so the accessor is already shaped for calling
+// its `generate-key`.
+impl identity_store::Host for WasiWebcryptoCtxView<'_> {}
+
+impl identity_store::HostWithStore<Ctx> for WasiWebcrypto {
+    async fn identity(
+        accessor: &Accessor<Ctx, Self>,
+    ) -> wasmtime::Result<std::result::Result<(Resource<SigningKey>, Resource<VerifyingKey>), String>>
+    {
+        // Mint-time policy, exactly as the browser host: sign granted,
+        // extractable left at its default (false).
+        let options = accessor.with(|mut access| {
+            let mut view = access.get();
+            let options = HostSigningKeyOptions::new(&mut view)?;
+            let borrow = Resource::new_borrow(options.rep());
+            HostSigningKeyOptions::can_sign(&mut view, borrow, true)?;
+            Ok::<_, wasmtime::Error>(options)
+        })?;
+        let pair = <Self as ed25519_sign::HostWithStore<Ctx>>::generate_key(accessor, options)
+            .await?
+            .map_err(|e| format!("generate ssh identity: {e:?}"));
+        Ok(pair)
     }
 }
 
@@ -115,6 +160,7 @@ async fn main() -> Result<()> {
     webrtc_host::add_to_linker(&mut linker)?;
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
+    identity_store::add_to_linker::<Ctx, WasiWebcrypto>(&mut linker, |ctx| ctx.webcrypto())?;
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_network();
