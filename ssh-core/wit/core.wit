@@ -1,0 +1,205 @@
+package wosh:ssh-core;
+
+/// The sans-I/O SSH client core: `golang.org/x/crypto/ssh` (Go,
+/// well-vetted, in wide production use) wrapped as a pure byte-and-tick
+/// machine. This component performs NO I/O and holds NO keys: the
+/// embedder (the `wosh-client` Rust component) owns the wire, the
+/// clock, the connection string, and the identity, and drives this
+/// core by feeding inbound bytes, draining outbound bytes, and
+/// answering the two park-and-poll surfaces (signatures, prompts).
+///
+/// EVERY export is a plain synchronous `func`, deliberately: this
+/// component imports nothing asynchronous, so none of componentize-go's
+/// async-lifting hazards apply -- no keepalive task, no task-exit
+/// races, no export that must not block. Internally the ssh stack runs
+/// on goroutines that park on in-memory pipes and channels; parked
+/// goroutines survive across export calls (measured, wosh M7), and
+/// every state change happens inside one of these calls. x/crypto's
+/// client path is timer-free, so the core never needs liveness the
+/// embedder didn't cause.
+///
+/// Progress contract: any call that feeds this core (`feed`,
+/// `answer-prompts`, `provide-signature`, `confirm-host-key`,
+/// `authenticate-*`, `write-input`, `resize`) may produce outbound
+/// bytes and state changes. After any such call, the embedder drains
+/// `drain` to the wire and re-reads `status`. `pump` runs scheduler
+/// rounds without new input, for the rare mid-handshake continuation
+/// that needs another tick.
+interface core {
+  /// Where the session currently stands.
+  variant status {
+    /// The transport handshake is running on fed bytes.
+    connecting,
+    /// Key exchange finished: `host-key-sha256` is readable and the
+    /// handshake is parked until `confirm-host-key` resolves it.
+    /// Nothing has been sent to the server yet -- not a password, not
+    /// even a public-key probe. That ordering is structural:
+    /// x/crypto/ssh authenticates strictly after a successful
+    /// host-key callback.
+    host-key-check,
+    /// The host key was accepted; authentication is in flight.
+    authenticating,
+    /// Authentication is parked on a signature request: read
+    /// `pending-signature`, produce the signature, call
+    /// `provide-signature` (or `fail-signature`).
+    signing,
+    /// Authentication is parked on a server-issued prompt batch: read
+    /// `pending-prompts`, collect answers, call `answer-prompts`.
+    auth-prompts,
+    /// Pty and shell are up; `write-input`/`drain-output` carry the
+    /// interactive session.
+    ready,
+    /// Terminal state: the handshake, auth, or shell failed, or the
+    /// session ended. The string is a human-readable reason.
+    closed(string),
+  }
+
+  /// One keyboard-interactive prompt: the text to display, and whether
+  /// the user's answer should be echoed as typed (`false` means mask
+  /// it, password-style).
+  record prompt {
+    text: string,
+    echo: bool,
+  }
+
+  /// One server-issued batch of prompts (RFC 4256). The server
+  /// drives: any number of batches, each with any number of prompts.
+  /// `authenticate-auto`'s password round rides the same shape as a
+  /// one-prompt masked batch.
+  record prompt-batch {
+    /// Free-text preamble to display above the prompts. Often empty;
+    /// PAM setups use it for OTP guidance and expiry warnings.
+    instruction: string,
+    prompts: list<prompt>,
+  }
+
+  resource session {
+    /// Start an SSH client session whose wire is `feed`/`drain`.
+    /// Never fails synchronously -- watch `status`. `user` is needed
+    /// up front (x/crypto/ssh snapshots its config before the
+    /// handshake) but is only ever SENT inside an auth request, which
+    /// cannot happen before the host-key gate resolves. `cols`/`rows`
+    /// size the pty requested once authenticated. The client version
+    /// banner is drainable immediately after construction.
+    connect: static func(user: string, cols: u16, rows: u16) -> session;
+
+    // --- the byte plane ------------------------------------------
+
+    /// Bytes that arrived from the wire.
+    feed: func(data: list<u8>);
+
+    /// Bytes to write to the wire: everything the ssh stack has
+    /// produced since the last drain, possibly empty. Drain after
+    /// every state-changing call (see the interface doc).
+    drain: func() -> list<u8>;
+
+    /// Signal that the wire is dead (EOF or transport error). The
+    /// session moves to `closed` with `reason` once internal
+    /// goroutines observe it; no further `feed` is expected.
+    wire-broken: func(reason: string);
+
+    /// Run scheduler rounds without feeding bytes, giving parked
+    /// goroutines a chance to advance.
+    pump: func();
+
+    // --- the control plane (park-and-poll) -----------------------
+
+    status: func() -> status;
+
+    /// The server's host key fingerprint, in the form `ssh-keygen
+    /// -lf` prints (`SHA256:...`), readable from `host-key-check`
+    /// onward.
+    host-key-sha256: func() -> option<string>;
+
+    /// The verdict on that fingerprint. Rejecting fails the handshake
+    /// with no credentials ever sent. Accepting is latched
+    /// SYNCHRONOUSLY (visible to `authenticate-*` calls the moment
+    /// this returns): the handshake proceeds once a credential is
+    /// also on offer, in whichever order the two arrive.
+    confirm-host-key: func(accept: bool);
+
+    /// Offer a password. Fails if the host key has not been confirmed
+    /// -- credentials are never sent to an unapproved server. Latches
+    /// the credential and returns; authentication runs on subsequent
+    /// `feed`/`pump` ticks, so poll `status`.
+    authenticate-password: func(password: string) -> result<_, string>;
+
+    /// Offer publickey auth for `public-key`, a raw 32-byte Ed25519
+    /// public key. The private key is deliberately NOT in this
+    /// component: when the ssh stack needs a signature it parks with
+    /// `status` = `signing`, the embedder answers via
+    /// `provide-signature`, and only the public half and the finished
+    /// signature ever cross this interface. Same host-key gating and
+    /// latch-then-poll contract as `authenticate-password`.
+    authenticate-publickey: func(public-key: list<u8>) -> result<_, string>;
+
+    /// Start keyboard-interactive auth (RFC 4256): the server drives
+    /// prompt batches; each parks the session at `auth-prompts` until
+    /// `answer-prompts`. Zero-prompt batches are answered internally
+    /// without surfacing. Same gating and latch-then-poll contract.
+    authenticate-interactive: func() -> result<_, string>;
+
+    /// Let the server steer method selection like a stock ssh client:
+    /// publickey (when `public-key` is supplied) first, then password,
+    /// then keyboard-interactive, constrained to what the server says
+    /// can continue. Signatures park at `signing`; a password request
+    /// surfaces as a one-prompt masked batch at `auth-prompts`; OTP
+    /// rounds surface as their own batches. Same gating and
+    /// latch-then-poll contract.
+    authenticate-auto: func(public-key: option<list<u8>>) -> result<_, string>;
+
+    /// The bytes awaiting a signature (the SSH publickey-auth
+    /// signature blob: session id, user, service, algorithm, public
+    /// key), present while `status` is `signing`.
+    pending-signature: func() -> option<list<u8>>;
+
+    /// Resume authentication with the raw 64-byte Ed25519 signature
+    /// over exactly the bytes `pending-signature` returned. Fails if
+    /// no signature is pending or the length is wrong.
+    provide-signature: func(signature: list<u8>) -> result<_, string>;
+
+    /// Abandon a pending signature (the signer refused or is
+    /// unavailable) so authentication fails legibly instead of
+    /// parking forever.
+    fail-signature: func(reason: string);
+
+    /// The prompt batch authentication is parked on, present while
+    /// `status` is `auth-prompts`.
+    pending-prompts: func() -> option<prompt-batch>;
+
+    /// Answer the pending batch: one string per prompt, in order.
+    /// Latches the answers and returns; the exchange continues on
+    /// subsequent ticks. Fails if no batch is pending or the count
+    /// does not match.
+    answer-prompts: func(answers: list<string>) -> result<_, string>;
+
+    // --- the terminal plane --------------------------------------
+
+    /// Keystrokes or pasted bytes from the terminal. No local echo or
+    /// line editing happens here -- the remote pty owns both. Bytes
+    /// arriving before the shell is up are buffered and flushed to it
+    /// in order.
+    write-input: func(data: list<u8>);
+
+    /// Pty output accumulated since the last call: raw bytes, in
+    /// order, possibly empty.
+    drain-output: func() -> list<u8>;
+
+    /// Propagate a terminal resize.
+    resize: func(cols: u16, rows: u16);
+
+    /// True once the remote shell exited or the session closed.
+    exited: func() -> bool;
+
+    /// The shell's exit status, once known.
+    exit-status: func() -> option<s32>;
+
+    /// Tear the session down: fails any parked gate, closes the ssh
+    /// stack, and moves to `closed`.
+    close: func();
+  }
+}
+
+world ssh-core {
+  export core;
+}

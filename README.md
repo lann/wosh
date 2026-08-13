@@ -9,18 +9,23 @@ relay and is reachable by its public key. Nothing is listening on the
 internet to be scanned, brute-forced, or caught by the next
 `sshd` CVE — and you get to it from a phone by scanning a QR code.
 
-Two WebAssembly components:
+Three WebAssembly components:
 
 - **the listener** (`listener-core`) — a `wasi:cli` component you run on
-  the machine you want a shell on. It mints an iroh identity, binds an
-  endpoint on a relay, prints a connection string as a link *and* a
-  terminal QR code, then accepts iroh connections and byte-proxies each
-  one to a configured TCP endpoint (your `sshd`).
-- **the client** (`client-go`) — runs in the browser under [deltic][],
-  takes a connection string, dials the listener over iroh, and speaks
-  SSH end-to-end to the target's `sshd` over the proxied stream. It
-  drives an [xterm.js][] UI through a custom WIT interface
-  (`wosh:terminal`).
+  the machine you want a shell on. It mints (and persists) an iroh
+  identity, binds an endpoint on a relay, prints a connection string as
+  a link *and* a terminal QR code, then accepts iroh connections and
+  byte-proxies each one to a configured TCP endpoint (your `sshd`).
+- **the client** (`wosh-client`, Rust) — runs in the browser under
+  [deltic][], and owns everything long-lived: it parses the connection
+  string, dials the listener over iroh, pumps bytes, relays signatures
+  and prompt batches, and drives an [xterm.js][] UI through a custom
+  WIT interface (`wosh:terminal`).
+- **the SSH core** (`ssh-core`, Go) — `golang.org/x/crypto/ssh` as a
+  sans-I/O byte-and-tick machine behind `wosh:ssh-core`: it performs no
+  I/O, holds no keys, and every export is a plain synchronous function.
+  The client feeds it wire bytes and answers its two park-and-poll
+  surfaces (signature requests, prompt batches).
 
 The listener never sees SSH plaintext: it is a dumb pipe once the
 pairing token checks out. The SSH session is end-to-end between the
@@ -28,8 +33,8 @@ browser and `sshd`, so the tunnel is network reachability, not a trust
 boundary you have to take on faith — the host key you confirm is the
 real `sshd`'s, checked through the tunnel, not the listener's.
 
-**Status: both components work.** `just e2e` drives the whole chain into
-a real OpenSSH `sshd`, authenticated by a non-extractable WebCrypto key;
+**Status: the whole chain works.** `just e2e` drives it into a real
+OpenSSH `sshd`, authenticated by a non-extractable WebCrypto key;
 the client is live at <https://lann.github.io/wosh/>. See "Where this
 actually is" for what remains. Experiment-grade code.
 
@@ -40,11 +45,13 @@ BROWSER (deltic)                          TARGET HOST
 ┌────────────────────────────┐            ┌──────────────────────────────┐
 │ xterm.js                   │            │ wosh-listener (native shell) │
 │   ↕ wosh:terminal (WIT)    │            │   wasmtime + polymorph hosts │
-│ client-go (x/crypto/ssh    │  iroh QUIC │   ┌──────────────────────────┐│
-│   over an iroh net.Conn)   │ ─────────► │   │ listener-core (wasi:cli) ││
-│   + polymorph-iroh endpoint│ relay /    │   │   + polymorph-iroh       ││
-│   + polymorph-iroh endpoint│ webrtc     │   └──────────┬───────────────┘│
-└────────────────────────────┘            │              ▼ TCP            │
+│ wosh-client (Rust: dial,   │  iroh QUIC │   ┌──────────────────────────┐│
+│   pump, signature relay)   │ ─────────► │   │ listener-core (wasi:cli) ││
+│   ↕ wosh:ssh-core (WIT)    │ relay /    │   │   + polymorph-iroh       ││
+│ ssh-core (Go: sans-I/O     │ webrtc     │   └──────────┬───────────────┘│
+│   x/crypto/ssh)            │            │              ▼ TCP            │
+│   + polymorph-iroh endpoint│            │                               │
+└────────────────────────────┘            │                               │
          └──────────── SSH, end to end ───────────► sshd (127.0.0.1:22)   │
                                           └──────────────────────────────┘
 ```
@@ -56,8 +63,9 @@ listener's 32-byte Ed25519 endpoint id, the relay (either a spelled-out
 URL or a varint index into an **append-only table of the public iroh
 relays** — indices are never reused, so old QR codes keep meaning the
 same relay), and an optional 16-byte pairing token. `connstring/` owns
-the format; the Go client carries a mirror decoder, and both are tested
-against the same pinned wire bytes.
+the format, and is its only decoder: the Rust client links the crate
+directly (the previous Go client carried a hand-matched mirror decoder;
+the split retired it).
 
 Authentication is SSH's own. The browser mints an **Ed25519 key through
 `polymorph:webcrypto` with `extractable: false`**, prints it as an
@@ -175,6 +183,18 @@ credential and resolve at once, `answer-prompts` latches its answers the
 same way, and the caller polls `status` — the sans-I/O discipline,
 arrived at the hard way.
 
+Findings 2 and 3 eventually reshaped the client outright. The first
+working client was one Go component doing its own iroh I/O, living
+inside these rules (async-lifted everything, a caller-supplied
+keepalive, no export that blocks). The shipped design moves every
+long-lived concern into Rust (`wosh-client`), where wit-bindgen's task
+tracking makes them legal, and shrinks the Go side to a sans-I/O core
+(`ssh-core`) whose exports are all synchronous and whose imports are
+none — a component the findings simply cannot reach: no keepalive, no
+task-exit races, nothing async to trap. The latch-then-poll contract
+survives at the `wosh:terminal` surface because it is a good contract,
+not because Go still requires it.
+
 **This is a library-design difference, not a Component Model limit.** A
 Rust future is a value the binding owns and can enumerate; a goroutine
 is opaque — once you `go f()`, the runtime owns it, and there is no
@@ -206,12 +226,18 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 - `listener-core/` — the `wasi:cli@0.3.1` listener component.
 - `listener-host/` — its native shell: wasmtime + the polymorph
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
-- `client-go/` — the browser SSH client, one Go component:
-  `x/crypto/ssh` over a real `net.Conn` wrapping an iroh bi stream,
-  exporting `wosh:terminal`. No glue component and no sans-I/O
-  shuttling — componentize-go surfaces the endpoint's async WIT methods
-  as ordinary blocking Go calls, so it reads like a normal networked Go
-  program.
+- `wosh-client/` — the browser SSH client's Rust half, and the
+  `wosh:terminal` exporter: connection-string parsing (links
+  `connstring/` directly), the iroh dial and pairing frame, the
+  never-cancelled reader and single-writer byte pump, and the
+  signature relay to the host's `identity-store` (verified against the
+  reported public key before it is offered).
+- `ssh-core/` — the Go half: `x/crypto/ssh` as a sans-I/O component
+  behind `wosh:ssh-core`. No I/O, no keys, no non-WASI imports; every
+  export is a plain synchronous function, and every state change
+  happens inside one (feed bytes, tick, answer a parked signature or
+  prompt batch). Its engine internals are plain Go with host-runnable
+  tests (`ssh-core/core/`) against an in-process x/crypto server.
 - `smoke-test/` — the end-to-end gate: the composed client under
   wasmtime, over real iroh, through the listener, into a real OpenSSH
   `sshd`.

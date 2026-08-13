@@ -131,7 +131,6 @@ fn parse_args() -> Result<Args> {
                 a.kbd_answers = v()?.split(',').map(str::to_owned).collect()
             }
             "--expect-auth-fail" => a.expect_auth_fail = true,
-            "--keepalive-only" => {}
             other => bail!("unknown flag {other}"),
         }
     }
@@ -202,23 +201,9 @@ async fn main() -> Result<()> {
             let iface = client.wosh_terminal_terminal();
             let session = iface.session();
 
-            // The keepalive task holds the guest's async runtime open;
-            // without it the SSH goroutines lose their host task the
-            // moment they park (see README "Findings" 3). It never
-            // returns, so it is raced against the gate rather than
-            // awaited.
-            let keepalive = iface.call_keepalive(acc);
-
-            // Isolation probe: run ONLY the keepalive, so its ticks are
-            // unambiguous evidence it is (or is not) being driven.
-            if std::env::args().any(|a| a == "--keepalive-only") {
-                futures::pin_mut!(keepalive);
-                let timer = tokio::time::sleep(Duration::from_secs(3));
-                futures::pin_mut!(timer);
-                futures::future::select(keepalive, timer).await;
-                println!("(keepalive-only probe done)");
-                return Ok(());
-            }
+            // No keepalive: the wosh-client Rust component's runtime
+            // (wit-bindgen) tracks its own spawned tasks, so the
+            // caller supplies nothing to keep background I/O alive.
 
             let gate = async {
 
@@ -451,14 +436,8 @@ async fn main() -> Result<()> {
             Ok::<(), anyhow::Error>(())
             };
 
-            futures::pin_mut!(keepalive, gate);
-            match futures::future::select(keepalive, gate).await {
-                futures::future::Either::Left((r, _)) => {
-                    r?;
-                    bail!("keepalive returned; it must run for the session's lifetime");
-                }
-                futures::future::Either::Right((r, _)) => r,
-            }
+            futures::pin_mut!(gate);
+            gate.await
         })
         .await?;
 

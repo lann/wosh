@@ -4,7 +4,7 @@ target/
 !wit/**/*.wasm
 
 # Go
-engine-go/main.wasm
+ssh-core/main.wasm
 
 # Node / web
 node_modules/
