@@ -9,5 +9,6 @@ package wosh:terminal;
 /// real OpenSSH sshd, without a browser in the loop.
 world composed-client {
   import identity-store;
+  import pairing-store;
   export terminal;
 }

@@ -89,6 +89,18 @@ PKCS#8 + raw public key. First contact with an unknown fingerprint is
 always confirmed interactively — the pin store can only ever suppress
 the prompt for a fingerprint a human explicitly approved.
 
+Pairing is TOFU in the other direction. The browser persists an iroh
+**pairing identity** of its own (IndexedDB, via the host's
+`pairing-store`), and a client that once presents a valid token is
+**enrolled** by endpoint id (`wosh-data/paired`, next to the listener's
+key). iroh authenticates that id on every dial, so an enrolled device
+keeps reconnecting after the listener restarts and its token rotates —
+a printed QR stays valid for the devices that already used it, and
+token rotation gates **new** devices only. The stakes are deliberately
+low on this outer layer: pairing gates the tunnel, and SSH — the
+host-key gate, real authentication — remains the boundary that
+matters.
+
 ## Running it
 
 ```sh
@@ -285,6 +297,11 @@ Verified working:
   server (`kbdint-sshd/`), because a user-mode OpenSSH sshd has no
   keyboard-interactive backend without PAM. This is what PAM OTP/2FA
   setups need; the prompts render in the page with masking honored.
+- **Pairing across token rotation** (`just e2e-pairing`): a client that
+  once presented a valid token is enrolled by its persistent iroh id;
+  after a listener restart rotates the token, the SAME device connects
+  with the stale connstring (a printed QR keeps working) while a NEW
+  device with that connstring is refused, legibly.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

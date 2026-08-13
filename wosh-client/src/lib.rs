@@ -46,6 +46,8 @@ mod bindings {
     });
 }
 
+mod pairing;
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -57,7 +59,6 @@ use bindings::exports::wosh::terminal::terminal::{
 };
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions, RecvStream, SendStream};
 use bindings::polymorph::iroh::identity::Identity;
-use bindings::polymorph::iroh::identity_generate::generate as identity_generate;
 use bindings::polymorph::iroh::types::{EndpointAddr, TransportAddr};
 use bindings::wosh::ssh_core::core::{Session as CoreSession, Status as CoreStatus};
 use bindings::wosh::terminal::identity_store;
@@ -371,10 +372,13 @@ impl GuestSession for Session {
         let parsed =
             ConnString::decode(&connstring).map_err(|e| format!("connection string: {e}"))?;
 
-        // A fresh, ephemeral endpoint identity per dial: it names this
-        // tab on the iroh layer only and is unrelated to the SSH
-        // identity behind `identity-store`.
-        let identity = identity_generate().await.map_err(err("iroh identity"))?;
+        // The pairing identity: persistent wherever the host can store
+        // it, so the listener can remember this client across visits
+        // ("pairing" in the meaningful sense -- an enrolled client
+        // reconnects even after the listener rotates its token). It
+        // names this client on the iroh layer only and is unrelated to
+        // the SSH identity behind `identity-store`.
+        let identity = pairing::load_or_create().await.map_err(err("iroh identity"))?;
         let options = EndpointOptions::new(&identity);
         options.add_alpn(ALPN);
         options.relay_url(&parsed.relay_url);

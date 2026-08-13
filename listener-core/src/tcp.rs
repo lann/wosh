@@ -40,17 +40,13 @@ fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
     }
 }
 
-/// Read the pairing-token prefix (`[len: u8][token bytes]`) a client
-/// writes as the very first thing on its opened stream, and compare
-/// it against `expected` (`None` = open mode: any prefix, including an
-/// empty one, is accepted). Returns the leftover bytes read past the
-/// prefix on a match -- these are already-arrived proxied-stream bytes
-/// and must be forwarded first -- or `None` if the token didn't match
-/// (the caller closes the connection without ceremony).
-pub async fn read_token_prefix(
-    recv: &RecvStream,
-    expected: Option<[u8; wosh_connstring::TOKEN_LEN]>,
-) -> Result<Option<Vec<u8>>, String> {
+/// Read the pairing frame (`[len:u8][token]`) the client writes as the
+/// very first thing on its opened stream. Returns the frame's token
+/// bytes and any leftover bytes read past it -- those are
+/// already-arrived proxied-stream bytes and must be forwarded first.
+/// The VERDICT on the token is the caller's: it depends on enrollment
+/// state and open mode, neither of which belongs here.
+pub async fn read_pairing_frame(recv: &RecvStream) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut buf = Vec::new();
     while buf.is_empty() {
         match recv.read(64).await.map_err(|e| format!("read: {e:?}"))? {
@@ -66,19 +62,9 @@ pub async fn read_token_prefix(
             None => return Err("connection closed mid pairing-token prefix".into()),
         }
     }
-    let token = &buf[1..1 + token_len];
+    let token = buf[1..1 + token_len].to_vec();
     let leftover = buf[1 + token_len..].to_vec();
-
-    match expected {
-        None => Ok(Some(leftover)),
-        Some(want) => {
-            if token_len == want.len() && token == want {
-                Ok(Some(leftover))
-            } else {
-                Ok(None)
-            }
-        }
-    }
+    Ok((token, leftover))
 }
 
 /// Forward the rest of `recv` (with `leading` bytes already consumed
@@ -96,9 +82,17 @@ pub async fn forward(
         SocketAddr::V6(_) => IpAddressFamily::Ipv6,
     };
     let sock = TcpSocket::create(family).map_err(|e| format!("tcp create: {e:?}"))?;
-    sock.connect(to_wasi(target))
-        .await
-        .map_err(|e| format!("tcp connect {target}: {e:?}"))?;
+    // The single most likely operator error is a target that is not
+    // actually there (nothing on the default 127.0.0.1:22, sshd
+    // stopped, wrong --target). The peer only ever sees its tunnel
+    // close, so this log line is the ONE place the real cause is
+    // visible -- make it say so.
+    sock.connect(to_wasi(target)).await.map_err(|e| {
+        format!(
+            "WARNING: could not reach the target {target}: {e:?} -- is the \
+             service running? (--target sets it; this connection was dropped)"
+        )
+    })?;
 
     // iroh stream -> TCP: one send stream for the socket's lifetime.
     let (mut tcp_tx, tcp_tx_reader) = wit_stream::new();

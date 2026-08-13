@@ -163,6 +163,10 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
         wasi.preopened_dir(&dir, "wosh-data", DirPerms::all(), FilePerms::all())
             .map_err(|e| anyhow::anyhow!("mounting {}: {e}", dir.display()))?;
+        // The guest can only name its mount ("wosh-data/…"), which
+        // exists nowhere on the operator's disk; say where that really
+        // is, once. stderr: stdout carries the connstring contract.
+        eprintln!("identity dir: {}", dir.display());
     }
 
     let mut store = Store::new(
