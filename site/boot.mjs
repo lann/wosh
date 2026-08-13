@@ -1,11 +1,14 @@
 // The connect panel: read the connection string, collect a user name,
 // show the host key for confirmation, and offer a credential.
 //
-// Deliberately stateless. main's equivalent carried saved proxies,
-// passkey registration, PRF-wrapped key escrow and an IndexedDB
-// identity -- none of which applies here: the browser's SSH identity is
-// a WebCrypto key the component mints, and authentication is SSH's own.
-// Nothing is written to storage by this page.
+// Deliberately stateless ITSELF: this panel writes nothing to storage.
+// The one durable thing -- the browser's SSH identity -- lives behind
+// the component's `identity-store` import (site/identity-store.ts): a
+// non-extractable WebCrypto pair in IndexedDB, so the key line shown
+// here keeps working across visits. main's equivalent carried saved
+// proxies, passkey registration, PRF-wrapped key escrow and its own
+// IndexedDB identity -- none of which applies here: authentication is
+// SSH's own.
 
 import { identity, detach, capabilities } from "./app.mjs";
 
@@ -95,9 +98,10 @@ export async function initBoot(panel, { onConnect }) {
   })();
 
   // The public half is safe to show and is what the user installs on
-  // the target host; the private half never leaves the authenticator.
+  // the target host -- once: it persists across visits. The private
+  // half never leaves the authenticator.
   showKeyBtn.addEventListener("click", async () => {
-    keyRow.textContent = "minting…";
+    keyRow.textContent = "loading…";
     try {
       const line = await identity();
       keyRow.textContent = "";
@@ -106,7 +110,7 @@ export async function initBoot(panel, { onConnect }) {
         el("code", { textContent: line }),
       );
     } catch (e) {
-      keyRow.textContent = `could not mint an identity: ${e.message ?? e}`;
+      keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
     }
   });
 

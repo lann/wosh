@@ -15,6 +15,10 @@
 // is the fail-on-call browser profile -- a page has no UDP -- which is
 // safe here only because the client never asks the endpoint to bind
 // one (see ssh-client-core: it deliberately sets no udp-bind-addr).
+// The client's own `wosh:terminal/identity-store` import is served by
+// ./identity-store.ts: the browser's persistent SSH identity -- a
+// non-extractable WebCrypto pair kept in IndexedDB, exposed to the
+// component as public bytes and signatures only.
 //
 // MODULE IDENTITY: the bundle must carry exactly one copy of
 // @deltic/runtime/embedder, or `isComponentException` stops holding
@@ -32,6 +36,7 @@ import { webcryptoImports } from "@polymorph/webcrypto-deltic";
 import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
+import { identityStoreImports } from "./identity-store.ts";
 
 export { ComponentException, isComponentException };
 
@@ -73,6 +78,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     ...websocketImports(),
     ...webrtcImports(),
     ...socketsImports(),
+    ...identityStoreImports(),
   };
   const instance = await instantiate(artifacts, imports);
   const api = instance.exports[TERMINAL_INTERFACE];

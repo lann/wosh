@@ -154,7 +154,9 @@ export async function capabilities() {
 /**
  * This browser's SSH identity as an `authorized_keys` line. The private
  * half is a non-extractable WebCrypto key: the component can sign with
- * it, nothing can export it.
+ * it, nothing can export it. It persists -- the pair lives in IndexedDB
+ * behind the component's `identity-store` import (identity-store.ts) --
+ * so the same line keeps working across page loads.
  */
 export async function identity() {
   const t = await api();

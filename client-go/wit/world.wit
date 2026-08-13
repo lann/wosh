@@ -2,13 +2,14 @@ package wosh:terminal;
 
 /// What the browser SSH client builds against. `polymorph:iroh` is
 /// satisfied by `wac plug`-ing the endpoint component in;
-/// `polymorph:webcrypto` is served by the host (deltic in a browser,
-/// the wasmtime host crates natively).
+/// `identity-store` is served by the host (deltic in a browser, the
+/// native e2e host under wasmtime). No `polymorph:webcrypto` import:
+/// the client's own key stays behind `identity-store`, and the fused
+/// endpoint brings its own webcrypto imports.
 world ssh-client {
   import polymorph:iroh/identity-generate@0.1.0;
   import polymorph:iroh/endpoint@0.1.0;
-  import polymorph:webcrypto/ed25519-sign@0.1.0;
-  import polymorph:webcrypto/signature@0.1.0;
+  import identity-store;
   import wasi:clocks/monotonic-clock@0.3.0;
   export terminal;
 }

@@ -221,12 +221,15 @@ Verified working:
   bound on a live relay, connstring + QR + link printed, pairing token
   enforced, and a peer's bytes proxied to a TCP service and back.
 - **The whole thing, end to end** (`just e2e`): the browser client
-  component under wasmtime mints its non-extractable WebCrypto key,
-  emits an `authorized_keys` line, dials the listener over real iroh,
-  verifies the host key fingerprint against the real sshd's,
-  authenticates by **publickey with a signature produced by that
-  WebCrypto key**, gets an interactive pty, round-trips a command
-  through the tunnel, resizes, and detaches cleanly.
+- **The whole thing, end to end** (`just e2e`): the browser client
+  component under wasmtime obtains its identity's public half from the
+  host's `identity-store`, emits an `authorized_keys` line, dials the
+  listener over real iroh, verifies the host key fingerprint against
+  the real sshd's, authenticates by **publickey with a signature the
+  store produces and the component checks against that public key**
+  (no private-key handle exists anywhere in the component), gets an
+  interactive pty, round-trips a command through the tunnel, resizes,
+  and detaches cleanly.
 - **Keyboard-interactive auth** (`just e2e-kbdint`): the same composed
   client answers two server-driven prompt batches (echoed and masked
   prompts, RFC 4256) over the same iroh path and reaches a shell; a
@@ -238,9 +241,11 @@ Verified working:
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs
-  guest code in-page, and the PWA shell is coherent (manifest parsed,
-  icons resolve, service worker version-keyed with the component in its
-  precache).
+  guest code in-page, **the browser's SSH identity survives a page
+  reload** (the non-extractable CryptoKey pair persists in IndexedDB,
+  so an installed `authorized_keys` line keeps working across visits),
+  and the PWA shell is coherent (manifest parsed, icons resolve,
+  service worker version-keyed with the component in its precache).
 - **The page, live, end to end** (`just browser-e2e`): headless
   Chromium drives the real UI -- form, **interactive host-key
   confirmation** (the prompt must appear and the session parks on it:
@@ -251,9 +256,7 @@ Verified working:
 Not finished:
 
 - Host-key pinning across visits (the fingerprint is confirmed
-  interactively every time -- which is the TOFU floor, never less), and
-  any persistence of the browser's identity — it is minted fresh per
-  instance today.
+  interactively every time -- which is the TOFU floor, never less).
 - CI.
 
 ## Deploying
