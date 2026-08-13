@@ -1,14 +1,13 @@
 package export_wosh_terminal_terminal
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
+	"wit_component/connstring"
 	endpoint "wit_component/polymorph_iroh_endpoint"
 	identityGen "wit_component/polymorph_iroh_identity_generate"
 	irohTypes "wit_component/polymorph_iroh_types"
@@ -17,57 +16,15 @@ import (
 // alpn must match the listener's.
 const alpn = "wosh/1"
 
-// These mirror the `connstring` Rust crate the listener uses to PRODUCE
-// these strings. The format is deliberately tiny and versioned, so a
-// mismatch fails loudly on the version byte rather than subtly.
-const (
-	connStringVersion = 1
-	pubkeyLen         = 32
-	tokenLen          = 16
-	flagHasToken      = 0x01
-)
+// The connstring format lives in its own WIT-free package so the
+// format's decoder tests run on the host (`go test ./connstring`),
+// against the same golden bytes the Rust crate pins.
+type ConnString = connstring.ConnString
 
-// ConnString is the decoded pairing blob from the QR link's fragment.
-type ConnString struct {
-	PubKey   []byte
-	RelayURL string
-	Token    []byte // nil when the listener runs in open mode
-}
-
-// ParseConnString decodes the base64url blob. Layout:
-//
-//	byte 0:      version
-//	bytes 1..33: 32-byte Ed25519 endpoint id (the iroh address)
-//	byte 33:     flags (bit 0 = a pairing token follows)
-//	[16 bytes]:  the pairing token, when that flag is set
-//	remainder:   relay URL, UTF-8
+// ParseConnString decodes the base64url pairing blob (versions 1
+// and 2); see the connstring package for the wire format.
 func ParseConnString(s string) (*ConnString, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
-	if err != nil {
-		return nil, fmt.Errorf("not valid base64url: %w", err)
-	}
-	if len(raw) < 1+pubkeyLen+1 {
-		return nil, fmt.Errorf("truncated connection string")
-	}
-	if raw[0] != connStringVersion {
-		return nil, fmt.Errorf("unsupported connection string version %d", raw[0])
-	}
-	cs := &ConnString{PubKey: raw[1 : 1+pubkeyLen]}
-	off := 1 + pubkeyLen
-	flags := raw[off]
-	off++
-	if flags&flagHasToken != 0 {
-		if len(raw) < off+tokenLen {
-			return nil, fmt.Errorf("truncated pairing token")
-		}
-		cs.Token = raw[off : off+tokenLen]
-		off += tokenLen
-	}
-	cs.RelayURL = string(raw[off:])
-	if cs.RelayURL == "" {
-		return nil, fmt.Errorf("carries no relay URL")
-	}
-	return cs, nil
+	return connstring.Parse(s)
 }
 
 // irohConn adapts an iroh bidirectional stream to net.Conn, which is

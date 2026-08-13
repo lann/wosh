@@ -50,9 +50,14 @@ BROWSER (deltic)                          TARGET HOST
 ```
 
 The connection string (base64url, carried in the URL fragment so it
-stays out of HTTP logs) is: version, the listener's 32-byte Ed25519
-endpoint id, a flag byte, an optional 16-byte pairing token, then the
-relay URL. `connstring/` owns the format and round-trip-tests it.
+stays out of HTTP logs) is a version byte followed by a
+[postcard](https://postcard.jamesmunns.com/)-encoded payload: the
+listener's 32-byte Ed25519 endpoint id, the relay (either a spelled-out
+URL or a varint index into an **append-only table of the public iroh
+relays** — indices are never reused, so old QR codes keep meaning the
+same relay), and an optional 16-byte pairing token. `connstring/` owns
+the format; the Go client carries a mirror decoder, and both are tested
+against the same pinned wire bytes.
 
 Authentication is SSH's own. The browser mints an **Ed25519 key through
 `polymorph:webcrypto` with `extractable: false`**, prints it as an
