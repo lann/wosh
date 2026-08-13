@@ -69,18 +69,18 @@ its host-key callback returns.
 scripts/setup.sh          # pins + builds the external chain into .deps/
 just web-deps             # xterm + the browser-gate driver (once)
 just build                # both components + native hosts
-just listener --target 127.0.0.1:22   # prints a QR code and a link
+just listener             # SSH to this box via the public iroh relay
 just serve                # the site on :8080 (or `just site out/` to deploy)
 ```
 
-The listener prints a QR code and a link. Open it, confirm the
-fingerprint, and connect. Served over https the site installs as a PWA;
-over plain http (local development) the service worker deliberately
-never registers, so a stale cache cannot confuse iteration or the
-browser gate.
+`just listener` exposes 127.0.0.1:22 through n0's public relay; see
+`--help` for `--relay`, `--target`, and pairing-token options.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
+Served over https the site installs as a PWA; over plain http (local
+development) the service worker deliberately never registers, so a
+stale cache cannot confuse iteration or the browser gate.
 
 ## Findings
 
@@ -152,10 +152,10 @@ channel gets declared complete the instant nothing Component-Model
 visible is pending *for that task* — never calling task-return, which
 surfaces as the same `async-lifted export failed to produce a result`.
 The keepalive keeps *background* goroutines running; it cannot rescue a
-blocked export closure. Hence `authenticate-password` and
-`authenticate-publickey` latch a credential and resolve at once, and the
-caller polls `status` — the sans-I/O discipline, arrived at the hard
-way.
+blocked export closure. Hence the `authenticate-*` calls latch a
+credential and resolve at once, `answer-prompts` latches its answers the
+same way, and the caller polls `status` — the sans-I/O discipline,
+arrived at the hard way.
 
 **This is a library-design difference, not a Component Model limit.** A
 Rust future is a value the binding owns and can enumerate; a goroutine
@@ -221,6 +221,7 @@ Verified working:
   bound on a live relay, connstring + QR + link printed, pairing token
   enforced, and a peer's bytes proxied to a TCP service and back.
 - **The whole thing, end to end** (`just e2e`): the browser client
+- **The whole thing, end to end** (`just e2e`): the browser client
   component under wasmtime obtains its non-extractable WebCrypto key
   from the host's `identity-store` (and verifies it is Ed25519,
   non-extractable, sign-granted), emits an `authorized_keys` line,
@@ -229,6 +230,14 @@ Verified working:
   signature produced by that WebCrypto key**, gets an interactive pty,
   round-trips a command through the tunnel, resizes, and detaches
   cleanly.
+- **Keyboard-interactive auth** (`just e2e-kbdint`): the same composed
+  client answers two server-driven prompt batches (echoed and masked
+  prompts, RFC 4256) over the same iroh path and reaches a shell; a
+  wrong answer is refused legibly. Runs against a scripted
+  `x/crypto/ssh` stand-in server (`kbdint-sshd/`), because a user-mode
+  OpenSSH sshd has no keyboard-interactive backend without PAM. This is
+  what PAM OTP/2FA setups need; the prompts render in the page with
+  masking honored.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

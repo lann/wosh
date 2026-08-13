@@ -46,6 +46,7 @@ export async function initBoot(panel, { onConnect }) {
   method.append(
     el("option", { value: "publickey", textContent: "publickey (this browser's key)" }),
     el("option", { value: "password", textContent: "password" }),
+    el("option", { value: "keyboard-interactive", textContent: "keyboard-interactive (OTP/2FA)" }),
   );
   const passInput = el("input", {
     size: 20,
@@ -86,6 +87,11 @@ export async function initBoot(panel, { onConnect }) {
           "this build of the client component supports password auth only; " +
           "publickey (WebCrypto) auth is not available yet";
       }
+      if (!caps.keyboardInteractive) {
+        for (const opt of [...method.options]) {
+          if (opt.value === "keyboard-interactive") opt.remove();
+        }
+      }
     } catch (e) {
       notice.textContent = `could not load the client component: ${e.message ?? e}`;
     }
@@ -108,7 +114,7 @@ export async function initBoot(panel, { onConnect }) {
     }
   });
 
-  // The two human decisions, rendered inline in the panel.
+  // The human decisions, rendered inline in the panel.
   const ui = {
     confirmHostKey(fingerprint) {
       return new Promise((resolve) => {
@@ -131,9 +137,46 @@ export async function initBoot(panel, { onConnect }) {
       });
     },
     getCredential() {
-      return method.value === "password"
-        ? { kind: "password", password: passInput.value }
-        : { kind: "publickey" };
+      if (method.value === "password") {
+        return { kind: "password", password: passInput.value };
+      }
+      if (method.value === "keyboard-interactive") {
+        return { kind: "keyboard-interactive" };
+      }
+      return { kind: "publickey" };
+    },
+    // One keyboard-interactive batch: instruction text, then an input
+    // per prompt -- masked unless the server said echo. Resolves with
+    // the answers, in order.
+    collectPrompts(batch) {
+      return new Promise((resolve) => {
+        const row = el("div", { className: "confirm" });
+        if (batch.instruction) {
+          row.append(el("div", { textContent: batch.instruction }));
+        }
+        const inputs = (batch.prompts ?? []).map((p) => {
+          const input = el("input", {
+            size: 24,
+            type: p.echo ? "text" : "password",
+          });
+          row.append(el("div", { className: "row" },
+            el("label", { textContent: p.text }), input));
+          return input;
+        });
+        const answerBtn = el("button", { textContent: "answer" });
+        row.append(answerBtn);
+        panel.append(row);
+        inputs[0]?.focus();
+        const done = () => {
+          const answers = inputs.map((i) => i.value);
+          row.remove();
+          resolve(answers);
+        };
+        answerBtn.addEventListener("click", done);
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") done();
+        });
+      });
     },
   };
 

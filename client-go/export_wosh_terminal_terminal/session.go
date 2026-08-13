@@ -47,14 +47,22 @@ const (
 	stateConnecting = iota
 	stateHostKeyCheck
 	stateAuthenticating
+	stateAuthPrompts
 	stateReady
 	stateClosed
 )
 
 // credential is what the page supplied via an authenticate-* call.
 type credential struct {
-	kind     string // "password" | "publickey"
+	kind     string // "password" | "publickey" | "keyboard-interactive"
 	password string
+}
+
+// kbdBatch is one keyboard-interactive challenge round, held while the
+// auth goroutine is parked waiting for the page's answers.
+type kbdBatch struct {
+	instruction string
+	prompts     []types.Prompt
 }
 
 // Session is the exported resource. The generated bindings require the
@@ -88,6 +96,18 @@ type Session struct {
 	credsReady  chan struct{}
 	credsOnce   sync.Once
 	authOutcome chan error
+
+	// Keyboard-interactive: the challenge callback publishes the
+	// batch it is parked on here (nil = none pending), and receives
+	// the page's answers over kbdAnswers. Strictly alternating --
+	// the ssh auth goroutine never has more than one batch in
+	// flight -- so one buffered channel serves every round. The
+	// send happens under mu with kbdClosed checked, and teardown
+	// closes under the same mu: a send can never race the close.
+	kbdBatch   *kbdBatch
+	kbdAnswers chan []string
+	kbdClosed  bool      // guarded by mu
+	kbdOnce    sync.Once // guards close(kbdAnswers) on teardown
 
 	out       lockedBuf // pty output awaiting the page
 	pendingIn lockedBuf // input typed before the shell's stdin existed
@@ -141,6 +161,7 @@ func SessionConnect(connstring string, user string, cols uint16, rows uint16) wi
 		hostKeyDecision: make(chan bool, 1),
 		credsReady:      make(chan struct{}),
 		authOutcome:     make(chan error, 1),
+		kbdAnswers:      make(chan []string, 1),
 		cols:            cols,
 		rows:            rows,
 	}
@@ -167,6 +188,7 @@ func (s *Session) run(user string) {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeysCallback(s.publicKeysCallback),
 			ssh.PasswordCallback(s.passwordCallback),
+			ssh.KeyboardInteractive(s.keyboardInteractiveCallback),
 		},
 		HostKeyCallback: s.hostKeyCallback,
 	}
@@ -286,6 +308,47 @@ func (s *Session) publicKeysCallback() ([]ssh.Signer, error) {
 	return []ssh.Signer{signer}, nil
 }
 
+// keyboardInteractiveCallback answers RFC 4256 challenges. x/crypto/ssh
+// calls it once per server-issued batch, on the auth goroutine; each
+// call publishes the batch for the page (status flips to auth-prompts)
+// and PARKS on kbdAnswers until answer-prompts supplies the answers --
+// the exact shape of the host-key gate. The server decides how many
+// rounds there are; this loops as often as it calls.
+func (s *Session) keyboardInteractiveCallback(_, instruction string, questions []string, echos []bool) ([]string, error) {
+	c := s.waitCreds()
+	if c.kind != "keyboard-interactive" {
+		return nil, fmt.Errorf("keyboard-interactive auth not selected")
+	}
+
+	// A batch with no prompts carries nothing to collect (servers use
+	// it to signal progress); answer it without a page round-trip.
+	// Its instruction text is dropped -- a simplification, noted.
+	if len(questions) == 0 {
+		return nil, nil
+	}
+
+	prompts := make([]types.Prompt, len(questions))
+	for i, q := range questions {
+		echo := i < len(echos) && echos[i]
+		prompts[i] = types.Prompt{Text: q, Echo: echo}
+	}
+
+	s.mu.Lock()
+	if s.state == stateClosed || s.kbdClosed {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session closed")
+	}
+	s.kbdBatch = &kbdBatch{instruction: instruction, prompts: prompts}
+	s.state = stateAuthPrompts
+	s.mu.Unlock()
+
+	answers, ok := <-s.kbdAnswers // parks the auth exchange here
+	if !ok {
+		return nil, fmt.Errorf("session dropped while prompts were pending")
+	}
+	return answers, nil
+}
+
 // supplyCreds latches a credential and releases the parked auth
 // callbacks. It RETURNS IMMEDIATELY; the caller polls `status` until
 // `ready` or `closed`.
@@ -326,9 +389,76 @@ func (s *Session) AuthenticatePublickey() witTypes.Result[witTypes.Unit, string]
 	return s.supplyCreds(credential{kind: "publickey"})
 }
 
+func (s *Session) AuthenticateInteractive() witTypes.Result[witTypes.Unit, string] {
+	return s.supplyCreds(credential{kind: "keyboard-interactive"})
+}
+
+func (s *Session) PendingPrompts() witTypes.Option[types.PromptBatch] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.kbdBatch == nil {
+		return witTypes.None[types.PromptBatch]()
+	}
+	return witTypes.Some(types.PromptBatch{
+		Instruction: s.kbdBatch.instruction,
+		Prompts:     s.kbdBatch.prompts,
+	})
+}
+
+// AnswerPrompts latches the page's answers and releases the parked
+// challenge callback. Same contract as the other credential exports:
+// it RESOLVES AT ONCE and the caller polls `status` (see supplyCreds
+// for why blocking here is not an option, not a preference).
+func (s *Session) AnswerPrompts(answers []string) witTypes.Result[witTypes.Unit, string] {
+	// Clone deeply: the bindings hand over zero-copy views of
+	// transferred cabi memory that is recycled once this export
+	// returns, and these strings are consumed by the auth goroutine
+	// strictly after that.
+	cp := make([]string, len(answers))
+	for i, a := range answers {
+		cp[i] = string(append([]byte(nil), a...))
+	}
+
+	s.mu.Lock()
+	if s.kbdClosed {
+		s.mu.Unlock()
+		return witTypes.Err[witTypes.Unit, string]("session closed")
+	}
+	batch := s.kbdBatch
+	if batch == nil {
+		s.mu.Unlock()
+		return witTypes.Err[witTypes.Unit, string]("no prompt batch is pending")
+	}
+	if len(cp) != len(batch.prompts) {
+		n := len(batch.prompts)
+		s.mu.Unlock()
+		return witTypes.Err[witTypes.Unit, string](fmt.Sprintf(
+			"answer count mismatch: %d answers for %d prompts", len(cp), n))
+	}
+	s.kbdBatch = nil
+	if s.state == stateAuthPrompts {
+		s.state = stateAuthenticating
+	}
+	// Buffered (capacity 1) and strictly alternating with the
+	// callback's receive, so this send never blocks; done under mu
+	// so it cannot race the close in OnDrop.
+	s.kbdAnswers <- cp
+	s.mu.Unlock()
+
+	runtime.Gosched()
+	return witTypes.Ok[witTypes.Unit, string](witTypes.Unit{})
+}
+
 func (s *Session) OnDrop() {
 	s.decisionOnce.Do(func() { close(s.hostKeyDecision) })
 	s.credsOnce.Do(func() { close(s.credsReady) })
+	s.kbdOnce.Do(func() {
+		s.mu.Lock()
+		s.kbdClosed = true
+		s.kbdBatch = nil
+		close(s.kbdAnswers)
+		s.mu.Unlock()
+	})
 	s.mu.Lock()
 	client, conn := s.client, s.conn
 	s.mu.Unlock()
@@ -350,6 +480,8 @@ func (s *Session) Status() types.Status {
 		return types.MakeStatusHostKeyCheck()
 	case stateAuthenticating:
 		return types.MakeStatusAuthenticating()
+	case stateAuthPrompts:
+		return types.MakeStatusAuthPrompts()
 	case stateReady:
 		return types.MakeStatusReady()
 	case stateClosed:
