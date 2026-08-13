@@ -35,14 +35,22 @@ const INTERVAL_MS = 120;
 const MAX_EDGE = 720;
 
 /**
- * Whether the scan button is worth showing at all: no camera API means
- * no scanning (an insecure context, or a browser without getUserMedia).
- * Permission is NOT probed here -- asking for the camera before the
- * user has expressed any interest in it is exactly the prompt everyone
- * hates.
+ * Why scanning cannot work here, or null when it can -- and the answer
+ * is deliberately NOT used to hide the button. A missing camera API
+ * almost always means the page is on plain http (the LAN address of a
+ * dev server is the usual way to land here, and it is exactly how
+ * someone tries to scan from a phone), and a button that silently
+ * vanishes teaches nobody that. Permission is NOT probed: asking for
+ * the camera before the user has expressed any interest in it is the
+ * prompt everyone hates.
  */
-export function scanSupported() {
-  return typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+export function scanUnavailable() {
+  if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) return null;
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    return "the camera needs a secure page: open this site over https " +
+      "(plain http only counts as secure on localhost)";
+  }
+  return "this browser exposes no camera to the page";
 }
 
 /** The platform detector, or null if it cannot decode QR here. */
@@ -119,6 +127,12 @@ function cameraError(e) {
  * message. The camera is released before this settles, every time.
  */
 export async function scanQr(container, { signal } = {}) {
+  // No camera API at all: say so before anything is rendered, so the
+  // caller's error path explains the http-vs-https case instead of the
+  // button appearing to do nothing.
+  const unavailable = scanUnavailable();
+  if (unavailable) throw new Error(unavailable);
+
   // One controller for every way out, armed BEFORE anything is awaited:
   // the cancel button is on screen while the permission prompt is up
   // and while jsQR is still downloading, and a button that does nothing

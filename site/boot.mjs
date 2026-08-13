@@ -19,7 +19,7 @@
 // here: authentication is SSH's own.
 
 import { identity, detach, capabilities } from "./app.mjs";
-import { scanQr, scanSupported } from "./qr.mjs";
+import { scanQr } from "./qr.mjs";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -145,14 +145,15 @@ export async function initBoot(panel, { onConnect }) {
   });
   // Next to the field, because it fills the field: the listener's QR
   // encodes the connect link, so a scan is just a paste that the
-  // camera performs. Hidden where there is no camera API at all
-  // (insecure context, or a browser without getUserMedia) rather than
-  // offered and then failing.
+  // camera performs. Always present, even where the camera cannot
+  // work: pressing it then explains why (the usual reason is a page
+  // served over plain http, which is exactly how someone ends up
+  // trying to scan from a phone), and that beats a button that
+  // silently is not there.
   const scanBtn = el("button", {
     className: "scan",
     textContent: "scan QR",
     title: "scan the listener's QR code with this device's camera",
-    hidden: !scanSupported(),
   });
   const scanRow = el("div", { className: "csrow" }, csInput, scanBtn);
   // The camera preview lands here, directly under the field it fills.

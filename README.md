@@ -118,8 +118,9 @@ The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
 With the page already open, the connect panel's **scan QR** button
 fills the connection string from the camera instead (the platform's
-BarcodeDetector where there is one, jsQR everywhere else). Served over
-https the site installs as a PWA; over plain http (local development)
+BarcodeDetector where there is one, jsQR everywhere else) — that needs
+an https origin or localhost, like every camera on the web; on a plain
+http LAN address the button says so. Served over https the site installs as a PWA; over plain http (local development)
 the service worker deliberately never registers, so a stale cache
 cannot confuse iteration or the browser gate.
 
