@@ -3,19 +3,26 @@
 // cover, because it drives the component with typed Rust bindings and
 // so never exercises the page's reading of deltic's JS conventions.
 //
-// What this asserts, in order:
+// What this asserts, leg by leg:
 //
-//   1. The interactive host-key prompt APPEARS, showing the server's
+//   A. The interactive host-key prompt APPEARS, showing the server's
 //      fingerprint, and the session parks on it (TOFU: no credential
 //      may flow before a human approves the fingerprint). This is the
 //      regression test for the `{tag}` vs `{kind}` convention drift
-//      that silently skipped the prompt and made the page offer
-//      credentials at the gate.
-//   2. Approving it completes publickey auth with the browser-minted
-//      WebCrypto key, and keystrokes round-trip through the real
-//      terminal to the shell and back.
-//   3. On a fresh connect, REJECTING the fingerprint ends the attempt
+//      that silently skipped the prompt. Approving (WITHOUT opting
+//      into persistence) completes publickey auth with the
+//      browser-minted WebCrypto key and keystrokes round-trip through
+//      the real terminal.
+//   B. After a reload, the prompt appears AGAIN: approval is not
+//      persisted unless the user opted in. Rejecting ends the attempt
 //      with nothing sent.
+//   C. Approving WITH "remember this approval" checked pins the
+//      fingerprint (keyed by the listener's endpoint id) ...
+//   D. ... so the next reload connects with NO prompt at all: the
+//      pinning payoff, asserted by watching that the prompt never
+//      renders on the way to "connected".
+//   E. A pinned fingerprint that DIFFERS from the presented one gets
+//      the loud changed-key warning, with both fingerprints shown.
 //
 // Environment (the `just browser-e2e` recipe supplies all of it):
 //   WOSH_CONNSTRING       the listener's connection string   (required)
@@ -85,14 +92,6 @@ const fail = (msg) => {
   process.exitCode = 1;
 };
 
-// The page's own status line + failure hook, for readable diagnostics
-// when a wait times out.
-const diag = (page) =>
-  page.evaluate(() => ({
-    status: document.getElementById("status")?.textContent,
-    failure: window.__wosh?.failure ?? null,
-  }));
-
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 const browser = await chromium.launch({
   executablePath: findChrome(),
@@ -107,18 +106,27 @@ try {
   });
   page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
-  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
-  console.log("[1] page loaded");
+  // The page's own status line + failure hook, for readable
+  // diagnostics when a wait times out.
+  const diag = () =>
+    page.evaluate(() => ({
+      status: document.getElementById("status")?.textContent,
+      failure: window.__wosh?.failure ?? null,
+    }));
 
-  // Install this browser's key where the sshd will look for it. Same
-  // path a user follows: mint, copy the line, add to authorized_keys.
-  await page.click("text=show this browser's public key");
-  const line = (await page.locator("#panel .key code").first()
-    .textContent({ timeout: 120_000 }) ?? "").trim();
-  if (!/^ssh-ed25519 /.test(line)) throw new Error(`bad identity line: ${line}`);
-  appendFileSync(AUTH_KEYS, line + "\n");
-  console.log("[2] browser identity installed into authorized_keys");
+  // The browser identity persists across page loads (a non-extractable
+  // CryptoKey pair in IndexedDB, behind the component's identity-store
+  // import), so ONE install serves every leg -- later legs
+  // re-authenticating after a reload double as a live check of that
+  // persistence: if the identity failed to survive, publickey auth
+  // against the installed line would fail.
+  const installIdentity = async () => {
+    await page.click("text=show this browser's public key");
+    const line = (await page.locator("#panel .key code").first()
+      .textContent({ timeout: 120_000 }) ?? "").trim();
+    if (!/^ssh-ed25519 /.test(line)) throw new Error(`bad identity line: ${line}`);
+    appendFileSync(AUTH_KEYS, line + "\n");
+  };
 
   const fillAndConnect = async () => {
     await page.fill("#panel input[placeholder*='connection string']", CONNSTRING);
@@ -127,40 +135,70 @@ try {
     await page.click("#panel button:has-text('connect')");
   };
 
-  // --- leg A: the prompt appears, and approving it yields a shell ----
+  const waitPrompt = async () => {
+    try {
+      return (await page.locator("#panel .confirm code").first()
+        .textContent({ timeout: 60_000 })).trim();
+    } catch (e) {
+      console.error("no host-key prompt appeared; page state:", await diag());
+      throw e;
+    }
+  };
+
+  const waitConnected = async () => {
+    try {
+      await page.waitForFunction(
+        (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
+        USER,
+        { timeout: 60_000 },
+      );
+    } catch (e) {
+      console.error("never reached 'connected'; page state:", await diag());
+      throw e;
+    }
+  };
+
+  const waitStatus = async (text) => {
+    await page.waitForFunction(
+      (t) => document.getElementById("status")?.textContent === t,
+      text,
+      { timeout: 30_000 },
+    );
+  };
+
+  const reload = async () => {
+    await page.reload({ waitUntil: "load" });
+    await page.waitForSelector("#panel button", { timeout: 15_000 });
+  };
+
+  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  console.log("[1] page loaded");
+
+  // --- leg A: the prompt appears; approval is interactive ------------
+  await installIdentity();
   await fillAndConnect();
 
-  // THE core assertion. If the page ever skips the host-key gate, this
-  // times out -- and before the prompt is handled nothing may proceed.
-  let promptFp;
-  try {
-    promptFp = (await page.locator("#panel .confirm code")
-      .textContent({ timeout: 60_000 })).trim();
-  } catch (e) {
-    console.error("no host-key prompt appeared; page state:", await diag(page));
-    throw e;
-  }
-  console.log(`[3] interactive host-key prompt shown: ${promptFp}`);
+  // THE core assertion. If the page ever skips the host-key gate on a
+  // first contact, this times out.
+  const promptFp = await waitPrompt();
+  console.log(`[A] interactive host-key prompt shown: ${promptFp}`);
   if (EXPECT_FP && promptFp !== EXPECT_FP) {
     fail(`prompt fingerprint ${promptFp} != sshd's ${EXPECT_FP}`);
   }
-  const parked = await diag(page);
+  const parked = await diag();
   if (parked.status !== "waiting for host key confirmation") {
     fail(`expected the session parked on the prompt, status is: ${parked.status}`);
   }
-
-  await page.click("#panel .confirm button:has-text('yes, connect')");
-  try {
-    await page.waitForFunction(
-      (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
-      USER,
-      { timeout: 60_000 },
-    );
-  } catch (e) {
-    console.error("never reached 'connected'; page state:", await diag(page));
-    throw e;
+  const box = page.locator("#panel .confirm input[type=checkbox]");
+  if (await box.count() !== 1) {
+    fail("no remember checkbox on the prompt");
+  } else if (await box.isChecked()) {
+    fail("the remember checkbox must default to UNCHECKED (persistence is opt-in)");
   }
-  console.log(`[4] approved; publickey auth completed as ${USER}`);
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  console.log(`[A] approved (without remembering); publickey auth completed as ${USER}`);
 
   // Round-trip through the real terminal: keystrokes in, output painted.
   const marker = "WOSH_BROWSER_E2E_OK";
@@ -180,31 +218,91 @@ try {
     marker,
     { timeout: 30_000 },
   );
-  console.log("[5] shell round-trip through the tunnel painted in xterm");
-
+  console.log("[A] shell round-trip through the tunnel painted in xterm");
   await page.click("#panel button:has-text('detach')");
-  console.log("[6] detached");
 
-  // --- leg B: rejecting the fingerprint sends nothing ----------------
-  await page.reload({ waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
+  await reload();
   await fillAndConnect();
-  await page.locator("#panel .confirm code").textContent({ timeout: 60_000 });
+  await waitPrompt();
+  console.log("[B] prompt appears again after reload: approval was not persisted");
   await page.click("#panel .confirm button:has-text('no')");
-  await page.waitForFunction(
-    () => document.getElementById("status")?.textContent === "host key rejected; nothing was sent",
-    undefined,
-    { timeout: 30_000 },
-  );
-  console.log("[7] rejected fingerprint ends the attempt: nothing was sent");
+  await waitStatus("host key rejected; nothing was sent");
+  console.log("[B] rejected fingerprint ends the attempt: nothing was sent");
+
+  // --- leg C: approve WITH remember ----------------------------------
+  // No re-install: the identity from leg A must have survived the
+  // reloads, or this auth fails.
+  await reload();
+  await fillAndConnect();
+  await waitPrompt();
+  await page.check("#panel .confirm input[type=checkbox]");
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  console.log("[C] approved with 'remember this approval' checked");
+  await page.click("#panel button:has-text('detach')");
+
+  // --- leg D: the pin skips the prompt --------------------------------
+  await reload();
+  await fillAndConnect();
+  {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      if (await page.locator("#panel .confirm").count() > 0) {
+        fail("prompt appeared despite a matching pinned fingerprint");
+        break;
+      }
+      const st = (await diag()).status;
+      if (st === `connected as ${USER}`) break;
+      if (Date.now() > deadline) {
+        console.error("page state:", await diag());
+        throw new Error("timed out waiting for the pinned connect");
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  const pinNote = await page.evaluate(() => document.querySelector("#panel .notice")?.textContent);
+  console.log(`[D] pinned fingerprint connected with NO prompt (${pinNote})`);
+  await page.click("#panel button:has-text('detach')");
+
+  // --- leg E: a changed host key warns loudly -------------------------
+  // Overwrite the pin for this listener's endpoint id with a bogus
+  // fingerprint, exactly what a MITM or reinstalled target produces:
+  // pinned != presented.
+  await page.evaluate(async (cs) => {
+    const { endpointIdOf } = await import("./boot.mjs");
+    const id = endpointIdOf(cs);
+    const pins = JSON.parse(localStorage.getItem("wosh.hostkeys.v1") ?? "{}");
+    if (!id || !pins[id]) throw new Error("expected a pin to tamper with");
+    pins[id] = { fp: "SHA256:0000000000000000000000000000000000000000000", at: pins[id].at };
+    localStorage.setItem("wosh.hostkeys.v1", JSON.stringify(pins));
+  }, CONNSTRING);
+  await reload();
+  await fillAndConnect();
+  await waitPrompt();
+  const warn = await page.evaluate(() =>
+    [...document.querySelectorAll("#panel .confirm .warn")].map((n) => n.textContent).join(" "));
+  if (!/CHANGED/.test(warn)) {
+    fail(`expected the changed-key warning, saw: ${warn || "(no warning)"}`);
+  } else {
+    console.log("[E] changed pinned key produces the loud warning");
+  }
+  const shown = await page.evaluate(() =>
+    [...document.querySelectorAll("#panel .confirm code")].map((n) => n.textContent));
+  if (!(shown.some((s) => s.includes("SHA256:00000")) && shown.some((s) => s === promptFp))) {
+    fail(`warning must show both fingerprints; saw: ${shown.join(", ")}`);
+  }
+  await page.click("#panel .confirm button:has-text('no')");
+  await waitStatus("host key rejected; nothing was sent");
+  console.log("[E] rejected the changed key: nothing was sent");
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }
 
   if (!process.exitCode) {
-    console.log("\nBROWSER E2E PASS: the page walks the host-key gate interactively" +
-      " and completes publickey auth in a real browser");
+    console.log("\nBROWSER E2E PASS: interactive TOFU on first contact, opt-in pinning, " +
+      "prompt-free reconnect on a pinned key, and a loud changed-key warning");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));

@@ -218,7 +218,9 @@ async function settle(session, timeoutMs = 30000) {
 /**
  * Connect and run the session. `ui` supplies the human decisions:
  *
- *   confirmHostKey(fingerprint) -> boolean
+ *   confirmHostKey(fingerprint, connstring) -> boolean
+ *     (may resolve without interaction ONLY for a fingerprint the user
+ *     previously approved and asked to remember; see boot.mjs)
  *   getCredential()            -> {kind: "publickey"}
  *                               | {kind: "password", password?}
  *                               | {kind: "keyboard-interactive"}
@@ -260,7 +262,10 @@ export async function connect({ connstring, user, ui }) {
   }
   const fp = await session.hostKeyFingerprint();
   status("waiting for host key confirmation");
-  const ok = await ui.confirmHostKey(fp ?? "(unavailable)");
+  // The connstring rides along so the ui can key its pin store by the
+  // listener identity actually being dialed (not whatever is in the
+  // form NOW).
+  const ok = await ui.confirmHostKey(fp ?? "(unavailable)", connstring);
   await session.confirmHostKey(!!ok);
   if (!ok) {
     status("host key rejected; nothing was sent");

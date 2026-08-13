@@ -63,6 +63,19 @@ for confirmation *before* any credential is sent; that ordering is
 structural, because `x/crypto/ssh` runs authentication strictly after
 its host-key callback returns.
 
+The confirmation can be **remembered, per listener, with an explicit
+opt-in checkbox**: the page pins the approved fingerprint keyed by the
+listener's endpoint id (the one identity iroh itself authenticates
+during the dial), skips the prompt when the same listener presents the
+same host key, and warns LOUDLY when it presents a different one. To
+make those pins survive restarts, the listener persists its iroh
+identity (default `${XDG_DATA_HOME:-~/.local/share}/wosh`, overridable
+with `--identity-dir`, disabled with `--ephemeral-identity`); the key
+pair rides `polymorph:webcrypto` handles end to end and is stored as
+PKCS#8 + raw public key. First contact with an unknown fingerprint is
+always confirmed interactively — the pin store can only ever suppress
+the prompt for a fingerprint a human explicitly approved.
+
 ## Running it
 
 ```sh
@@ -74,7 +87,7 @@ just serve                # the site on :8080 (or `just site out/` to deploy)
 ```
 
 `just listener` exposes 127.0.0.1:22 through n0's public relay; see
-`--help` for `--relay`, `--target`, and pairing-token options.
+`--help` for `--relay`, `--target`, pairing-token and identity options.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
@@ -251,12 +264,17 @@ Verified working:
   confirmation** (the prompt must appear and the session parks on it:
   TOFU is asserted, not assumed), publickey auth with the browser-minted
   key, keystrokes round-tripping through xterm to the sshd and back, and
-  a rejected fingerprint ending the attempt with nothing sent.
+  a rejected fingerprint ending the attempt with nothing sent. Plus the
+  whole pinning ladder: approval alone persists nothing (opt-in is
+  asserted), approval with "remember" checked skips the prompt on the
+  next connect, and a pinned listener presenting a DIFFERENT host key
+  gets the loud changed-key warning showing both fingerprints.
+- Listener identity persistence: the endpoint id (and so the browser's
+  pins) survives listener restarts; `--ephemeral-identity` restores the
+  old per-run behavior.
 
 Not finished:
 
-- Host-key pinning across visits (the fingerprint is confirmed
-  interactively every time -- which is the TOFU floor, never less).
 - CI.
 
 ## Deploying
