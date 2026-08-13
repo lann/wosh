@@ -101,6 +101,20 @@ low on this outer layer: pairing gates the tunnel, and SSH — the
 host-key gate, real authentication — remains the boundary that
 matters.
 
+Sessions **survive transport death**. The tunnel (`tunnel/`, protocol
+v2) frames the byte streams with cumulative offsets and bounded replay
+buffers, so a dropped connection — relay restart, network roam, laptop
+sleep — parks the session on the listener (sshd leg held open, default
+`--resume-grace 600`) while the client redials with backoff and both
+sides retransmit exactly the bytes the other missed. The SSH stack
+never notices: the sans-I/O core is simply not told the wire broke
+unless the resume window (90s) is exhausted. Both endpoints also
+REBIND themselves after a relay restart (an iroh endpoint shares fate
+with its relay websocket; the persistent identities are what make the
+rebind invisible), and v2 refusals travel as legible errors — a stale
+token now says "bad pairing token" at the client instead of silently
+dropping.
+
 ## Running it
 
 ```sh
@@ -235,6 +249,9 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 ## Layout
 
 - `connstring/` — the pairing format (shared by both ends), with tests.
+- `tunnel/` — the tunnel framing (protocol v2): resumable sessions as
+  frames + cumulative offsets + bounded replay buffers, one codec
+  linked by both Rust ends, with golden-byte tests.
 - `listener-core/` — the `wasi:cli@0.3.1` listener component.
 - `listener-host/` — its native shell: wasmtime + the polymorph
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
@@ -302,6 +319,14 @@ Verified working:
   after a listener restart rotates the token, the SAME device connects
   with the stale connstring (a printed QR keeps working) while a NEW
   device with that connstring is refused, legibly.
+- **Session resume** (`just browser-resume`): a live browser session
+  rides out a **relay restart** — the client detects the transport
+  death, rebinds its endpoint, redials with backoff and resumes; the
+  listener rebinds its accept loop, re-registers under the same
+  identity, and replays from the parked session. The page never
+  changes state; a post-restart keystroke round-trips. (The listener's
+  accept loop previously went permanently deaf on the first relay
+  hiccup — found by this gate's drill.)
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

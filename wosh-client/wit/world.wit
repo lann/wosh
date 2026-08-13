@@ -22,5 +22,9 @@ world wosh-client {
   import wosh:ssh-core/core;
   import identity-store;
   import pairing-store;
+  // Solely for the resume machine's backoff between redial attempts;
+  // the composed artifact already imports this interface (the iroh
+  // endpoint sleeps on it), so this adds nothing to the host surface.
+  import wasi:clocks/monotonic-clock@0.3.0;
   export terminal;
 }

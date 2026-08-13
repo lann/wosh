@@ -287,9 +287,36 @@ browser-idle-e2e: site hosts
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
         node host-test/browser-idle-e2e.mjs
 
+# Resume, end to end in a real browser: a live session must survive a
+# relay restart -- client endpoint rebind + resume machine, listener
+# accept-loop rebind + re-registration, offset-exchange replay. This
+# gate RESTARTS THE RELAY; it runs last so it cannot destabilize the
+# other gates' listeners.
+browser-resume: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-resume-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-browser-resume-listener.log | cut -d" " -f2)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_RELAY_BIN="{{RELAY}}" \
+        node host-test/browser-resume.mjs
+
 # Smoke-check the DEPLOYED site (real https origin, so this also
 # exercises service-worker registration, which local http cannot).
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core spike-async e2e e2e-kbdint e2e-pairing browser browser-e2e browser-idle-e2e
+check: test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser browser-e2e browser-idle-e2e browser-resume
+
+# The tunnel framing (protocol v2): codec golden bytes + replay
+# bookkeeping, shared by wosh-client and listener-core.
+test-tunnel:
+    cargo test -p wosh-tunnel

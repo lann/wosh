@@ -4389,6 +4389,7 @@ dependencies = [
  "base64",
  "wit-bindgen 0.59.0",
  "wosh-connstring",
+ "wosh-tunnel",
 ]
 
 [[package]]
@@ -4409,6 +4410,7 @@ dependencies = [
  "qrcode",
  "wit-bindgen 0.59.0",
  "wosh-connstring",
+ "wosh-tunnel",
 ]
 
 [[package]]
@@ -4449,6 +4451,14 @@ dependencies = [
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "wosh-tunnel"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
 ]
 
 [[package]]
