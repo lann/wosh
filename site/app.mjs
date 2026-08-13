@@ -289,7 +289,7 @@ export async function connect({ connstring, user, ui }) {
       const st = await session.status();
       const tag = statusOf(st);
       if (tag === "ready") break;
-      if (tag === "closed") fatal(`authentication: ${st.val ?? "closed"}`);
+      if (tag === "closed") fatal(`authentication: ${st.value ?? "closed"}`);
       if (tag === "auth-prompts") {
         const batch = await session.pendingPrompts();
         if (batch) {
