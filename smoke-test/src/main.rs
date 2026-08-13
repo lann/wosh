@@ -94,6 +94,14 @@ struct Args {
     /// `SHA256:...` of the sshd host key, to check the fingerprint the
     /// component reports before anything is authenticated.
     expect_host_key: Option<String>,
+    /// "publickey" (default) or "kbd" (keyboard-interactive against
+    /// the scripted stand-in; see kbdint-sshd/).
+    auth: String,
+    /// Answers for the keyboard-interactive rounds, consumed in prompt
+    /// order across however many batches the server issues.
+    kbd_answers: Vec<String>,
+    /// Invert the verdict: authentication must FAIL, legibly.
+    expect_auth_fail: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -103,6 +111,9 @@ fn parse_args() -> Result<Args> {
         user: std::env::var("USER").unwrap_or_else(|_| "root".into()),
         authorized_keys: PathBuf::new(),
         expect_host_key: None,
+        auth: "publickey".into(),
+        kbd_answers: Vec::new(),
+        expect_auth_fail: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -113,6 +124,11 @@ fn parse_args() -> Result<Args> {
             "--user" => a.user = v()?,
             "--authorized-keys" => a.authorized_keys = PathBuf::from(v()?),
             "--expect-host-key" => a.expect_host_key = Some(v()?),
+            "--auth" => a.auth = v()?,
+            "--kbd-answers" => {
+                a.kbd_answers = v()?.split(',').map(str::to_owned).collect()
+            }
+            "--expect-auth-fail" => a.expect_auth_fail = true,
             "--keepalive-only" => {}
             other => bail!("unknown flag {other}"),
         }
@@ -120,12 +136,17 @@ fn parse_args() -> Result<Args> {
     if a.connstring.is_empty() {
         bail!("--connstring is required");
     }
+    match a.auth.as_str() {
+        "publickey" | "kbd" => {}
+        other => bail!("--auth must be publickey or kbd, not {other}"),
+    }
     Ok(a)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
+    let publickey_mode = args.auth == "publickey";
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -229,6 +250,107 @@ async fn main() -> Result<()> {
 
             session.call_confirm_host_key(acc, s, true).await?;
 
+            if args.auth == "kbd" {
+                // --- 4k. keyboard-interactive auth ----------------
+                // The exports latch and resolve at once; every state
+                // transition below is observed by polling, and each
+                // `auth-prompts` round is answered from the queue.
+                session
+                    .call_authenticate_interactive(acc, s)
+                    .await?
+                    .map_err(|e| anyhow!("authenticate-interactive: {e}"))?;
+
+                let mut queue = args.kbd_answers.clone().into_iter();
+                let mut rounds = 0usize;
+                let mut saw_echo = false;
+                let mut saw_masked = false;
+                let deadline = Instant::now() + Duration::from_secs(60);
+                let auth_failure = loop {
+                    if Instant::now() > deadline {
+                        bail!("timed out during keyboard-interactive auth");
+                    }
+                    match session.call_status(acc, s).await? {
+                        Status::AuthPrompts => {
+                            let batch = session
+                                .call_pending_prompts(acc, s)
+                                .await?
+                                .ok_or_else(|| anyhow!("auth-prompts status but no pending batch"))?;
+                            if batch.prompts.is_empty() {
+                                bail!("a surfaced batch must carry prompts");
+                            }
+                            rounds += 1;
+                            println!(
+                                "[4k] round {rounds}: instruction {:?}, {} prompt(s)",
+                                batch.instruction,
+                                batch.prompts.len()
+                            );
+                            let mut answers = Vec::new();
+                            for p in &batch.prompts {
+                                println!("      prompt {:?} echo={}", p.text, p.echo);
+                                if p.echo { saw_echo = true } else { saw_masked = true }
+                                answers.push(queue.next().ok_or_else(|| {
+                                    anyhow!("ran out of --kbd-answers at round {rounds}")
+                                })?);
+                            }
+                            session
+                                .call_answer_prompts(acc, s, answers)
+                                .await?
+                                .map_err(|e| anyhow!("answer-prompts: {e}"))?;
+                        }
+                        Status::Ready => break None,
+                        Status::Closed(why) => break Some(why),
+                        _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                    }
+                };
+
+                if args.expect_auth_fail {
+                    let why = auth_failure
+                        .ok_or_else(|| anyhow!("authenticated despite wrong answers"))?;
+                    if !why.contains("ssh:") {
+                        bail!("wanted a legible ssh auth failure, got: {why}");
+                    }
+                    println!("[4k] wrong answers were refused, legibly: {why}");
+                    println!("\nE2E-KBDINT NEGATIVE PASS: wrong answers do not authenticate");
+                    return Ok(());
+                }
+                if let Some(why) = auth_failure {
+                    bail!("keyboard-interactive auth failed: {why}");
+                }
+                if rounds < 2 {
+                    bail!("expected the scripted server to issue two rounds, saw {rounds}");
+                }
+                if !(saw_echo && saw_masked) {
+                    bail!("expected both an echoed and a masked prompt (echo flag plumbing)");
+                }
+                println!("[4k] authenticated after {rounds} prompt rounds; shell is up");
+
+                // --- 5k. echo round-trip --------------------------
+                // The stand-in's shell is a byte echo (no pty), so the
+                // marker comes back exactly once.
+                let marker = "WOSH_KBDINT_OK";
+                session
+                    .call_write_input(acc, s, format!("{marker}\n").into_bytes())
+                    .await?;
+                let mut screen = String::new();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < deadline && !screen.contains(marker) {
+                    let chunk = session.call_drain_output(acc, s).await?;
+                    if !chunk.is_empty() {
+                        screen.push_str(&String::from_utf8_lossy(&chunk));
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                if !screen.contains(marker) {
+                    bail!("echo shell never returned {marker}; saw:\n{screen}");
+                }
+                println!("[5k] interactive round-trip through the tunnel OK");
+
+                session.call_detach(acc, s).await?;
+                println!("[6k] detached cleanly");
+                println!("\nE2E-KBDINT PASS: prompt batches answered over the tunnel, shell reached");
+                return Ok(());
+            }
+
             // --- 4. publickey auth via WebCrypto ------------------
             session
                 .call_authenticate_publickey(acc, s)
@@ -295,6 +417,8 @@ async fn main() -> Result<()> {
         .await?;
 
     outcome?;
-    println!("\nE2E PASS: browser SSH client -> iroh -> listener -> OpenSSH sshd");
+    if publickey_mode {
+        println!("\nE2E PASS: browser SSH client -> iroh -> listener -> OpenSSH sshd");
+    }
     Ok(())
 }

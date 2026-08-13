@@ -156,9 +156,15 @@ func wasm_export_wosh_terminal_terminal_method_session_status(arg0 uintptr) int3
 			variant0 = 0
 			variant1 = 0
 
-		case wosh_terminal_terminal.StatusReady:
+		case wosh_terminal_terminal.StatusAuthPrompts:
 
 			variant = int32(3)
+			variant0 = 0
+			variant1 = 0
+
+		case wosh_terminal_terminal.StatusReady:
+
+			variant = int32(4)
 			variant0 = 0
 			variant1 = 0
 
@@ -167,7 +173,7 @@ func wasm_export_wosh_terminal_terminal_method_session_status(arg0 uintptr) int3
 			utf8 := unsafe.Pointer(unsafe.StringData(payload))
 			pinner.Pin(utf8)
 
-			variant = int32(4)
+			variant = int32(5)
 			variant0 = uintptr(utf8)
 			variant1 = uint32(len(payload))
 
@@ -323,6 +329,156 @@ func wasm_export_callback_wosh_terminal_terminal_method_session_authenticate_pub
 
 //go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.authenticate-publickey
 func wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_publickey(arg0 int32, arg1 uintptr, arg2 uint32)
+
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.authenticate-interactive
+func wasm_export_wosh_terminal_terminal_method_session_authenticate_interactive(arg0 uintptr) int32 {
+	return int32(witAsync.Run(func() {
+		pinner := &runtime.Pinner{}
+		defer pinner.Unpin()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticateInteractive()
+		var option int32
+		var option0 uintptr
+		var option1 uint32
+		switch result.Tag() {
+		case witTypes.ResultOk:
+
+			option = int32(0)
+			option0 = 0
+			option1 = 0
+		case witTypes.ResultErr:
+			payload := result.Err()
+			utf8 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf8)
+
+			option = int32(1)
+			option0 = uintptr(utf8)
+			option1 = uint32(len(payload))
+		default:
+			panic("unreachable")
+		}
+		wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_interactive(option, option0, option1)
+
+	}))
+}
+
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.authenticate-interactive
+func wasm_export_callback_wosh_terminal_terminal_method_session_authenticate_interactive(event0 uint32, event1 uint32, event2 uint32) uint32 {
+	return witAsync.Callback(event0, event1, event2)
+}
+
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.authenticate-interactive
+func wasm_export_task_return_wosh_terminal_terminal_method_session_authenticate_interactive(arg0 int32, arg1 uintptr, arg2 uint32)
+
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.pending-prompts
+func wasm_export_wosh_terminal_terminal_method_session_pending_prompts(arg0 uintptr) int32 {
+	return int32(witAsync.Run(func() {
+		pinner := &runtime.Pinner{}
+		defer pinner.Unpin()
+		result := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).PendingPrompts()
+		var option int32
+		var option3 uintptr
+		var option4 uint32
+		var option5 uintptr
+		var option6 uint32
+		switch result.Tag() {
+		case witTypes.OptionNone:
+
+			option = int32(0)
+			option3 = 0
+			option4 = 0
+			option5 = 0
+			option6 = 0
+		case witTypes.OptionSome:
+			payload := result.Some()
+			utf8 := unsafe.Pointer(unsafe.StringData((payload).Instruction))
+			pinner.Pin(utf8)
+			slice := (payload).Prompts
+			length := uint32(len(slice))
+			result2 := witRuntime.Allocate(pinner, uintptr(length*(3*4)), 4)
+			for index, element := range slice {
+				base := unsafe.Add(result2, index*(3*4))
+				utf80 := unsafe.Pointer(unsafe.StringData((element).Text))
+				pinner.Pin(utf80)
+				*(*uint32)(unsafe.Add(unsafe.Pointer(base), 4)) = uint32(uint32(len((element).Text)))
+				*(*uint32)(unsafe.Add(unsafe.Pointer(base), 0)) = uint32(uintptr(uintptr(utf80)))
+				var result1 int32
+				if (element).Echo {
+					result1 = 1
+				} else {
+					result1 = 0
+				}
+				*(*int8)(unsafe.Add(unsafe.Pointer(base), (2 * 4))) = int8(result1)
+
+			}
+
+			option = int32(1)
+			option3 = uintptr(utf8)
+			option4 = uint32(len((payload).Instruction))
+			option5 = uintptr(result2)
+			option6 = length
+		default:
+			panic("unreachable")
+		}
+		wasm_export_task_return_wosh_terminal_terminal_method_session_pending_prompts(option, option3, option4, option5, option6)
+
+	}))
+}
+
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.pending-prompts
+func wasm_export_callback_wosh_terminal_terminal_method_session_pending_prompts(event0 uint32, event1 uint32, event2 uint32) uint32 {
+	return witAsync.Callback(event0, event1, event2)
+}
+
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.pending-prompts
+func wasm_export_task_return_wosh_terminal_terminal_method_session_pending_prompts(arg0 int32, arg1 uintptr, arg2 uint32, arg3 uintptr, arg4 uint32)
+
+//go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.answer-prompts
+func wasm_export_wosh_terminal_terminal_method_session_answer_prompts(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
+	return int32(witAsync.Run(func() {
+		pinner := &runtime.Pinner{}
+		defer pinner.Unpin()
+		result := make([]string, 0, arg2)
+		for index := 0; index < int(arg2); index++ {
+			base := unsafe.Add(unsafe.Pointer(arg1), index*(2*4))
+			value := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(base), 0))))), *(*uint32)(unsafe.Add(unsafe.Pointer(base), 4)))
+
+			result = append(result, value)
+		}
+
+		witRuntime.Unpin()
+		result0 := (export_wosh_terminal_terminal.SessionFromBorrowHandle(int32(uintptr(arg0)))).AnswerPrompts(result)
+		var option int32
+		var option1 uintptr
+		var option2 uint32
+		switch result0.Tag() {
+		case witTypes.ResultOk:
+
+			option = int32(0)
+			option1 = 0
+			option2 = 0
+		case witTypes.ResultErr:
+			payload := result0.Err()
+			utf8 := unsafe.Pointer(unsafe.StringData(payload))
+			pinner.Pin(utf8)
+
+			option = int32(1)
+			option1 = uintptr(utf8)
+			option2 = uint32(len(payload))
+		default:
+			panic("unreachable")
+		}
+		wasm_export_task_return_wosh_terminal_terminal_method_session_answer_prompts(option, option1, option2)
+
+	}))
+}
+
+//go:wasmexport [callback][async-lift]wosh:terminal/terminal#[method]session.answer-prompts
+func wasm_export_callback_wosh_terminal_terminal_method_session_answer_prompts(event0 uint32, event1 uint32, event2 uint32) uint32 {
+	return witAsync.Callback(event0, event1, event2)
+}
+
+//go:wasmimport [export]wosh:terminal/terminal [task-return][method]session.answer-prompts
+func wasm_export_task_return_wosh_terminal_terminal_method_session_answer_prompts(arg0 int32, arg1 uintptr, arg2 uint32)
 
 //go:wasmexport [async-lift]wosh:terminal/terminal#[method]session.write-input
 func wasm_export_wosh_terminal_terminal_method_session_write_input(arg0 uintptr, arg1 uintptr, arg2 uint32) int32 {
