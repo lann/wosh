@@ -54,8 +54,17 @@ const (
 
 // credential is what the page supplied via an authenticate-* call.
 type credential struct {
-	kind     string // "password" | "publickey" | "keyboard-interactive"
+	kind     string // "password" | "publickey" | "keyboard-interactive" | "auto"
 	password string
+}
+
+// offers reports whether this credential lets `method` proceed: the
+// method the page chose explicitly, or every method under "auto",
+// where the server steers selection (x/crypto walks the registered
+// methods in config order, constrained to the server's
+// methods-that-can-continue list).
+func (c credential) offers(method string) bool {
+	return c.kind == method || c.kind == "auto"
 }
 
 // kbdBatch is one keyboard-interactive challenge round, held while the
@@ -77,6 +86,7 @@ type Session struct {
 	hostFP   string
 	exitCode *int32
 	exited   bool
+	user     string // login user, for the auto-mode password prompt text
 
 	conn      *irohConn
 	client    *ssh.Client
@@ -166,6 +176,7 @@ func SessionConnect(connstring string, user string, cols uint16, rows uint16) wi
 	s := &Session{
 		state:           stateConnecting,
 		conn:            conn,
+		user:            user,
 		hostKeyDecision: make(chan bool, 1),
 		credsReady:      make(chan struct{}),
 		authOutcome:     make(chan error, 1),
@@ -188,11 +199,14 @@ func SessionConnect(connstring string, user string, cols uint16, rows uint16) wi
 func (s *Session) run(user string) {
 	cfg := &ssh.ClientConfig{
 		User: user,
-		// Both methods are registered up front because x/crypto/ssh
+		// Every method is registered up front because x/crypto/ssh
 		// snapshots its config before the handshake. Their callbacks
 		// park until the page supplies a credential, and each declines
-		// unless it is the kind the page chose -- x/crypto records a
-		// declining method's error and moves on to the next.
+		// unless the credential offers it -- the kind the page chose,
+		// or any of them under "auto" (x/crypto records a declining
+		// method's error and moves on to the next; which methods run
+		// at all, and in what order, is its negotiation with the
+		// server over this publickey-password-interactive list).
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeysCallback(s.publicKeysCallback),
 			ssh.PasswordCallback(s.passwordCallback),
@@ -298,15 +312,30 @@ func (s *Session) waitCreds() credential {
 
 func (s *Session) passwordCallback() (string, error) {
 	c := s.waitCreds()
-	if c.kind != "password" {
+	if !c.offers("password") {
 		return "", fmt.Errorf("password auth not selected")
 	}
-	return c.password, nil
+	if c.kind == "password" {
+		return c.password, nil
+	}
+	// Auto mode latched no password up front -- deliberately: it is
+	// collected only once the server has actually steered to password
+	// auth, through the same prompt machinery keyboard-interactive
+	// uses, so the page needs no standing password input.
+	answers, err := s.surfacePrompts("", []types.Prompt{
+		{Text: "password for " + s.user + ": ", Echo: false},
+	})
+	if err != nil {
+		return "", err
+	}
+	// answer-prompts enforces one answer per prompt, so answers has
+	// exactly one element.
+	return answers[0], nil
 }
 
 func (s *Session) publicKeysCallback() ([]ssh.Signer, error) {
 	c := s.waitCreds()
-	if c.kind != "publickey" {
+	if !c.offers("publickey") {
 		return nil, fmt.Errorf("publickey auth not selected")
 	}
 	signer, err := browserSigner()
@@ -318,13 +347,11 @@ func (s *Session) publicKeysCallback() ([]ssh.Signer, error) {
 
 // keyboardInteractiveCallback answers RFC 4256 challenges. x/crypto/ssh
 // calls it once per server-issued batch, on the auth goroutine; each
-// call publishes the batch for the page (status flips to auth-prompts)
-// and PARKS on kbdAnswers until answer-prompts supplies the answers --
-// the exact shape of the host-key gate. The server decides how many
-// rounds there are; this loops as often as it calls.
+// call surfaces the batch through surfacePrompts. The server decides
+// how many rounds there are; this loops as often as it calls.
 func (s *Session) keyboardInteractiveCallback(_, instruction string, questions []string, echos []bool) ([]string, error) {
 	c := s.waitCreds()
-	if c.kind != "keyboard-interactive" {
+	if !c.offers("keyboard-interactive") {
 		return nil, fmt.Errorf("keyboard-interactive auth not selected")
 	}
 
@@ -340,7 +367,19 @@ func (s *Session) keyboardInteractiveCallback(_, instruction string, questions [
 		echo := i < len(echos) && echos[i]
 		prompts[i] = types.Prompt{Text: q, Echo: echo}
 	}
+	return s.surfacePrompts(instruction, prompts)
+}
 
+// surfacePrompts publishes one batch for the page -- `status` flips to
+// auth-prompts -- and PARKS the calling auth goroutine on kbdAnswers
+// until answer-prompts supplies the answers: the exact shape of the
+// host-key gate. Both prompt-bearing credential paths ride it --
+// server-issued keyboard-interactive batches, and the password that
+// auto mode collects -- and they never overlap: x/crypto runs one auth
+// method at a time on the one auth goroutine, so the strict
+// batch/answer alternation the channel relies on holds by
+// construction.
+func (s *Session) surfacePrompts(instruction string, prompts []types.Prompt) ([]string, error) {
 	s.mu.Lock()
 	if s.state == stateClosed || s.kbdClosed {
 		s.mu.Unlock()
@@ -405,6 +444,13 @@ func (s *Session) AuthenticatePublickey() witTypes.Result[witTypes.Unit, string]
 
 func (s *Session) AuthenticateInteractive() witTypes.Result[witTypes.Unit, string] {
 	return s.supplyCreds(credential{kind: "keyboard-interactive"})
+}
+
+// AuthenticateAuto offers every method and lets the server steer (see
+// the WIT doc comment): publickey resolves silently off the identity
+// store, and anything needing human input arrives as a prompt batch.
+func (s *Session) AuthenticateAuto() witTypes.Result[witTypes.Unit, string] {
+	return s.supplyCreds(credential{kind: "auto"})
 }
 
 func (s *Session) PendingPrompts() witTypes.Option[types.PromptBatch] {

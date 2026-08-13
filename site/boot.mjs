@@ -107,6 +107,7 @@ export async function initBoot(panel, { onConnect }) {
   });
   const method = el("select");
   method.append(
+    el("option", { value: "auto", textContent: "automatic (server chooses)" }),
     el("option", { value: "publickey", textContent: "publickey (this browser's key)" }),
     el("option", { value: "password", textContent: "password" }),
     el("option", { value: "keyboard-interactive", textContent: "keyboard-interactive (OTP/2FA)" }),
@@ -125,26 +126,28 @@ export async function initBoot(panel, { onConnect }) {
     notice,
   );
 
-  // Publickey support depends on the loaded component; ask it rather
+  // Method support depends on the loaded component; ask it rather
   // than assume. Probing also forces the component to load, so the
   // panel reflects reality before the user commits to anything.
+  // Removing the first option promotes the next one to selected, so an
+  // older component degrades to the best explicit method it has.
   (async () => {
     try {
       const caps = await capabilities();
-      if (!caps.publickey) {
+      const drop = (v) => {
         for (const opt of [...method.options]) {
-          if (opt.value === "publickey") opt.remove();
+          if (opt.value === v) opt.remove();
         }
+      };
+      if (!caps.auto) drop("auto");
+      if (!caps.publickey) {
+        drop("publickey");
         showKeyBtn.disabled = true;
         notice.textContent =
           "this build of the client component has no publickey (WebCrypto) " +
           "auth yet; password and keyboard-interactive still work";
       }
-      if (!caps.keyboardInteractive) {
-        for (const opt of [...method.options]) {
-          if (opt.value === "keyboard-interactive") opt.remove();
-        }
-      }
+      if (!caps.keyboardInteractive) drop("keyboard-interactive");
     } catch (e) {
       notice.textContent = `could not load the client component: ${e.message ?? e}`;
     }
@@ -242,7 +245,12 @@ export async function initBoot(panel, { onConnect }) {
       // No password here: the password method collects it through
       // `collectPrompts` at the moment auth runs -- after the host key
       // is confirmed, in the same inline UI keyboard-interactive uses,
-      // and never parked in a long-lived DOM input.
+      // and never parked in a long-lived DOM input. Auto carries no
+      // secret either: the component asks (through the same UI) only
+      // if the server steers somewhere that needs typing.
+      if (method.value === "auto") {
+        return { kind: "auto" };
+      }
       if (method.value === "password") {
         return { kind: "password" };
       }

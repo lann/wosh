@@ -173,6 +173,23 @@ interface terminal {
     /// Zero-prompt batches are answered internally without surfacing.
     authenticate-interactive: async func() -> result<_, string>;
 
+    /// Let the server steer method selection, the way a stock ssh
+    /// client does. Every supported method is on offer -- publickey
+    /// (this browser's identity) first, then password, then
+    /// keyboard-interactive -- and the client walks that order
+    /// constrained to the methods the server says can continue.
+    /// Publickey needs no human input, so when the browser's key is
+    /// installed the session reaches `ready` without a single prompt.
+    /// Whatever does need input -- the password if the server steers
+    /// there, an OTP round -- surfaces through the same machinery as
+    /// `authenticate-interactive`: `status` reports `auth-prompts`,
+    /// read `pending-prompts`, `answer-prompts`, repeat until the
+    /// server decides. (A password request is a one-prompt masked
+    /// batch.) Same host-key gating, and the same
+    /// resolve-immediately-then-poll contract as the other
+    /// `authenticate-*` calls.
+    authenticate-auto: async func() -> result<_, string>;
+
     /// The prompt batch authentication is parked on, present while
     /// `status` is `auth-prompts`.
     pending-prompts: async func() -> option<prompt-batch>;

@@ -94,8 +94,10 @@ struct Args {
     /// `SHA256:...` of the sshd host key, to check the fingerprint the
     /// component reports before anything is authenticated.
     expect_host_key: Option<String>,
-    /// "publickey" (default) or "kbd" (keyboard-interactive against
-    /// the scripted stand-in; see kbdint-sshd/).
+    /// "publickey" (default), "kbd" (keyboard-interactive against the
+    /// scripted stand-in; see kbdint-sshd/), or "auto" (the server
+    /// steers: with no --kbd-answers this leg must complete silently
+    /// via publickey; with them it must ride the prompt loop).
     auth: String,
     /// Answers for the keyboard-interactive rounds, consumed in prompt
     /// order across however many batches the server issues.
@@ -137,8 +139,8 @@ fn parse_args() -> Result<Args> {
         bail!("--connstring is required");
     }
     match a.auth.as_str() {
-        "publickey" | "kbd" => {}
-        other => bail!("--auth must be publickey or kbd, not {other}"),
+        "publickey" | "kbd" | "auto" => {}
+        other => bail!("--auth must be publickey, kbd or auto, not {other}"),
     }
     Ok(a)
 }
@@ -146,7 +148,22 @@ fn parse_args() -> Result<Args> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
-    let publickey_mode = args.auth == "publickey";
+    // The two flow shapes: the prompt loop (keyboard-interactive, and
+    // auto when the server is expected to steer somewhere that asks),
+    // or silent-to-ready (publickey, and auto when it must resolve to
+    // the key with no prompt at all).
+    let interactive = args.auth == "kbd" || (args.auth == "auto" && !args.kbd_answers.is_empty());
+    // Decided here because `args` moves into the gate closure below;
+    // the prompt-loop legs print their own verdicts inline.
+    let final_pass = match (args.auth.as_str(), interactive) {
+        ("publickey", _) => {
+            Some("\nE2E PASS: browser SSH client -> iroh -> listener -> OpenSSH sshd")
+        }
+        ("auto", false) => {
+            Some("\nE2E AUTO PASS: the server steered auto to publickey; no prompt surfaced")
+        }
+        _ => None,
+    };
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -250,15 +267,24 @@ async fn main() -> Result<()> {
 
             session.call_confirm_host_key(acc, s, true).await?;
 
-            if args.auth == "kbd" {
-                // --- 4k. keyboard-interactive auth ----------------
-                // The exports latch and resolve at once; every state
-                // transition below is observed by polling, and each
-                // `auth-prompts` round is answered from the queue.
-                session
-                    .call_authenticate_interactive(acc, s)
-                    .await?
-                    .map_err(|e| anyhow!("authenticate-interactive: {e}"))?;
+            if interactive {
+                // --- 4k. prompt-driven auth -----------------------
+                // keyboard-interactive explicitly, or auto steered to
+                // it by the server. The exports latch and resolve at
+                // once; every state transition below is observed by
+                // polling, and each `auth-prompts` round is answered
+                // from the queue.
+                if args.auth == "auto" {
+                    session
+                        .call_authenticate_auto(acc, s)
+                        .await?
+                        .map_err(|e| anyhow!("authenticate-auto: {e}"))?;
+                } else {
+                    session
+                        .call_authenticate_interactive(acc, s)
+                        .await?
+                        .map_err(|e| anyhow!("authenticate-interactive: {e}"))?;
+                }
 
                 let mut queue = args.kbd_answers.clone().into_iter();
                 let mut rounds = 0usize;
@@ -347,15 +373,30 @@ async fn main() -> Result<()> {
 
                 session.call_detach(acc, s).await?;
                 println!("[6k] detached cleanly");
-                println!("\nE2E-KBDINT PASS: prompt batches answered over the tunnel, shell reached");
+                if args.auth == "auto" {
+                    println!("\nE2E AUTO-KBDINT PASS: the server steered auto to \
+                              keyboard-interactive; prompt batches answered over the tunnel");
+                } else {
+                    println!("\nE2E-KBDINT PASS: prompt batches answered over the tunnel, shell reached");
+                }
                 return Ok(());
             }
 
             // --- 4. publickey auth via WebCrypto ------------------
-            session
-                .call_authenticate_publickey(acc, s)
-                .await?
-                .map_err(|e| anyhow!("publickey auth: {e}"))?;
+            // Auto must land here too when the server offers nothing
+            // interactive: against the publickey-only sshd it has to
+            // resolve to the same silent signature flow.
+            if args.auth == "auto" {
+                session
+                    .call_authenticate_auto(acc, s)
+                    .await?
+                    .map_err(|e| anyhow!("authenticate-auto: {e}"))?;
+            } else {
+                session
+                    .call_authenticate_publickey(acc, s)
+                    .await?
+                    .map_err(|e| anyhow!("publickey auth: {e}"))?;
+            }
 
             // The call latches the credential and returns at once;
             // authentication and the pty/shell setup run in the
@@ -365,6 +406,11 @@ async fn main() -> Result<()> {
                 match session.call_status(acc, s).await? {
                     Status::Ready => break,
                     Status::Closed(why) => bail!("authentication failed: {why}"),
+                    // Neither mode in this leg may ask a human for
+                    // anything: publickey carries no prompts at all,
+                    // and auto against a publickey-only server must
+                    // stay exactly as silent.
+                    Status::AuthPrompts => bail!("a prompt batch surfaced in a promptless leg"),
                     _ if Instant::now() > deadline => bail!("timed out waiting for the shell"),
                     _ => tokio::time::sleep(Duration::from_millis(25)).await,
                 }
@@ -417,8 +463,8 @@ async fn main() -> Result<()> {
         .await?;
 
     outcome?;
-    if publickey_mode {
-        println!("\nE2E PASS: browser SSH client -> iroh -> listener -> OpenSSH sshd");
+    if let Some(msg) = final_pass {
+        println!("{msg}");
     }
     Ok(())
 }
