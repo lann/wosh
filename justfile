@@ -214,9 +214,32 @@ browser-e2e: site hosts
     WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
         node host-test/browser-e2e.mjs
 
+# Browser idle survival: the real page stays connected across an idle
+# window longer than QUIC's 30s max_idle_timeout, and a post-idle
+# keystroke still round-trips. Guards the polymorph-iroh keepalive pin
+# (its #70: an idle session used to die at ~30s, and on the
+# pre-refactor client the death wedged the guest into a "deadlock
+# detected" trap on the next keystroke). ~50s of deliberate idle, so it
+# runs after the fast browser legs.
+browser-idle-e2e: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-idle-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-browser-idle-listener.log | cut -d" " -f2)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+        node host-test/browser-idle-e2e.mjs
+
 # Smoke-check the DEPLOYED site (real https origin, so this also
 # exercises service-worker registration, which local http cannot).
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core spike-async e2e e2e-kbdint browser browser-e2e
+check: test-connstring test-ssh-core spike-async e2e e2e-kbdint browser browser-e2e browser-idle-e2e
