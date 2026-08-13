@@ -1,11 +1,12 @@
-//! wosh-listener-core: a wasi:cli component. Generates an iroh
-//! identity, binds a polymorph-iroh endpoint on a configured relay,
-//! prints a QR code + link (URL fragment = connection string: iroh
-//! pubkey + relay + optional pairing token), and for each accepted
-//! connection reads a short pairing-token prefix off the first stream
-//! the peer opens and -- if it matches -- bridges the rest of that
-//! stream, byte for byte, to a configured TCP endpoint. This component
-//! never parses SSH; it is a dumb pipe once the token check passes.
+//! wosh-listener-core: a wasi:cli component. Loads (or mints and
+//! persists) an iroh identity, binds a polymorph-iroh endpoint on a
+//! configured relay, prints a QR code + link (URL fragment =
+//! connection string: iroh pubkey + relay + optional pairing token),
+//! and for each accepted connection reads a short pairing-token prefix
+//! off the first stream the peer opens and -- if it matches -- bridges
+//! the rest of that stream, byte for byte, to a configured TCP
+//! endpoint. This component never parses SSH; it is a dumb pipe once
+//! the token check passes.
 
 mod bindings {
     wit_bindgen::generate!({
@@ -15,12 +16,12 @@ mod bindings {
     });
 }
 
+mod identity;
 mod tcp;
 
 use std::net::SocketAddr;
 
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions};
-use bindings::polymorph::iroh::identity_generate::generate as identity_generate;
 
 use clap::Parser;
 use wosh_connstring::ConnString;
@@ -68,6 +69,12 @@ struct Cli {
     /// Print the link only, no QR code
     #[arg(long)]
     no_qr: bool,
+
+    /// Mint a fresh identity for this run instead of loading/persisting
+    /// one: the endpoint id (and so the connection string) changes every
+    /// start, and browser host-key pins keyed on it will not carry over
+    #[arg(long)]
+    ephemeral_identity: bool,
 }
 
 fn parse_token(s: &str) -> Result<[u8; wosh_connstring::TOKEN_LEN], String> {
@@ -137,7 +144,9 @@ impl bindings::exports::wasi::cli::run::Guest for Component {
 bindings::export!(Component with_types_in bindings);
 
 async fn run_listener(cli: Cli) -> Result<(), String> {
-    let identity = identity_generate().await.map_err(|e| format!("identity: {e:?}"))?;
+    // Persistent by default: a stable endpoint id is what lets the
+    // browser pin this listener's SSH host key across restarts.
+    let identity = identity::load_or_create(cli.ephemeral_identity).await?;
     let options = EndpointOptions::new(&identity);
     options.add_alpn(ALPN);
     options.relay_url(&cli.relay);

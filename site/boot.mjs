@@ -1,14 +1,22 @@
 // The connect panel: read the connection string, collect a user name,
 // show the host key for confirmation, and offer a credential.
 //
-// Deliberately stateless ITSELF: this panel writes nothing to storage.
-// The one durable thing -- the browser's SSH identity -- lives behind
-// the component's `identity-store` import (site/identity-store.ts): a
-// non-extractable WebCrypto pair in IndexedDB, so the key line shown
-// here keeps working across visits. main's equivalent carried saved
-// proxies, passkey registration, PRF-wrapped key escrow and its own
-// IndexedDB identity -- none of which applies here: authentication is
-// SSH's own.
+// Two durable things live behind this panel, both narrow on purpose.
+// The browser's SSH identity lives behind the component's
+// `identity-store` import (site/identity-store.ts): a non-extractable
+// WebCrypto pair in IndexedDB, so the key line shown here keeps
+// working across visits. And this panel itself persists exactly one
+// thing, only with the user's explicit opt-in (a checkbox on the
+// fingerprint prompt): the host-key pin store -- approved SSH
+// fingerprints keyed by the listener's endpoint id, so a returning
+// visitor skips the prompt when the same listener presents the same
+// host key, and gets a loud warning when it presents a DIFFERENT one.
+// TOFU floor: an unrecognized fingerprint is always confirmed
+// interactively; the store can only ever suppress the prompt for a
+// fingerprint a human explicitly approved here before. main's
+// equivalent carried saved proxies, passkey registration, PRF-wrapped
+// key escrow and its own IndexedDB identity -- none of which applies
+// here: authentication is SSH's own.
 
 import { identity, detach, capabilities } from "./app.mjs";
 
@@ -26,6 +34,59 @@ const el = (tag, props = {}, ...children) => {
 export function connstringFromLocation(loc = location) {
   const frag = (loc.hash || "").replace(/^#/, "");
   return frag ? decodeURIComponent(frag) : "";
+}
+
+// --- the host-key pin store -------------------------------------------------
+//
+// Keyed by the listener's endpoint id -- its Ed25519 iroh pubkey, the
+// one identity iroh itself authenticates during the dial, persistent
+// across listener restarts since the listener stores its key on disk.
+// The value is the SSH host-key fingerprint the user approved. Note the
+// key is the PROXY's identity and the value is the SSH SERVER's: the
+// pin says "behind the listener I approved, I saw this host key", and
+// any change in that pairing gets the loud warning below.
+
+const PINS_KEY = "wosh.hostkeys.v1";
+
+/**
+ * The listener's endpoint id (raw Ed25519 pubkey, hex) out of a
+ * connection string; null if it cannot be extracted. Duplicates ONLY
+ * the fixed prefix of the versioned format (connstring/src/lib.rs:
+ * version byte, then 32 pubkey bytes) and refuses other versions, so
+ * a format change degrades to "no pinning" -- more prompting, never
+ * less.
+ */
+export function endpointIdOf(connstring) {
+  try {
+    const bin = atob(connstring.trim().replace(/-/g, "+").replace(/_/g, "/"));
+    if (bin.length < 34 || bin.charCodeAt(0) !== 1) return null;
+    let hex = "";
+    for (let i = 1; i < 33; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
+    return hex;
+  } catch {
+    return null;
+  }
+}
+
+/** The pin map, `{ [endpointIdHex]: { fp, at } }`; {} when unavailable. */
+function loadPins() {
+  try {
+    const pins = JSON.parse(localStorage.getItem(PINS_KEY) ?? "{}");
+    return pins && typeof pins === "object" ? pins : {};
+  } catch {
+    return {}; // no storage (private mode) or corrupt JSON: stay stateless
+  }
+}
+
+function savePin(endpointId, fp) {
+  try {
+    const pins = loadPins();
+    pins[endpointId] = { fp, at: new Date().toISOString() };
+    localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+  } catch {
+    // Storage refused (private mode, quota): the approval still stands
+    // for this session; the user is simply prompted again next time.
+  }
 }
 
 export async function initBoot(panel, { onConnect }) {
@@ -106,21 +167,70 @@ export async function initBoot(panel, { onConnect }) {
 
   // The human decisions, rendered inline in the panel.
   const ui = {
-    confirmHostKey(fingerprint) {
+    confirmHostKey(fingerprint, connstring = csInput.value) {
+      const endpointId = endpointIdOf(connstring);
+      const pinned = endpointId ? loadPins()[endpointId] : undefined;
+
+      // The pinning payoff: this listener presented exactly the
+      // fingerprint the user approved-and-saved before. Note it and
+      // proceed without a prompt.
+      if (pinned && pinned.fp === fingerprint) {
+        notice.textContent =
+          `host key matches the approval saved in this browser on ${String(pinned.at).slice(0, 10)}`;
+        return Promise.resolve(true);
+      }
+
       return new Promise((resolve) => {
         const row = el("div", { className: "confirm" });
+        if (pinned) {
+          // Same listener identity, different SSH host key: the one
+          // situation that deserves alarm, and the reason the store
+          // is keyed by endpoint id rather than being a bare
+          // fingerprint set.
+          row.append(
+            el("div", {
+              className: "warn",
+              textContent:
+                "WARNING: this listener's SSH host key has CHANGED from the one you approved here.",
+            }),
+            el("div", {
+              className: "warn",
+              textContent:
+                "That can mean the target machine was reinstalled -- or that the connection " +
+                "is being intercepted. Do not approve unless the operator confirms the new fingerprint.",
+            }),
+            el("div", {}, "approved before: ", el("code", { textContent: pinned.fp })),
+            el("div", {}, "presented now: ", el("code", { textContent: fingerprint })),
+          );
+        } else {
+          row.append(
+            el("div", { textContent: "the server presented this host key:" }),
+            el("code", { textContent: fingerprint }),
+            el("div", { textContent: "does it match what the operator published?" }),
+          );
+        }
         const yes = el("button", { textContent: "yes, connect" });
         const no = el("button", { textContent: "no" });
-        row.append(
-          el("div", { textContent: "the server presented this host key:" }),
-          el("code", { textContent: fingerprint }),
-          el("div", { textContent: "does it match what the operator published?" }),
-          yes, " ", no,
-        );
+        // Opt-in (default off): approving never writes anything unless
+        // this is checked. Offered only when the connstring yielded a
+        // usable endpoint id to key the pin on.
+        const remember = el("input", { type: "checkbox", id: "remember-hostkey" });
+        if (endpointId) {
+          row.append(
+            el("div", {},
+              remember,
+              el("label", {
+                htmlFor: "remember-hostkey",
+                textContent: " remember this approval in this browser",
+              })),
+          );
+        }
+        row.append(yes, " ", no);
         panel.append(row);
-        const done = (v) => {
+        const done = (accepted) => {
+          if (accepted && endpointId && remember.checked) savePin(endpointId, fingerprint);
           row.remove();
-          resolve(v);
+          resolve(accepted);
         };
         yes.addEventListener("click", () => done(true));
         no.addEventListener("click", () => done(false));

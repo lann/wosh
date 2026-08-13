@@ -111,7 +111,8 @@ e2e: compose
     scripts/test-sshd.sh start
     pkill -f 'wosh-listene[r]' 2>/dev/null || true
     sleep 1
-    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-listener.log 2>&1 &
     sleep 7
     cs=$(grep '^connstring: ' /tmp/wosh-e2e-listener.log | cut -d" " -f2)
@@ -139,7 +140,8 @@ e2e-kbdint: compose
     target/gate/kbdint-sshd --port 2223 > /tmp/wosh-kbdint-sshd.log 2>&1 &
     sleep 1
     fp=$(grep '^fingerprint: ' /tmp/wosh-kbdint-sshd.log | cut -d" " -f2)
-    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
         --target 127.0.0.1:2223 --no-qr > /tmp/wosh-kbdint-listener.log 2>&1 &
     sleep 7
     cs=$(grep '^connstring: ' /tmp/wosh-kbdint-listener.log | cut -d" " -f2)
@@ -172,7 +174,8 @@ browser-e2e: site hosts
     scripts/test-sshd.sh start
     pkill -f 'wosh-listene[r]' 2>/dev/null || true
     sleep 1
-    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-e2e-listener.log 2>&1 &
     sleep 7
     cs=$(grep '^connstring: ' /tmp/wosh-browser-e2e-listener.log | cut -d" " -f2)

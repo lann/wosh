@@ -1,11 +1,14 @@
 package polymorph:iroh@0.1.0;
 
 /// Trimmed vendor copy for wosh-listener-core: only the interfaces
-/// this component actually imports (`identity-generate`, `endpoint`).
+/// this component actually imports (`identity-generate`,
+/// `identity-from-keys`, `endpoint`), plus their dependency
+/// `polymorph:webcrypto/signature` (vendored in full next door --
+/// webcrypto references no wasi packages, so it is safe to include).
 /// The full upstream package (vendored unabridged for ssh-client-core
 /// and engine-go, which don't also pull in wasi:cli@0.3.1) also
-/// defines `identity-from-keys` and the `iroh-endpoint` world; both
-/// pull in wasi:sockets@0.3.0 + wasi:clocks@0.3.0 + webrtc-datachannels
+/// defines the `iroh-endpoint` world, which pulls in
+/// wasi:sockets@0.3.0 + wasi:clocks@0.3.0 + webrtc-datachannels
 /// + websocket, which this component never uses directly. Keeping
 /// those out of THIS copy's graph avoids a wit-bindgen codegen bug:
 /// generating bindings for a world that has two versions of an
@@ -78,6 +81,14 @@ interface identity-generate {
     use identity.{identity};
 
     generate: async func() -> result<identity, error>;
+}
+
+interface identity-from-keys {
+    use types.{error};
+    use identity.{identity};
+    use polymorph:webcrypto/signature@0.1.0.{signing-key, verifying-key};
+
+    from-keys: async func(signing: signing-key, verifying: verifying-key) -> result<identity, error>;
 }
 
 interface endpoint {
