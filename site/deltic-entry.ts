@@ -21,12 +21,16 @@
 // component as public bytes and signatures only.
 //
 // MODULE IDENTITY: the bundle must carry exactly one copy of
-// @deltic/runtime/embedder, or `instanceof` / brand checks stop holding
+// @deltic/runtime/embedder, or `isComponentException` stops holding
 // across module boundaries and real errors surface as unbranded
 // throws. deno.json's import map is what guarantees that.
 
 import { Translator } from "@deltic/runtime/shim";
-import { ComponentException, instantiate } from "@deltic/runtime/embedder";
+import {
+  ComponentException,
+  instantiate,
+  isComponentException,
+} from "@deltic/runtime/embedder";
 import { wasiShims } from "@deltic/wasi-shims";
 import { webcryptoImports } from "@polymorph/webcrypto-deltic";
 import { websocketImports } from "@polymorph/websocket-deltic";
@@ -34,7 +38,7 @@ import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 import { identityStoreImports } from "./identity-store.ts";
 
-export { ComponentException };
+export { ComponentException, isComponentException };
 
 /** The interface the client component exports; see wit/terminal.wit. */
 export const TERMINAL_INTERFACE = "wosh:terminal/terminal";
