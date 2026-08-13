@@ -27,13 +27,49 @@ const el = (tag, props = {}, ...children) => {
 };
 
 /**
+ * The connection string out of a URL fragment. Percent-decoded when it
+ * decodes -- a connstring is base64url and so never contains `%`, so a
+ * malformed escape means the fragment was never encoded to begin with,
+ * and the raw text is the better guess.
+ */
+function fragmentValue(hash) {
+  const frag = (hash || "").replace(/^#/, "");
+  if (!frag) return "";
+  try {
+    return decodeURIComponent(frag).trim();
+  } catch {
+    return frag.trim();
+  }
+}
+
+/**
  * The connection string travels in the URL fragment, so it stays out of
  * request logs and Referer headers. Accepts a bare string too, for
  * manual paste.
  */
 export function connstringFromLocation(loc = location) {
-  const frag = (loc.hash || "").replace(/^#/, "");
-  return frag ? decodeURIComponent(frag) : "";
+  return fragmentValue(loc.hash);
+}
+
+/**
+ * What the user typed, as a connection string. The thing an operator
+ * hands out is the whole QR LINK, and that is what gets pasted or
+ * shared -- so anything that parses as a URL contributes its fragment
+ * instead of its text. Safe against a bare connstring: base64url has
+ * no `:`, so `new URL` always rejects one. A URL with no fragment is
+ * returned verbatim, so the error the user gets names what they
+ * actually pasted rather than an empty field.
+ */
+export function connstringFrom(raw) {
+  const s = (raw ?? "").trim();
+  if (s.startsWith("#")) return fragmentValue(s); // the fragment alone, `#` and all
+  let url;
+  try {
+    url = new URL(s);
+  } catch {
+    return s;
+  }
+  return fragmentValue(url.hash) || s;
 }
 
 // --- the host-key pin store -------------------------------------------------
@@ -103,7 +139,7 @@ export async function initBoot(panel, { onConnect }) {
 
   const csInput = el("input", {
     className: "connstring",
-    placeholder: "connection string (from the listener's QR link)",
+    placeholder: "connection string or link (from the listener's QR)",
     value: connstringFromLocation(),
   });
   const userInput = el("input", {
@@ -214,7 +250,7 @@ export async function initBoot(panel, { onConnect }) {
   // The human decisions, rendered inline in the panel.
   const ui = {
     confirmHostKey(fingerprint, connstring = csInput.value) {
-      const endpointId = endpointIdOf(connstring);
+      const endpointId = endpointIdOf(connstringFrom(connstring));
       const pinned = endpointId ? loadPins()[endpointId] : undefined;
 
       // The pinning payoff: this listener presented exactly the
@@ -340,7 +376,11 @@ export async function initBoot(panel, { onConnect }) {
 
   const doConnect = async () => {
     notice.textContent = "";
-    const connstring = csInput.value.trim();
+    // A pasted QR link becomes its fragment here, and the field is
+    // rewritten to match: what the user sees is what gets dialed (and
+    // what the host-key prompt keys its pin on).
+    const connstring = connstringFrom(csInput.value);
+    if (connstring !== csInput.value) csInput.value = connstring;
     const user = userInput.value.trim();
     if (!connstring) return void (notice.textContent = "a connection string is required");
     if (!user) return void (notice.textContent = "a user name is required");

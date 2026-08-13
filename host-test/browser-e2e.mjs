@@ -16,7 +16,9 @@
 //      keystrokes round-trip through the real terminal.
 //   B. After a reload, the prompt appears AGAIN: approval is not
 //      persisted unless the user opted in. Rejecting ends the attempt
-//      with nothing sent.
+//      with nothing sent. This leg also pastes the whole QR LINK
+//      rather than the bare connstring: the field must reduce a URL to
+//      its fragment, since the link is what operators hand out.
 //   C. Approving WITH "remember this approval" checked pins the
 //      fingerprint (keyed by the listener's endpoint id) ...
 //   D. ... so the next reload connects with NO prompt at all: the
@@ -129,8 +131,8 @@ try {
     appendFileSync(AUTH_KEYS, line + "\n");
   };
 
-  const fillAndConnect = async () => {
-    await page.fill("#panel input[placeholder*='connection string']", CONNSTRING);
+  const fillAndConnect = async (connstring = CONNSTRING) => {
+    await page.fill("#panel input[placeholder*='connection string']", connstring);
     await page.fill("#panel input[placeholder='user']", USER);
     // Deliberately no selectOption: this drives the DEFAULT method,
     // which must be auto -- the server steers, and against this sshd
@@ -229,8 +231,17 @@ try {
 
   // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
   await reload();
-  await fillAndConnect();
+  // Pasted as the whole QR LINK this time, which is what an operator
+  // actually hands out: the field must reduce it to the fragment, and
+  // the dial must be indistinguishable from the bare-connstring legs.
+  await fillAndConnect(`http://127.0.0.1:${PORT}/#${CONNSTRING}`);
   await waitPrompt();
+  const reduced = await page.inputValue("#panel input[placeholder*='connection string']");
+  if (reduced !== CONNSTRING) {
+    fail(`a pasted link was not reduced to its fragment: ${reduced}`);
+  } else {
+    console.log("[B] a pasted QR link dials: its fragment is taken as the connstring");
+  }
   console.log("[B] prompt appears again after reload: approval was not persisted");
   await page.click("#panel .confirm button:has-text('no')");
   await waitStatus("host key rejected; nothing was sent");
