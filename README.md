@@ -230,8 +230,7 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   `wosh:terminal` exporter: connection-string parsing (links
   `connstring/` directly), the iroh dial and pairing frame, the
   never-cancelled reader and single-writer byte pump, and the
-  signature relay to the host's `identity-store` (verified against the
-  reported public key before it is offered).
+  signature relay to the host's `identity-store`.
 - `ssh-core/` — the Go half: `x/crypto/ssh` as a sans-I/O component
   behind `wosh:ssh-core`. No I/O, no keys, no non-WASI imports; every
   export is a plain synchronous function, and every state change
@@ -269,8 +268,9 @@ Verified working:
   host's `identity-store`, emits an `authorized_keys` line, dials the
   listener over real iroh, verifies the host key fingerprint against
   the real sshd's, authenticates by **publickey with a signature the
-  store produces and the component checks against that public key**
-  (no private-key handle exists anywhere in the component), gets an
+  store produces** (no private-key handle exists anywhere in the
+  component graph; the sshd's own verification is what judges the
+  signature), gets an
   interactive pty, round-trips a command through the tunnel, resizes,
   and detaches cleanly. A second leg does the same via
   `authenticate-auto`: the server steers method selection, and against

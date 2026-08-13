@@ -129,13 +129,6 @@ struct Inner {
     /// tasks noticing `signing` would both fetch `pending-signature`
     /// and the second `provide-signature` would fail.
     signing: bool,
-    /// The raw Ed25519 public key the identity store REPORTS, cached
-    /// when an authenticate call fetches it. `drive` verifies every
-    /// signature the store produces against this key before offering
-    /// it to the core (the terminal.wit identity-store contract), so a
-    /// store that signs with a different key than it reports fails
-    /// loudly at the client, not opaquely at the server.
-    identity_pubkey: Option<Vec<u8>>,
     detached: bool,
 }
 
@@ -216,60 +209,29 @@ async fn drive(state: &Rc<State>) {
         let Some(blob) = pending else { return };
 
         // No borrow is held here -- see the module header.
-        let signed = identity_store::sign(blob.clone()).await;
+        let signed = identity_store::sign(blob).await;
 
         {
             let mut inner = state.inner.borrow_mut();
             inner.signing = false;
             match signed {
-                // Verify-then-offer, per terminal.wit's identity-store
-                // contract: the signature must check out against the
-                // public key the store REPORTS (cached when the
-                // authenticate call fetched it). A store that signs
-                // with some other key -- confusion or compromise --
-                // fails here, legibly, instead of as an opaque
-                // server-side rejection. verify_strict: the same
-                // strict criterion polymorph:webcrypto pins, so a
-                // degenerate key or signature can't scrape by.
-                Ok(sig) => match verify_store_signature(&inner.identity_pubkey, &blob, &sig) {
-                    Ok(()) => {
-                        if let Err(e) = inner.core.provide_signature(&sig) {
-                            inner.core.fail_signature(&format!("signature rejected: {e}"));
-                        }
+                // The signature is relayed as the store produced it.
+                // The store sits on the host side of the trust
+                // boundary (it IS the keeper of the key), and the
+                // server verifies the signature against the offered
+                // public key anyway -- a store that signs with a
+                // different key than it reports surfaces as a
+                // server-side auth rejection.
+                Ok(sig) => {
+                    if let Err(e) = inner.core.provide_signature(&sig) {
+                        inner.core.fail_signature(&format!("signature rejected: {e}"));
                     }
-                    Err(e) => inner.core.fail_signature(&e),
-                },
+                }
                 Err(e) => inner.core.fail_signature(&format!("identity-store sign: {e}")),
             }
         }
         // Round again: the answer above is a state-changing call.
     }
-}
-
-/// The identity-store contract check: `sig` must be a valid Ed25519
-/// signature over `blob` under the key the store reports. Everything
-/// here is public data; only the check's VERDICT matters.
-fn verify_store_signature(
-    pubkey: &Option<Vec<u8>>,
-    blob: &[u8],
-    sig: &[u8],
-) -> Result<(), String> {
-    use ed25519_dalek::{Signature, VerifyingKey};
-
-    let key: &[u8; 32] = pubkey
-        .as_deref()
-        .ok_or("signature arrived with no identity public key on record")?
-        .try_into()
-        .map_err(|_| "identity store reports a public key that is not 32 bytes".to_string())?;
-    let sig: &[u8; 64] = sig
-        .try_into()
-        .map_err(|_| "identity store produced a signature that is not 64 bytes".to_string())?;
-    VerifyingKey::from_bytes(key)
-        .map_err(|e| format!("identity store reports an invalid public key: {e}"))?
-        .verify_strict(blob, &Signature::from_bytes(sig))
-        .map_err(|_| {
-            "identity store signed with a key other than the one it reports".to_string()
-        })
 }
 
 /// The reader task. It owns `recv` for the whole session and is NEVER
@@ -469,7 +431,6 @@ impl GuestSession for Session {
                 outbox: VecDeque::new(),
                 link_down: false,
                 signing: false,
-                identity_pubkey: None,
                 detached: false,
             }),
             writer_signal: Signal::default(),
@@ -572,11 +533,12 @@ impl GuestSession for Session {
     /// the host's store. Same latch-then-poll contract.
     async fn authenticate_publickey(&self) -> Result<(), String> {
         let public = Self::identity_public_key().await?;
-        let res = {
-            let mut inner = self.state.inner.borrow_mut();
-            inner.identity_pubkey = Some(public.clone());
-            inner.core.authenticate_publickey(&public)
-        };
+        let res = self
+            .state
+            .inner
+            .borrow()
+            .core
+            .authenticate_publickey(&public);
         drive(&self.state).await;
         res
     }
@@ -595,11 +557,12 @@ impl GuestSession for Session {
     /// the offer.
     async fn authenticate_auto(&self) -> Result<(), String> {
         let public = Self::identity_public_key().await?;
-        let res = {
-            let mut inner = self.state.inner.borrow_mut();
-            inner.identity_pubkey = Some(public.clone());
-            inner.core.authenticate_auto(Some(&public))
-        };
+        let res = self
+            .state
+            .inner
+            .borrow()
+            .core
+            .authenticate_auto(Some(&public));
         drive(&self.state).await;
         res
     }

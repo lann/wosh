@@ -14,10 +14,12 @@ package wosh:terminal;
 /// The surface is deliberately sign-only rather than handing back a
 /// `polymorph:webcrypto` signing-key handle: no private-key handle
 /// exists anywhere in the component graph, and the component needs no
-/// webcrypto import of its own. The component still verifies rather
-/// than trusts: it checks each signature against `public-key` before
-/// offering it, so a store that signs with a different key than it
-/// reports fails loudly at the client, not opaquely at the server.
+/// webcrypto import of its own. Signatures are relayed as the store
+/// produces them -- the store is on the host side of the trust
+/// boundary (it IS the keeper of the key), and the server verifies
+/// every signature against the offered public key anyway, so a store
+/// that signs with a different key than it reports surfaces as a
+/// server-side authentication failure.
 interface identity-store {
   /// The public half of this client's SSH identity, as a raw Ed25519
   /// public key (32 bytes). Stable across calls -- and, wherever the

@@ -4387,7 +4387,6 @@ name = "wosh-client"
 version = "0.1.0"
 dependencies = [
  "base64",
- "ed25519-dalek",
  "wit-bindgen 0.59.0",
  "wosh-connstring",
 ]
