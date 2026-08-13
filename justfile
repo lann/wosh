@@ -236,6 +236,14 @@ e2e-pairing: compose
     grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log
     echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
 
+# Extra-keys bar gesture gate: a key fires on a tap and never on a drag
+# (the strip scrolls under the same thumb). Drives site/mobile.mjs and
+# the page's own stylesheet with synthesized touch in headless Chromium
+# -- no component, no relay -- so it needs no `just site`, only
+# `just web-deps` once.
+browser-keys:
+    node host-test/browser-keys.mjs
+
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
 browser: site
@@ -314,7 +322,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser browser-e2e browser-idle-e2e browser-resume
+check: test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
