@@ -302,7 +302,9 @@ export async function initBoot(panel, { onConnect }) {
     },
     // One keyboard-interactive batch: instruction text, then an input
     // per prompt -- masked unless the server said echo. Resolves with
-    // the answers, in order.
+    // the answers, in order -- or null if the user cancels (no OTP to
+    // give, wrong account): the caller tears the attempt down rather
+    // than leaving authentication parked forever.
     collectPrompts(batch) {
       return new Promise((resolve) => {
         const row = el("div", { className: "confirm" });
@@ -319,17 +321,18 @@ export async function initBoot(panel, { onConnect }) {
           return input;
         });
         const answerBtn = el("button", { textContent: "answer" });
-        row.append(answerBtn);
+        const cancelBtn = el("button", { textContent: "cancel" });
+        row.append(el("div", { className: "row" }, answerBtn, cancelBtn));
         panel.append(row);
         inputs[0]?.focus();
-        const done = () => {
-          const answers = inputs.map((i) => i.value);
+        const done = (answers) => {
           row.remove();
           resolve(answers);
         };
-        answerBtn.addEventListener("click", done);
+        answerBtn.addEventListener("click", () => done(inputs.map((i) => i.value)));
+        cancelBtn.addEventListener("click", () => done(null));
         row.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") done();
+          if (e.key === "Enter") done(inputs.map((i) => i.value));
         });
       });
     },
