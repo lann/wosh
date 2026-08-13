@@ -48,6 +48,9 @@ term.loadAddon(overlay);
 term.open(document.getElementById("term"));
 fit.fit(); // synchronous: connect reads term.cols/rows immediately
 term.focus();
+// Test hook: the browser e2e gate reads the screen through the buffer
+// API, because the canvas renderer leaves nothing scrapeable in the DOM.
+window.__wosh.term = term;
 
 // Refits beyond the first belong to the observer: everything that moves
 // the terminal's BOX funnels through it -- the boot panel rendering
@@ -179,7 +182,17 @@ const wireInput = (session, fail) => {
   };
 };
 
-const statusOf = (s) => (typeof s === "string" ? s : s?.tag ?? "unknown");
+// A lifted WIT variant is `{ kind, value? }` (deltic embedder contract,
+// A10). STRICT on purpose: this page once read `.tag` from an older
+// convention, every status quietly became "unknown", and the host-key
+// prompt was skipped -- the failure mode must be loud, never a default.
+const statusOf = (s) => {
+  const kind = s?.kind;
+  if (typeof kind !== "string") {
+    throw new Error(`unrecognized session status shape: ${JSON.stringify(s)}`);
+  }
+  return kind;
+};
 
 /** Poll `status` until it leaves `connecting`, or time out. */
 async function settle(session, timeoutMs = 30000) {
@@ -209,19 +222,29 @@ export async function connect({ connstring, user, ui }) {
   currentSession = session;
 
   let st = await settle(session);
-  if (statusOf(st) === "closed") fatal(`connect: ${st.val ?? "closed"}`);
+  if (statusOf(st) === "closed") fatal(`connect: ${st.value ?? "closed"}`);
 
   // --- the host-key gate: nothing has been sent to the server yet ---
-  if (statusOf(st) === "host-key-check") {
-    const fp = await session.hostKeyFingerprint();
-    status("waiting for host key confirmation");
-    const ok = await ui.confirmHostKey(fp ?? "(unavailable)");
-    await session.confirmHostKey(!!ok);
-    if (!ok) {
-      status("host key rejected; nothing was sent");
-      currentSession = null;
-      return null;
-    }
+  //
+  // The gate is NOT optional (TOFU): every fresh session must surface
+  // the fingerprint and get an interactive yes before any credential
+  // is offered. A status other than host-key-check here means this
+  // page no longer understands the component's state machine, and the
+  // only safe response is to refuse to proceed. The component enforces
+  // the same rule on its side (authenticate-* fails before confirm),
+  // so a bug in either layer fails closed rather than skipping the
+  // human.
+  if (statusOf(st) !== "host-key-check") {
+    fatal(`expected the host-key gate, got status "${statusOf(st)}"`);
+  }
+  const fp = await session.hostKeyFingerprint();
+  status("waiting for host key confirmation");
+  const ok = await ui.confirmHostKey(fp ?? "(unavailable)");
+  await session.confirmHostKey(!!ok);
+  if (!ok) {
+    status("host key rejected; nothing was sent");
+    currentSession = null;
+    return null;
   }
 
   // --- credentials --------------------------------------------------
@@ -238,7 +261,10 @@ export async function connect({ connstring, user, ui }) {
       await session.authenticatePublickey();
     }
   } catch (e) {
-    fatal(`authentication: ${e?.payload?.val ?? e.message ?? e}`);
+    // A WIT err from authenticate-* is a ComponentException whose
+    // payload IS the error string (result<_, string> in return
+    // position, embedder contract §"Error model").
+    fatal(`authentication: ${typeof e?.payload === "string" ? e.payload : e.message ?? e}`);
   }
 
   status(`connected as ${user}`);

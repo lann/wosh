@@ -126,9 +126,31 @@ e2e: compose
 browser: site
     node host-test/browser-identity.mjs
 
+# Browser END TO END: the real page -- form, interactive host-key
+# prompt, xterm -- in headless Chromium, over real iroh, through the
+# listener, into a real sshd. This is the gate that fails if the page
+# ever skips the interactive fingerprint confirmation (TOFU): the
+# native e2e drives the component through typed bindings and cannot
+# see how the page reads deltic's JS conventions.
+browser-e2e: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-e2e-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-browser-e2e-listener.log | cut -d" " -f2)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
+        node host-test/browser-e2e.mjs
+
 # Smoke-check the DEPLOYED site (real https origin, so this also
 # exercises service-worker registration, which local http cannot).
 live:
     node host-test/live-check.mjs
 
-check: test-connstring spike-async e2e browser
+check: test-connstring spike-async e2e browser browser-e2e

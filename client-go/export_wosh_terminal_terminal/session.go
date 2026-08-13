@@ -81,6 +81,14 @@ type Session struct {
 	// user approves" structural rather than merely intended.
 	hostKeyDecision chan bool
 	decisionOnce    sync.Once
+	// confirmed is latched (under mu) by ConfirmHostKey(true) ITSELF,
+	// not by the ssh goroutine it wakes: supplyCreds gates on it, and
+	// the gate must be observable the instant the confirm export
+	// returns. Gating on s.state instead would race the woken
+	// goroutine's setState against the page's next call -- the page
+	// legitimately calls authenticate-* immediately after
+	// confirm-host-key resolves.
+	confirmed bool
 
 	// Latched credentials. The auth callbacks park on credsReady,
 	// which closes exactly once when an authenticate-* call lands.
@@ -302,9 +310,15 @@ func (s *Session) publicKeysCallback() ([]ssh.Signer, error) {
 // export closure, because the exit decision is per-task.
 func (s *Session) supplyCreds(c credential) witTypes.Result[witTypes.Unit, string] {
 	s.mu.Lock()
-	state := s.state
+	confirmed := s.confirmed
 	s.mu.Unlock()
-	if state == stateConnecting || state == stateHostKeyCheck {
+	// Gate on the latched verdict, NOT on s.state: the state enum is
+	// advanced by the ssh goroutine after it wakes from the decision
+	// channel, so it lags confirm-host-key's return by a scheduling
+	// handoff. The flag is set synchronously inside that export, which
+	// makes "confirm resolved, then authenticate" -- the only ordering
+	// a caller can honor -- sufficient by construction.
+	if !confirmed {
 		return witTypes.Err[witTypes.Unit, string](
 			"the host key fingerprint has not been confirmed yet -- credentials are never " +
 				"sent to an unapproved server")
@@ -370,6 +384,13 @@ func (s *Session) HostKeyFingerprint() witTypes.Option[string] {
 
 func (s *Session) ConfirmHostKey(accept bool) {
 	s.decisionOnce.Do(func() {
+		// The first verdict wins, and an accepting one is visible to
+		// supplyCreds before this export returns.
+		if accept {
+			s.mu.Lock()
+			s.confirmed = true
+			s.mu.Unlock()
+		}
 		s.hostKeyDecision <- accept // buffered: never blocks this export
 		close(s.hostKeyDecision)
 	})

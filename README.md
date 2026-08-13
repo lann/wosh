@@ -233,16 +233,19 @@ Verified working:
   guest code in-page, and the PWA shell is coherent (manifest parsed,
   icons resolve, service worker version-keyed with the component in its
   precache).
+- **The page, live, end to end** (`just browser-e2e`): headless
+  Chromium drives the real UI -- form, **interactive host-key
+  confirmation** (the prompt must appear and the session parks on it:
+  TOFU is asserted, not assumed), publickey auth with the browser-minted
+  key, keystrokes round-tripping through xterm to the sshd and back, and
+  a rejected fingerprint ending the attempt with nothing sent.
 
 Not finished:
 
-- The page has not yet been driven through a full live session in a
-  browser: `just browser` proves the component loads and runs guest
-  code in-page, and `just e2e` proves the same component completes a
-  real SSH session, but nothing yet asserts the two together.
-- Host-key pinning across visits (the fingerprint is confirmed every
-  time), and any persistence of the browser's identity — it is minted
-  fresh per instance today.
+- Host-key pinning across visits (the fingerprint is confirmed
+  interactively every time -- which is the TOFU floor, never less), and
+  any persistence of the browser's identity — it is minted fresh per
+  instance today.
 - CI.
 
 ## Deploying

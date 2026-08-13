@@ -103,7 +103,8 @@ try {
       });
       return "<no error>";
     } catch (e) {
-      return String(e?.payload?.val ?? e?.message ?? e);
+      // ComponentException.payload is the err string for result<_, string>.
+      return String(typeof e?.payload === "string" ? e.payload : e?.message ?? e);
     }
   });
   console.log(`[2] guest-side parse of a bad connstring: ${parseErr}`);
