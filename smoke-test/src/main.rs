@@ -32,6 +32,7 @@ mod bindings {
 
 use bindings::exports::wosh::terminal::terminal::Status;
 use bindings::wosh::terminal::identity_store;
+use bindings::wosh::terminal::pairing_store;
 
 struct Ctx {
     wasi: WasiCtx,
@@ -43,6 +44,12 @@ struct Ctx {
     /// persistence adds in a real browser (IndexedDB) is the browser
     /// gate's to assert. Sign-only surface, exactly like the page's.
     identity: ed25519_dalek::SigningKey,
+    /// The pairing blob behind `wosh:terminal/pairing-store`. In
+    /// memory by default (fresh client per run); `--pairing-store
+    /// <file>` persists it, which is what lets the pairing gate span
+    /// two invocations the way a browser's IndexedDB spans reloads.
+    pairing_path: Option<PathBuf>,
+    pairing_blob: Option<Vec<u8>>,
     table: ResourceTable,
 }
 
@@ -84,6 +91,39 @@ impl identity_store::HostWithStore<Ctx> for HasSelf<Ctx> {
     }
 }
 
+impl pairing_store::Host for Ctx {}
+
+impl pairing_store::HostWithStore<Ctx> for HasSelf<Ctx> {
+    async fn load(
+        accessor: &Accessor<Ctx, Self>,
+    ) -> wasmtime::Result<std::result::Result<Option<Vec<u8>>, String>> {
+        Ok(Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            match &ctx.pairing_path {
+                Some(p) => std::fs::read(p).ok(), // absent file = no blob yet
+                None => ctx.pairing_blob.clone(),
+            }
+        })))
+    }
+
+    async fn store(
+        accessor: &Accessor<Ctx, Self>,
+        blob: Vec<u8>,
+    ) -> wasmtime::Result<std::result::Result<(), String>> {
+        Ok(accessor.with(|mut a| {
+            let ctx = a.get();
+            match &ctx.pairing_path {
+                Some(p) => std::fs::write(p, &blob)
+                    .map_err(|e| format!("pairing store {}: {e}", p.display())),
+                None => {
+                    ctx.pairing_blob = Some(blob);
+                    Ok(())
+                }
+            }
+        }))
+    }
+}
+
 struct Args {
     component: PathBuf,
     connstring: String,
@@ -104,6 +144,9 @@ struct Args {
     kbd_answers: Vec<String>,
     /// Invert the verdict: authentication must FAIL, legibly.
     expect_auth_fail: bool,
+    /// Persist the pairing identity blob here across invocations
+    /// (default: in-memory, a fresh client per run).
+    pairing_store: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -116,6 +159,7 @@ fn parse_args() -> Result<Args> {
         auth: "publickey".into(),
         kbd_answers: Vec::new(),
         expect_auth_fail: false,
+        pairing_store: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -131,6 +175,7 @@ fn parse_args() -> Result<Args> {
                 a.kbd_answers = v()?.split(',').map(str::to_owned).collect()
             }
             "--expect-auth-fail" => a.expect_auth_fail = true,
+            "--pairing-store" => a.pairing_store = Some(PathBuf::from(v()?)),
             other => bail!("unknown flag {other}"),
         }
     }
@@ -178,6 +223,7 @@ async fn main() -> Result<()> {
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
     identity_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
+    pairing_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_network();
@@ -189,6 +235,8 @@ async fn main() -> Result<()> {
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
             identity: ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng),
+            pairing_path: args.pairing_store.clone(),
+            pairing_blob: None,
             table: ResourceTable::new(),
         },
     );

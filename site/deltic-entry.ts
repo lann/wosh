@@ -37,6 +37,7 @@ import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 import { identityStoreImports } from "./identity-store.ts";
+import { pairingStoreImports } from "./pairing-store.ts";
 
 export { ComponentException, isComponentException };
 
@@ -79,6 +80,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     ...webrtcImports(),
     ...socketsImports(),
     ...identityStoreImports(),
+    ...pairingStoreImports(),
   };
   const instance = await instantiate(artifacts, imports);
   const api = instance.exports[TERMINAL_INTERFACE];

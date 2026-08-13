@@ -19,7 +19,9 @@ mod bindings {
 mod identity;
 mod tcp;
 
+use std::cell::RefCell;
 use std::net::SocketAddr;
+use std::rc::Rc;
 
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions};
 
@@ -202,14 +204,24 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
         ),
     }
 
+    // Clients this listener has PAIRED: iroh endpoint ids that once
+    // presented a valid token. iroh authenticates the peer's id during
+    // the handshake, so an enrolled id is as good as the token it once
+    // showed -- which is what lets a printed QR outlive token rotation
+    // for the devices that already used it (TOFU, listener->client
+    // direction; the client's own TOFU of the listener is the SSH
+    // host-key pin). Rotating the token only gates NEW devices.
+    let paired = Rc::new(RefCell::new(pairing::load()));
+
     loop {
         match endpoint.accept().await {
             Ok(conn) => {
                 let target = cli.target;
                 let token = cli.token;
+                let paired = paired.clone();
                 wit_bindgen::spawn_local(async move {
                     let peer = encode_hex(&conn.peer());
-                    match serve_connection(&conn, target, token).await {
+                    match serve_connection(&conn, target, token, &paired).await {
                         Ok(summary) => eprintln!("[{peer}] {summary}"),
                         Err(e) => eprintln!("[{peer}] {e}"),
                     }
@@ -229,10 +241,60 @@ async fn serve_connection(
     conn: &Connection,
     target: SocketAddr,
     token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
+    paired: &RefCell<std::collections::HashSet<String>>,
 ) -> Result<String, String> {
     let (send, recv) = conn.accept_bi().await.map_err(|e| format!("accept-bi: {e:?}"))?;
-    let leftover = tcp::read_token_prefix(&recv, token)
-        .await?
-        .ok_or("refused: bad pairing token")?;
+    // The frame always arrives (a tokenless connstring sends a
+    // zero-length one); it must be consumed either way. The verdict:
+    //   open mode          -> everyone bridges, nothing is enrolled
+    //                         (no token means no enrollment signal);
+    //   enrolled peer      -> bridges, whatever the frame says (its
+    //                         token may be stale -- that is the point);
+    //   valid token        -> bridges AND enrolls the peer id;
+    //   anything else      -> refused.
+    let (presented, leftover) = tcp::read_pairing_frame(&recv).await?;
+    if let Some(want) = token {
+        let peer = encode_hex(&conn.peer());
+        let enrolled = paired.borrow().contains(&peer);
+        if !enrolled {
+            if presented.len() == want.len() && presented == want {
+                paired.borrow_mut().insert(peer.clone());
+                pairing::persist(&peer);
+                eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");
+            } else {
+                return Err("refused: bad pairing token (and not a paired device)".into());
+            }
+        }
+    }
     tcp::forward(send, recv, leftover, target).await
+}
+
+/// The paired-device store: one lowercase-hex endpoint id per line in
+/// `wosh-data/paired`, next to the identity. Every failure degrades to
+/// in-memory-only pairing (`--ephemeral-identity` runs have no mount
+/// at all): the listener still works, enrollment just does not outlive
+/// the process.
+mod pairing {
+    use std::collections::HashSet;
+    use std::io::Write;
+
+    const PATH: &str = "wosh-data/paired";
+
+    pub fn load() -> HashSet<String> {
+        match std::fs::read_to_string(PATH) {
+            Ok(s) => s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+            Err(_) => HashSet::new(),
+        }
+    }
+
+    pub fn persist(peer_hex: &str) {
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(PATH)
+            .and_then(|mut f| writeln!(f, "{peer_hex}"));
+        if let Err(e) = appended {
+            eprintln!("pairing: could not persist {PATH} ({e}); this pairing lasts until restart");
+        }
+    }
 }

@@ -186,6 +186,56 @@ e2e-kbdint: compose
         --kbd-answers 'gate-token-123,gate-passphrase-456,gate-otp-789' \
         --expect-host-key "$fp"
 
+# Pairing, end to end: a client that once presented a valid token is
+# REMEMBERED (its iroh id is enrolled), so a printed QR keeps working
+# for that device across listener restarts and token rotation -- while
+# a NEW device with the same stale connstring is refused. This is the
+# gate for the stale-QR trap: rotation gates new devices only.
+e2e-pairing: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    rm -rf .deps/test-pairing && mkdir -p .deps/test-pairing
+    # --- run 1: pair with a valid token --------------------------------
+    target/release/wosh-listener --identity-dir .deps/test-pairing \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-pairing-1.log 2>&1 &
+    sleep 7
+    cs1=$(grep '^connstring: ' /tmp/wosh-pairing-1.log | cut -d" " -f2)
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs1" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --pairing-store .deps/test-pairing/client-blob
+    grep -q 'paired (valid token' /tmp/wosh-pairing-1.log
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    # --- run 2: same listener identity, ROTATED token ------------------
+    target/release/wosh-listener --identity-dir .deps/test-pairing \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-pairing-2.log 2>&1 &
+    sleep 7
+    cs2=$(grep '^connstring: ' /tmp/wosh-pairing-2.log | cut -d" " -f2)
+    test "$cs1" != "$cs2"   # same identity, different token: genuinely stale
+    # the PAIRED device, still holding the run-1 connstring: must work
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs1" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --pairing-store .deps/test-pairing/client-blob
+    # a NEW device with the stale connstring: must be refused
+    ! target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs1" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" 2>&1 \
+        | grep -q 'E2E PASS'
+    grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log
+    echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
+
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
 browser: site
@@ -242,4 +292,4 @@ browser-idle-e2e: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core spike-async e2e e2e-kbdint browser browser-e2e browser-idle-e2e
+check: test-connstring test-ssh-core spike-async e2e e2e-kbdint e2e-pairing browser browser-e2e browser-idle-e2e

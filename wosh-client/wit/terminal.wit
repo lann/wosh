@@ -1,5 +1,30 @@
 package wosh:terminal;
 
+/// Host-side keeper of this client's IROH identity -- the pairing
+/// identity, the stable name the listener remembers this client by.
+///
+/// Deliberately a different animal from `identity-store`. That one is
+/// sign-only and non-extractable because it guards the SSH boundary.
+/// This one hands raw key material back and forth, because the iroh
+/// endpoint has to be CONSTRUCTED from the pair each instantiation,
+/// and because the pairing layer's stakes are low by design: it gates
+/// nothing but the tunnel, and SSH -- host-key gate, real
+/// authentication -- is the boundary that matters. A stolen pairing
+/// key lets someone knock on the listener's door; it opens nothing.
+///
+/// The blob is opaque to the host: the component owns the format (it
+/// mirrors the listener's own persisted-identity layout). A host
+/// without durable storage returns none from `load` and accepts
+/// `store` into the void; the component then simply pairs fresh each
+/// run, which is exactly the old behaviour.
+interface pairing-store {
+  /// The blob a previous `store` saved, if any survives.
+  load: async func() -> result<option<list<u8>>, string>;
+
+  /// Persist `blob`, replacing anything stored before.
+  store: async func(blob: list<u8>) -> result<_, string>;
+}
+
 /// Host-side keeper of this client's SSH identity: the key never
 /// crosses this interface, only its public half and signatures do.
 ///
