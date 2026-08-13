@@ -19,7 +19,7 @@ use crate::bindings::wasi::sockets::types::{
 };
 use crate::bindings::wit_stream;
 
-fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
+pub(crate) fn to_wasi(addr: SocketAddr) -> IpSocketAddress {
     match addr {
         SocketAddr::V4(a) => {
             let o = a.ip().octets();

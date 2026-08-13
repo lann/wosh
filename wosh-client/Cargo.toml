@@ -8,6 +8,7 @@ description = "The wosh browser SSH client's I/O half: dials polymorph-iroh, pum
 [dependencies]
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
 wosh-connstring = { path = "../connstring" }
+wosh-tunnel = { path = "../tunnel" }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 [lib]

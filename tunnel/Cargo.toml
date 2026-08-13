@@ -1,0 +1,14 @@
+[package]
+name = "wosh-tunnel"
+version = "0.1.0"
+edition = "2021"
+description = "The wosh tunnel framing (protocol v2): resumable sessions over an iroh bi-stream -- frame codec, hello/reply types, and replay-buffer bookkeeping shared by wosh-client and listener-core."
+publish = false
+
+[dependencies]
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lib]
+name = "wosh_tunnel"
+path = "src/lib.rs"

@@ -17,6 +17,7 @@ mod bindings {
 }
 
 mod identity;
+mod session;
 mod tcp;
 
 use std::cell::RefCell;
@@ -28,8 +29,11 @@ use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions}
 use clap::Parser;
 use wosh_connstring::ConnString;
 
-/// v0 connection ALPN, shared with the browser client.
-const ALPN: &[u8] = b"wosh/1";
+/// v1 connection ALPN: the raw byte pipe. Still accepted, byte for
+/// byte -- an older client (or an older browser tab) keeps working.
+const ALPN: &[u8] = wosh_tunnel::ALPN_V1;
+/// v2: framed, resumable sessions (see `tunnel/src/lib.rs`).
+const ALPN_V2: &[u8] = wosh_tunnel::ALPN_V2;
 
 /// n0's public NA-East relay, first of the defaults baked into iroh
 /// itself (`iroh::defaults::prod`; the others are usw1-1, euc1-1,
@@ -71,6 +75,13 @@ struct Cli {
     /// Print the link only, no QR code
     #[arg(long)]
     no_qr: bool,
+
+    /// How long (seconds) a session whose client vanished stays
+    /// parked -- sshd leg open, waiting to be resumed from the same
+    /// endpoint id. 0 disables parking entirely: a dead transport
+    /// closes the sshd leg immediately, exactly like protocol v1
+    #[arg(long, default_value_t = 600, value_name = "SECONDS")]
+    resume_grace: u64,
 
     /// Mint a fresh identity for this run instead of loading/persisting
     /// one: the endpoint id (and so the connection string) changes every
@@ -145,12 +156,19 @@ impl bindings::exports::wasi::cli::run::Guest for Component {
 
 bindings::export!(Component with_types_in bindings);
 
-async fn run_listener(cli: Cli) -> Result<(), String> {
-    // Persistent by default: a stable endpoint id is what lets the
-    // browser pin this listener's SSH host key across restarts.
-    let identity = identity::load_or_create(cli.ephemeral_identity).await?;
-    let options = EndpointOptions::new(&identity);
+/// Bind an endpoint for `identity` with this listener's options. Used
+/// at startup and again on every REBIND (below): the identity is what
+/// makes rebinding invisible to clients -- same key, same endpoint id,
+/// same connstring.
+async fn bind_endpoint(
+    identity: &bindings::polymorph::iroh::identity::Identity,
+    cli: &Cli,
+) -> Result<Endpoint, String> {
+    let options = EndpointOptions::new(identity);
+    // Both protocol versions on one endpoint: the client picks via
+    // ALPN and `conn.alpn()` tells us which state machine to run.
     options.add_alpn(ALPN);
+    options.add_alpn(ALPN_V2);
     options.relay_url(&cli.relay);
     // Direct UDP is a real option for this side (unlike the browser
     // client): helps same-LAN peers and gives iroh a lower-latency
@@ -158,7 +176,16 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     // signaling for their own relay-to-datachannel upgrade.
     options.udp_bind_addr("0.0.0.0:0");
     options.webrtc(true);
-    let endpoint = Endpoint::bind(options).await.map_err(|e| format!("bind: {e:?}"))?;
+    Endpoint::bind(options).await.map_err(|e| format!("bind: {e:?}"))
+}
+
+async fn run_listener(cli: Cli) -> Result<(), String> {
+    // Persistent by default: a stable endpoint id is what lets the
+    // browser pin this listener's SSH host key across restarts.
+    let identity = identity::load_or_create(cli.ephemeral_identity).await?;
+    // The first bind fails hard: a bad relay URL or refused UDP bind is
+    // configuration, and configuration errors should stop the show.
+    let endpoint = bind_endpoint(&identity, &cli).await?;
 
     let pubkey = endpoint.id();
     if pubkey.len() != wosh_connstring::PUBKEY_LEN {
@@ -212,15 +239,47 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     // direction; the client's own TOFU of the listener is the SSH
     // host-key pin). Rotating the token only gates NEW devices.
     let paired = Rc::new(RefCell::new(pairing::load()));
+    // v2 sessions outlive the connections that carry them, so the
+    // registry lives out here, in the accept loop's scope.
+    let sessions = session::Registry::new();
 
+    // The accept loop must outlive the RELAY: when the relay restarts
+    // (or the websocket to it drops), the endpoint dies and `accept`
+    // returns an error -- observed live as `accept: Error::Closed`
+    // followed by a listener that looked alive but could never accept
+    // again. The identity is persistent, so a fresh bind re-registers
+    // the SAME endpoint id and every printed connstring stays valid;
+    // parked v2 sessions in the registry keep waiting for their
+    // clients to resume. This rebind is what makes client-side session
+    // resume work across relay restarts at all.
+    let mut endpoint = endpoint;
     loop {
         match endpoint.accept().await {
             Ok(conn) => {
                 let target = cli.target;
                 let token = cli.token;
+                let grace = cli.resume_grace;
                 let paired = paired.clone();
+                let sessions = sessions.clone();
                 wit_bindgen::spawn_local(async move {
                     let peer = encode_hex(&conn.peer());
+                    if conn.alpn() == ALPN_V2 {
+                        // v2: the connection resource must outlive
+                        // this pump's own frames on the wire, so it
+                        // is shared (Rc) with the session's writer
+                        // task and NOT closed here -- teardown rides
+                        // the FIN cascade, as in v1.
+                        let conn = Rc::new(conn);
+                        match session::serve_v2(
+                            conn, sessions, target, token, &paired, grace,
+                        )
+                        .await
+                        {
+                            Ok(summary) => eprintln!("[{peer}] {summary}"),
+                            Err(e) => eprintln!("[{peer}] {e}"),
+                        }
+                        return;
+                    }
                     match serve_connection(&conn, target, token, &paired).await {
                         Ok(summary) => eprintln!("[{peer}] {summary}"),
                         Err(e) => eprintln!("[{peer}] {e}"),
@@ -229,12 +288,22 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
                 });
             }
             Err(e) => {
-                eprintln!("accept: {e:?}");
-                break;
+                eprintln!("accept: {e:?}; rebinding the endpoint (relay restarted?)");
+                endpoint.close();
+                loop {
+                    bindings::wasi::clocks::monotonic_clock::wait_for(2_000_000_000).await;
+                    match bind_endpoint(&identity, &cli).await {
+                        Ok(ep) => {
+                            endpoint = ep;
+                            eprintln!("endpoint re-registered; the printed connstring is unchanged");
+                            break;
+                        }
+                        Err(e) => eprintln!("rebind: {e}; retrying"),
+                    }
+                }
             }
         }
     }
-    Ok(())
 }
 
 async fn serve_connection(
