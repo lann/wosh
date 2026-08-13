@@ -395,17 +395,32 @@ try {
   console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
   await page.click("#bar button:has-text('detach')");
 
-  // --- leg G: unchecking 'remember this connection' forgets it --------
+  // --- leg G: unchecked remember records nothing (and forgets nothing);
+  // forgetting is the row's own two-step affordance ------------------
   await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
   await page.uncheck("#panel #remember-connection");
   await page.click("#panel .histrow");
   await waitPrompt();
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
-  const rowsAfter = await page.locator("#panel .histrow").count();
-  if (rowsAfter !== 0) fail(`opt-out should have removed the entry; ${rowsAfter} rows remain`);
-  console.log("[G] opt-out honored: connecting with the box unchecked forgot the entry");
   await page.click("#bar button:has-text('detach')");
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  let rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 1) {
+    fail(`unchecked remember must not forget; expected the row to survive, found ${rowsAfter}`);
+  }
+  console.log("[G] unchecked remember: nothing recorded, nothing forgotten");
+
+  // The forget button arms on the first click and acts on the second.
+  await page.click("#panel .histline button.subtle");
+  rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 1) fail("one click must only ARM the forget, not perform it");
+  const armed = await page.locator("#panel .histline button.subtle").textContent();
+  if (!/forget\?/.test(armed ?? "")) fail(`expected an armed 'forget?' label, got: ${armed}`);
+  await page.click("#panel .histline button.subtle");
+  rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
+  console.log("[G] forget is two-step: armed on the first click, done on the second");
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
@@ -415,7 +430,7 @@ try {
     console.log("\nBROWSER E2E PASS: interactive TOFU on first contact, opt-in pinning, " +
       "prompt-free reconnect on a pinned key, a loud changed-key warning, " +
       "default-method auto resolving to the browser's key, and tap-to-reconnect " +
-      "history (tokenless, opt-out honored)");
+      "history (tokenless; unchecked remember records nothing; forget is two-step)");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));

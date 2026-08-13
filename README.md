@@ -116,16 +116,18 @@ token now says "bad pairing token" at the client instead of silently
 dropping.
 
 The page keeps a **connection history** (opt-out checkbox, on by
-default): listener endpoint id, relay, and user name — **never the
-pairing token**. Tapping a recent connection rebuilds a *tokenless*
-connection string and dials; it works because this device's pairing
-enrollment already vouches for it, which is also what makes a copied
-history worthless off-device. Combined with a pinned host key, a
-remembered connection is scan-once-tap-forever: open the page, tap,
-shell — no QR, no prompt. History rows show `user@endpoint…` and a
-`key pinned` badge; the relay and full endpoint id live in the hover
-detail. Forgetting an entry does not touch its host-key pin — losing
-interest in a host and distrusting its key are different decisions.
+default; unchecking records nothing and forgets nothing): listener
+endpoint id, relay, and user name — **never the pairing token**.
+Tapping a recent connection rebuilds a *tokenless* connection string
+and dials; it works because this device's pairing enrollment already
+vouches for it, which is also what makes a copied history worthless
+off-device. Combined with a pinned host key, a remembered connection
+is scan-once-tap-forever: open the page, tap, shell — no QR, no
+prompt. History rows show `user@endpoint…` and a `key pinned` badge;
+the relay and full endpoint id live in the hover detail. Forgetting an
+entry is a two-step (arm, confirm) affordance on the row itself, and
+does not touch its host-key pin — losing interest in a host and
+distrusting its key are different decisions.
 
 ## Running it
 

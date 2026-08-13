@@ -349,6 +349,28 @@ export async function initBoot(panel, { onConnect }) {
     notice,
   );
 
+  /// Destructive history buttons arm on the first click (label turns
+  /// into a question, briefly) and act on the second: a same-size
+  /// in-place confirmation, instead of a native confirm() breaking the
+  /// dialog's flow. Disarms itself after a beat.
+  const armTwoStep = (btn, armedLabel, act) => {
+    const idle = btn.textContent;
+    let timer = null;
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("armed")) {
+        clearTimeout(timer);
+        act();
+        return;
+      }
+      btn.classList.add("armed");
+      btn.textContent = armedLabel;
+      timer = setTimeout(() => {
+        btn.classList.remove("armed");
+        btn.textContent = idle;
+      }, 3000);
+    });
+  };
+
   /// Rebuild the recent-connections section from storage. Each row is
   /// a button (tap = fill the form with a TOKENLESS connstring and
   /// connect); the relay and full endpoint id deliberately live in the
@@ -361,7 +383,7 @@ export async function initBoot(panel, { onConnect }) {
     if (entries.length === 0) return;
     const pins = loadPins();
     const clearBtn = el("button", { className: "subtle", textContent: "clear" });
-    clearBtn.addEventListener("click", () => {
+    armTwoStep(clearBtn, "forget all?", () => {
       saveHistory([]);
       renderHistory();
     });
@@ -388,7 +410,7 @@ export async function initBoot(panel, { onConnect }) {
         textContent: "×",
         title: "forget this connection (host-key pins are separate)",
       });
-      del.addEventListener("click", () => {
+      armTwoStep(del, "forget?", () => {
         removeConnection(entry.id, entry.user);
         renderHistory();
       });
@@ -639,16 +661,11 @@ export async function initBoot(panel, { onConnect }) {
         // History bookkeeping, only for connects that actually reached
         // a session: failed dials and rejected host keys are not
         // "connections". Checked (the default) records or bumps the
-        // entry; UNCHECKED also forgets an existing one -- the box
-        // reads "remember this connection", and leaving it off for a
-        // known host should mean what it says.
+        // entry; unchecked records nothing and touches nothing --
+        // forgetting is the history rows' own, confirmed, affordance.
         const details = connstringDetails(connstring);
-        if (details) {
-          if (rememberConn.checked) {
-            recordConnection(details.id, details.relay, user);
-          } else {
-            removeConnection(details.id, user);
-          }
+        if (details && rememberConn.checked) {
+          recordConnection(details.id, details.relay, user);
           renderHistory();
         }
         // Out of the way: the session owns the screen now. The bar's
