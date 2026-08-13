@@ -371,6 +371,57 @@ try {
   await waitStatus("host key rejected; nothing was sent");
   console.log("[E] rejected the changed key: nothing was sent");
 
+  // --- leg F: connection history, tap to reconnect --------------------
+  // Legs A/C/D connected as the same (endpoint, user) with the
+  // remember-connection box at its CHECKED default, so history holds
+  // exactly one deduped row. Tapping it must rebuild a TOKENLESS
+  // connstring and connect -- pairing enrollment stands in for the
+  // token. (The pin is still the bogus one leg E seeded, so the tap
+  // rides through the changed-key warning: history grants no security
+  // shortcuts.)
+  await reload();
+  const rows = await page.locator("#panel .histrow").count();
+  if (rows !== 1) fail(`expected exactly 1 history row, found ${rows}`);
+  const detail = await page.locator("#panel .histrow").first().getAttribute("title");
+  if (!/relay http/.test(detail ?? "")) {
+    fail(`history hover detail must carry the relay; got: ${detail}`);
+  }
+  await page.click("#panel .histrow");
+  await waitPrompt();
+  const filled = await page.inputValue("#panel input[placeholder*='connection string']");
+  if (filled === CONNSTRING) fail("history dialed the original connstring (token included?)");
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
+  await page.click("#bar button:has-text('detach')");
+
+  // --- leg G: unchecked remember records nothing (and forgets nothing);
+  // forgetting is the row's own two-step affordance ------------------
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  await page.uncheck("#panel #remember-connection");
+  await page.click("#panel .histrow");
+  await waitPrompt();
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  await page.click("#bar button:has-text('detach')");
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  let rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 1) {
+    fail(`unchecked remember must not forget; expected the row to survive, found ${rowsAfter}`);
+  }
+  console.log("[G] unchecked remember: nothing recorded, nothing forgotten");
+
+  // The forget button arms on the first click and acts on the second.
+  await page.click("#panel .histline button.subtle");
+  rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 1) fail("one click must only ARM the forget, not perform it");
+  const armed = await page.locator("#panel .histline button.subtle").textContent();
+  if (!/forget\?/.test(armed ?? "")) fail(`expected an armed 'forget?' label, got: ${armed}`);
+  await page.click("#panel .histline button.subtle");
+  rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
+  console.log("[G] forget is two-step: armed on the first click, done on the second");
+
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }
@@ -378,7 +429,8 @@ try {
   if (!process.exitCode) {
     console.log("\nBROWSER E2E PASS: interactive TOFU on first contact, opt-in pinning, " +
       "prompt-free reconnect on a pinned key, a loud changed-key warning, " +
-      "and default-method auto resolving to the browser's key");
+      "default-method auto resolving to the browser's key, and tap-to-reconnect " +
+      "history (tokenless; unchecked remember records nothing; forget is two-step)");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));
