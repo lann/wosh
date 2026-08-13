@@ -19,6 +19,7 @@
 // here: authentication is SSH's own.
 
 import { identity, detach, capabilities } from "./app.mjs";
+import { scanQr } from "./qr.mjs";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -142,6 +143,21 @@ export async function initBoot(panel, { onConnect }) {
     placeholder: "connection string or link (from the listener's QR)",
     value: connstringFromLocation(),
   });
+  // Next to the field, because it fills the field: the listener's QR
+  // encodes the connect link, so a scan is just a paste that the
+  // camera performs. Always present, even where the camera cannot
+  // work: pressing it then explains why (the usual reason is a page
+  // served over plain http, which is exactly how someone ends up
+  // trying to scan from a phone), and that beats a button that
+  // silently is not there.
+  const scanBtn = el("button", {
+    className: "scan",
+    textContent: "scan QR",
+    title: "scan the listener's QR code with this device's camera",
+  });
+  const scanRow = el("div", { className: "csrow" }, csInput, scanBtn);
+  // The camera preview lands here, directly under the field it fills.
+  const scanHost = el("div");
   const userInput = el("input", {
     size: 16,
     placeholder: "user",
@@ -167,7 +183,8 @@ export async function initBoot(panel, { onConnect }) {
   panel.append(
     el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
     el("div", { className: "field", textContent: "connection string" }),
-    csInput,
+    scanRow,
+    scanHost,
     el("div", { className: "row" },
       el("label", { textContent: "user" }), userInput, method),
     el("div", { className: "row" }, connectBtn, showKeyBtn),
@@ -192,6 +209,33 @@ export async function initBoot(panel, { onConnect }) {
     if (!connectBtn.disabled) panel.close();
   });
   settingsBtn.addEventListener("click", openPanel);
+
+  // Scanning: the QR carries the connect LINK, so a successful scan is
+  // a paste the camera performed -- connstringFrom reduces it to the
+  // fragment exactly as a hand-pasted link would be. The preview owns
+  // the only cancel button (the scan button stays disabled meanwhile),
+  // and the panel closing under a live scan aborts it: a camera left
+  // running behind a closed dialog is a light with no explanation.
+  let scanAbort = null;
+  panel.addEventListener("close", () => scanAbort?.abort());
+  scanBtn.addEventListener("click", async () => {
+    if (scanAbort) return;
+    notice.textContent = "";
+    scanAbort = new AbortController();
+    scanBtn.disabled = true;
+    try {
+      const text = await scanQr(scanHost, { signal: scanAbort.signal });
+      if (text !== null) {
+        csInput.value = connstringFrom(text);
+        (userInput.value.trim() ? connectBtn : userInput).focus();
+      }
+    } catch (e) {
+      notice.textContent = `${e.message ?? e}`;
+    } finally {
+      scanAbort = null;
+      scanBtn.disabled = false;
+    }
+  });
 
   // The session is gone: surface why, restore the bar to its idle
   // shape, and bring the connect form back.
