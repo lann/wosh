@@ -140,9 +140,14 @@ async function api() {
  */
 export async function capabilities() {
   const t = await api();
+  // Resource methods live on the Session class deltic builds; if the
+  // prototype is not inspectable, assume support -- the page and the
+  // component ship together in one precache.
+  const proto = t.Session?.prototype;
   return {
     publickey: typeof t.identityOpenssh === "function",
     password: true,
+    keyboardInteractive: !proto || typeof proto.pendingPrompts === "function",
   };
 }
 
@@ -207,10 +212,16 @@ async function settle(session, timeoutMs = 30000) {
 }
 
 /**
- * Connect and run the session. `ui` supplies the two human decisions:
+ * Connect and run the session. `ui` supplies the human decisions:
  *
  *   confirmHostKey(fingerprint) -> boolean
- *   getCredential()            -> {kind: "publickey"} | {kind: "password", password}
+ *   getCredential()            -> {kind: "publickey"}
+ *                               | {kind: "password", password}
+ *                               | {kind: "keyboard-interactive"}
+ *   collectPrompts(batch)      -> string[] (one answer per prompt;
+ *                                 batch is {instruction, prompts:
+ *                                 [{text, echo}]}, echo=false meaning
+ *                                 mask the input)
  */
 export async function connect({ connstring, user, ui }) {
   const t = await api();
@@ -257,6 +268,8 @@ export async function connect({ connstring, user, ui }) {
       await (session.authenticatePassword
         ? session.authenticatePassword(cred.password)
         : session.authenticate(cred.password));
+    } else if (cred.kind === "keyboard-interactive") {
+      await session.authenticateInteractive();
     } else {
       await session.authenticatePublickey();
     }
@@ -265,6 +278,30 @@ export async function connect({ connstring, user, ui }) {
     // payload IS the error string (result<_, string> in return
     // position, embedder contract §"Error model").
     fatal(`authentication: ${typeof e?.payload === "string" ? e.payload : e.message ?? e}`);
+  }
+
+  // Keyboard-interactive is server-driven: poll for prompt batches and
+  // hand each to the panel until authentication settles one way or the
+  // other. (No deadline -- a human is typing; the ssh transport itself
+  // closes the session if the server goes away.)
+  if (cred.kind === "keyboard-interactive") {
+    for (;;) {
+      const st = await session.status();
+      const tag = statusOf(st);
+      if (tag === "ready") break;
+      if (tag === "closed") fatal(`authentication: ${st.val ?? "closed"}`);
+      if (tag === "auth-prompts") {
+        const batch = await session.pendingPrompts();
+        if (batch) {
+          status("the server asks:");
+          const answers = await ui.collectPrompts(batch);
+          await session.answerPrompts(answers);
+          status("authenticating…");
+          continue;
+        }
+      }
+      await sleep(50);
+    }
   }
 
   status(`connected as ${user}`);
