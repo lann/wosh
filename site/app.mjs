@@ -245,7 +245,8 @@ async function settle(session, timeoutMs = 30000) {
  *   collectPrompts(batch)      -> string[] (one answer per prompt;
  *                                 batch is {instruction, prompts:
  *                                 [{text, echo}]}, echo=false meaning
- *                                 mask the input)
+ *                                 mask the input) | null (the user
+ *                                 cancelled: the attempt is torn down)
  *
  * An auto credential offers every method and lets the server steer
  * (publickey first, silently, when the browser's key is installed);
@@ -264,7 +265,13 @@ export async function connect({ connstring, user, ui }) {
   // deltic maps a WIT resource to a PascalCase class, with the WIT
   // static as a static method on it.
   const session = await t.Session.connect(connstring, user, term.cols, term.rows);
+  // Supersede: from here the new session owns the page. The one it
+  // replaces is DETACHED, not merely forgotten -- an orphaned session
+  // keeps its SSH login and iroh connection alive on the target until
+  // the tab closes, invisible to the user who thinks they reconnected.
+  const prior = currentSession;
   currentSession = session;
+  if (prior) prior.detach().catch(() => {});
 
   let st = await settle(session);
   if (statusOf(st) === "closed") fatal(`connect: ${st.value ?? "closed"}`);
@@ -300,12 +307,19 @@ export async function connect({ connstring, user, ui }) {
   const cred = await ui.getCredential();
   try {
     if (cred.kind === "password") {
-      const password = typeof cred.password === "string"
-        ? cred.password
-        : (await ui.collectPrompts({
-            instruction: "",
-            prompts: [{ text: `password for ${user}: `, echo: false }],
-          }))[0] ?? "";
+      let password = cred.password;
+      if (typeof password !== "string") {
+        const answers = await ui.collectPrompts({
+          instruction: "",
+          prompts: [{ text: `password for ${user}: `, echo: false }],
+        });
+        if (!answers) {
+          await session.detach();
+          currentSession = null;
+          fatal("authentication cancelled");
+        }
+        password = answers[0] ?? "";
+      }
       // `authenticate-password` is the target name; older builds expose
       // the password path as plain `authenticate`.
       await (session.authenticatePassword
@@ -325,31 +339,40 @@ export async function connect({ connstring, user, ui }) {
     fatal(`authentication: ${typeof e?.payload === "string" ? e.payload : e.message ?? e}`);
   }
 
-  // Prompt-driven authentication is server-paced: poll for prompt
-  // batches and hand each to the panel until it settles one way or the
-  // other. Keyboard-interactive always works this way; auto works this
-  // way whenever the server steers somewhere interactive (its password
-  // round is a one-prompt batch). (No deadline -- a human is typing;
-  // the ssh transport itself closes the session if the server goes
-  // away.)
-  if (cred.kind === "keyboard-interactive" || cred.kind === "auto") {
-    for (;;) {
-      const st = await session.status();
-      const tag = statusOf(st);
-      if (tag === "ready") break;
-      if (tag === "closed") fatal(`authentication: ${st.value ?? "closed"}`);
-      if (tag === "auth-prompts") {
-        const batch = await session.pendingPrompts();
-        if (batch) {
-          status("the server asks:");
-          const answers = await ui.collectPrompts(batch);
-          await session.answerPrompts(answers);
-          status("authenticating…");
-          continue;
+  // Authentication is latch-then-poll for EVERY method (terminal.wit):
+  // the authenticate-* call above only recorded the credential. Poll
+  // until the server settles it one way or the other -- claiming
+  // "connected" before that is a lie the next status would retract.
+  // Prompt-driven methods surface server-paced batches along the way:
+  // keyboard-interactive always, auto whenever the server steers
+  // somewhere interactive (its password round is a one-prompt batch);
+  // password/publickey never produce a batch, so for them this loop is
+  // pure outcome-waiting. (No deadline -- a human may be typing; the
+  // ssh transport itself closes the session if the server goes away.)
+  for (;;) {
+    const st = await session.status();
+    const tag = statusOf(st);
+    if (tag === "ready") break;
+    if (tag === "closed") fatal(`authentication: ${st.value ?? "closed"}`);
+    if (tag === "auth-prompts") {
+      const batch = await session.pendingPrompts();
+      if (batch) {
+        status("the server asks:");
+        const answers = await ui.collectPrompts(batch);
+        if (!answers) {
+          // The user bailed on a batch they cannot answer (a missing
+          // OTP, a mistyped user). Tear the attempt down instead of
+          // leaving authentication parked forever.
+          await session.detach();
+          currentSession = null;
+          fatal("authentication cancelled");
         }
+        await session.answerPrompts(answers);
+        status("authenticating…");
+        continue;
       }
-      await sleep(50);
     }
+    await sleep(50);
   }
 
   status(`connected as ${user}`);
@@ -382,6 +405,9 @@ function sessionEnded(session, why) {
   currentSession = null;
   flush(true);
   status(why);
+  // For the shell around the terminal (boot.mjs): the session this
+  // page was showing is gone, bring the connect panel back.
+  window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why } }));
 }
 
 /** Tear the session down and close the iroh connection. */
