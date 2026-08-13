@@ -9,10 +9,15 @@
 //   1. deltic instantiates the composed component, with the iroh
 //      endpoint's webcrypto/websocket/webrtc imports served by real
 //      browser APIs.
-//   2. `identity-openssh` mints an Ed25519 key through the browser's
-//      Web Crypto and returns a well-formed authorized_keys line. That
+//   2. `identity-openssh` returns a well-formed authorized_keys line
+//      whose Ed25519 key lives behind the browser's Web Crypto. That
 //      exercises the whole guest->WIT->host crypto path, and it is the
 //      key SSH publickey auth will later sign with.
+//   3. The identity PERSISTS: a page reload -- a fresh component
+//      instance -- reports the same line, because the host serves it
+//      from IndexedDB (`wosh:terminal/identity-store`). This is the
+//      property no native gate can see: it lives in the browser's
+//      storage, not in the component.
 //
 // Usage: node host-test/browser-identity.mjs [--keep]
 
@@ -135,9 +140,24 @@ try {
     });
     if (again !== line) fail(`identity not stable across calls:\n  ${line}\n  ${again}`);
     else console.log("[4] identity is well-formed and stable across calls");
+
+    // Persistence: a reload tears the component down; the identity must
+    // come back identical from IndexedDB. This is THE property the
+    // identity-store import exists for.
+    await page.reload({ waitUntil: "load" });
+    await page.waitForSelector("#panel button", { timeout: 15_000 });
+    const reloaded = await page.evaluate(async () => {
+      const { identity } = await import("./app.mjs");
+      return await identity();
+    });
+    if (reloaded !== line) {
+      fail(`identity did not survive a reload:\n  before ${line}\n  after  ${reloaded}`);
+    } else {
+      console.log("[5] identity persists across a page reload (IndexedDB)");
+    }
   }
 
-  // 5. the PWA shell. Registration itself is https-gated on purpose --
+  // 6. the PWA shell. Registration itself is https-gated on purpose --
   //    local serving is http, so a stale worker can never confuse
   //    development or this gate -- so assert the shipped assets are
   //    coherent instead: a manifest the browser actually parsed, icons
@@ -163,7 +183,7 @@ try {
     if (bad.length) fail(`manifest icons do not resolve: ${bad.join(", ")}`);
     else {
       console.log(
-        `[5] manifest ok: "${manifest.name}", display=${manifest.display}, ` +
+        `[6] manifest ok: "${manifest.name}", display=${manifest.display}, ` +
           `${manifest.icons.length} icons resolve`,
       );
     }
@@ -179,7 +199,7 @@ try {
     const hasWasm = /dist\/wosh-ssh-client\.wasm/.test(sw);
     if (!version || !precached) fail(`sw.js looks malformed (version=${version}, ${precached} entries)`);
     else if (!hasWasm) fail("sw.js does not precache the client component");
-    else console.log(`[6] service worker: version ${version}, ${precached} files precached (component included)`);
+    else console.log(`[7] service worker: version ${version}, ${precached} files precached (component included)`);
   }
 
   if (consoleErrors.length) {
