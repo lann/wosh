@@ -1,0 +1,2 @@
+worlds = ["wosh:ssh-core/ssh-core"]
+wit_paths = ["wit"]

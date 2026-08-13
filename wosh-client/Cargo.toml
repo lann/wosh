@@ -1,0 +1,14 @@
+[package]
+name = "wosh-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The wosh browser SSH client's I/O half: dials polymorph-iroh, pumps bytes to the sans-I/O wosh:ssh-core Go component, relays signatures to the host identity-store, and exports the wosh:terminal interface the website drives."
+
+[dependencies]
+wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
+wosh-connstring = { path = "../connstring" }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+
+[lib]
+crate-type = ["cdylib"]

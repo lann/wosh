@@ -76,8 +76,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            client-go/main.wasm
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'client-go/go.sum') }}
+            ssh-core/main.wasm
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'ssh-core/go.sum') }}
           restore-keys: cargo-${{ runner.os }}-
 
       # WOSH_SKIP_RELAY: the relay is only needed to RUN the gates, and

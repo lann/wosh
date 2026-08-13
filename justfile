@@ -20,16 +20,22 @@ setup:
 listener-core:
     cargo build --target wasm32-wasip2 --release -p wosh-listener-core
 
-# The browser SSH client: x/crypto/ssh over iroh, one Go component.
+# The browser SSH client, two components: the sans-I/O SSH core (Go,
+# x/crypto/ssh as a byte-and-tick machine) and the wosh-client
+# orchestrator (Rust: connstring, the iroh dial, byte pumping, the
+# identity-store signature relay).
 client:
-    cd client-go && componentize-go build
+    cd ssh-core && componentize-go build
+    cargo build --target wasm32-wasip2 --release -p wosh-client
 
-# Fuse each component with the polymorph-iroh endpoint.
+# Fuse the pieces: the listener with the endpoint; the client with the
+# SSH core and the endpoint.
 compose: listener-core client
     mkdir -p target/components
     wac plug target/wasm32-wasip2/release/wosh_listener_core.wasm \
         --plug {{ENDPOINT}} -o target/components/wosh-listener.wasm
-    wac plug client-go/main.wasm --plug {{ENDPOINT}} \
+    wac plug target/wasm32-wasip2/release/wosh_client.wasm \
+        --plug ssh-core/main.wasm --plug {{ENDPOINT}} \
         -o target/components/wosh-ssh-client.wasm
 
 # Native hosts.
@@ -77,11 +83,17 @@ serve out="out": (site out)
 
 # --- gates ------------------------------------------------------------
 
-# The connection-string format (shared by both ends): the Rust owner
-# and the Go mirror decoder, both against the same pinned wire bytes.
+# The connection-string format: the Rust crate is the single owner and
+# decoder now (the Go core never sees a connstring).
 test-connstring:
     cargo test -p wosh-connstring
-    cd client-go && go test ./connstring/
+
+# The sans-I/O SSH core's host-side tests: a real x/crypto/ssh server
+# bridged over the shuttle, covering the host-key gate, every auth
+# method, the signature and prompt park-and-poll surfaces, and wire
+# teardown.
+test-ssh-core:
+    cd ssh-core && go vet ./core/ && go test ./core/
 
 # The three componentize-go async measurements behind this design; see
 # README "Findings". The lifting probe is two direct wasmtime invokes
@@ -204,4 +216,4 @@ browser-e2e: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring spike-async e2e e2e-kbdint browser browser-e2e
+check: test-connstring test-ssh-core spike-async e2e e2e-kbdint browser browser-e2e
