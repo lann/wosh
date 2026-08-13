@@ -221,14 +221,14 @@ Verified working:
   bound on a live relay, connstring + QR + link printed, pairing token
   enforced, and a peer's bytes proxied to a TCP service and back.
 - **The whole thing, end to end** (`just e2e`): the browser client
-  component under wasmtime obtains its non-extractable WebCrypto key
-  from the host's `identity-store` (and verifies it is Ed25519,
-  non-extractable, sign-granted), emits an `authorized_keys` line,
-  dials the listener over real iroh, verifies the host key fingerprint
-  against the real sshd's, authenticates by **publickey with a
-  signature produced by that WebCrypto key**, gets an interactive pty,
-  round-trips a command through the tunnel, resizes, and detaches
-  cleanly.
+  component under wasmtime obtains its identity's public half from the
+  host's `identity-store`, emits an `authorized_keys` line, dials the
+  listener over real iroh, verifies the host key fingerprint against
+  the real sshd's, authenticates by **publickey with a signature the
+  store produces and the component checks against that public key**
+  (no private-key handle exists anywhere in the component), gets an
+  interactive pty, round-trips a command through the tunnel, resizes,
+  and detaches cleanly.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

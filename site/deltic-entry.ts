@@ -16,15 +16,14 @@
 // safe here only because the client never asks the endpoint to bind
 // one (see ssh-client-core: it deliberately sets no udp-bind-addr).
 // The client's own `wosh:terminal/identity-store` import is served by
-// ./identity-store.ts: the browser's persistent SSH identity, a
-// non-extractable WebCrypto pair kept in IndexedDB.
+// ./identity-store.ts: the browser's persistent SSH identity -- a
+// non-extractable WebCrypto pair kept in IndexedDB, exposed to the
+// component as public bytes and signatures only.
 //
 // MODULE IDENTITY: the bundle must carry exactly one copy of
 // @deltic/runtime/embedder, or `instanceof` / brand checks stop holding
 // across module boundaries and real errors surface as unbranded
-// throws. deno.json's import map is what guarantees that. It is also
-// what lets identity-store.ts mint `SigningKey` instances the
-// webcrypto host module recognises as its own.
+// throws. deno.json's import map is what guarantees that.
 
 import { Translator } from "@deltic/runtime/shim";
 import { ComponentException, instantiate } from "@deltic/runtime/embedder";

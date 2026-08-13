@@ -17,31 +17,58 @@ import (
 	witTypes "go.bytecodealliance.org/pkg/wit/types"
 	"runtime"
 	"unsafe"
-	"wit_component/polymorph_webcrypto_signature"
 )
 
-type SigningKey = polymorph_webcrypto_signature.SigningKey
-type VerifyingKey = polymorph_webcrypto_signature.VerifyingKey
+//go:wasmimport wosh:terminal/identity-store [async-lower]public-key
+func wasm_import_public_key(arg0 uintptr) int32
 
-//go:wasmimport wosh:terminal/identity-store [async-lower]identity
-func wasm_import_identity(arg0 uintptr) int32
-
-func Identity() witTypes.Result[witTypes.Tuple2[*polymorph_webcrypto_signature.SigningKey, *polymorph_webcrypto_signature.VerifyingKey], string] {
+func PublicKey() witTypes.Result[[]uint8, string] {
 	pinner := &runtime.Pinner{}
 	defer pinner.Unpin()
 
 	returnArea := uintptr(witRuntime.Allocate(pinner, (3 * 4), 4))
 
-	witAsync.SubtaskWait(uint32(wasm_import_identity(returnArea)))
-	var result witTypes.Result[witTypes.Tuple2[*polymorph_webcrypto_signature.SigningKey, *polymorph_webcrypto_signature.VerifyingKey], string]
+	witAsync.SubtaskWait(uint32(wasm_import_public_key(returnArea)))
+	var result witTypes.Result[[]uint8, string]
 	switch uint8(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 0))) {
 	case 0:
+		value := unsafe.Slice((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (2 * 4))))
 
-		result = witTypes.Ok[witTypes.Tuple2[*polymorph_webcrypto_signature.SigningKey, *polymorph_webcrypto_signature.VerifyingKey], string](witTypes.Tuple2[*polymorph_webcrypto_signature.SigningKey, *polymorph_webcrypto_signature.VerifyingKey]{polymorph_webcrypto_signature.SigningKeyFromOwnHandle(int32(uintptr(*(*int32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), polymorph_webcrypto_signature.VerifyingKeyFromOwnHandle(int32(uintptr(*(*int32)(unsafe.Add(unsafe.Pointer(returnArea), (4 + 1*4))))))})
+		result = witTypes.Ok[[]uint8, string](value)
 	case 1:
-		value := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (2 * 4))))
+		value0 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (2 * 4))))
 
-		result = witTypes.Err[witTypes.Tuple2[*polymorph_webcrypto_signature.SigningKey, *polymorph_webcrypto_signature.VerifyingKey], string](value)
+		result = witTypes.Err[[]uint8, string](value0)
+	default:
+		panic("unreachable")
+	}
+
+	return result
+
+}
+
+//go:wasmimport wosh:terminal/identity-store [async-lower]sign
+func wasm_import_sign(arg0 uintptr, arg1 uint32, arg2 uintptr) int32
+
+func Sign(data []uint8) witTypes.Result[[]uint8, string] {
+	pinner := &runtime.Pinner{}
+	defer pinner.Unpin()
+
+	returnArea := uintptr(witRuntime.Allocate(pinner, (3 * 4), 4))
+	data0 := unsafe.Pointer(unsafe.SliceData(data))
+	pinner.Pin(data0)
+
+	witAsync.SubtaskWait(uint32(wasm_import_sign(uintptr(data0), uint32(len(data)), returnArea)))
+	var result witTypes.Result[[]uint8, string]
+	switch uint8(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 0))) {
+	case 0:
+		value := unsafe.Slice((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (2 * 4))))
+
+		result = witTypes.Ok[[]uint8, string](value)
+	case 1:
+		value1 := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), 4))))), *(*uint32)(unsafe.Add(unsafe.Pointer(returnArea), (2 * 4))))
+
+		result = witTypes.Err[[]uint8, string](value1)
 	default:
 		panic("unreachable")
 	}

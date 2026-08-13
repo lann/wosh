@@ -1,6 +1,7 @@
 package wosh:terminal;
 
-/// Host-side keeper of this client's SSH identity.
+/// Host-side keeper of this client's SSH identity: the key never
+/// crosses this interface, only its public half and signatures do.
 ///
 /// Persistence is a HOST concern, structurally: the private half must
 /// stay a non-extractable WebCrypto handle, and only the host can put
@@ -9,22 +10,28 @@ package wosh:terminal;
 /// non-extractability (the material never becomes readable, it just
 /// survives the page). The component cannot do any of that: it holds
 /// only capability handles, and those die with the instance.
+///
+/// The surface is deliberately sign-only rather than handing back a
+/// `polymorph:webcrypto` signing-key handle: no private-key handle
+/// exists anywhere in the component graph, and the component needs no
+/// webcrypto import of its own. The component still verifies rather
+/// than trusts: it checks each signature against `public-key` before
+/// offering it, so a store that signs with a different key than it
+/// reports fails loudly at the client, not opaquely at the server.
 interface identity-store {
-  use polymorph:webcrypto/signature@0.1.0.{signing-key, verifying-key};
-
-  /// The SSH identity this client authenticates as: the signing half
-  /// and its public counterpart.
-  ///
-  /// The host mints the pair on first use -- non-extractable,
-  /// sign-only -- and hands back the SAME pair on every later call: in
-  /// a browser that means across page loads, so the authorized_keys
-  /// line a user installed keeps working. A host without durable
+  /// The public half of this client's SSH identity, as a raw Ed25519
+  /// public key (32 bytes). Stable across calls -- and, wherever the
+  /// host has durable storage, across page loads: the authorized_keys
+  /// line derived from it stays valid. The host mints the pair
+  /// (non-extractable, sign-only) on first use. A host without durable
   /// storage (the native e2e gate) may mint fresh per run; that is a
   /// property of the host, not a mode of this interface.
-  ///
-  /// The component verifies what it is handed (Ed25519,
-  /// non-extractable) rather than trusting the store.
-  identity: async func() -> result<tuple<signing-key, verifying-key>, string>;
+  public-key: async func() -> result<list<u8>, string>;
+
+  /// Sign `data` -- the SSH publickey-auth signature blob (session id,
+  /// user, service, algorithm, public key) -- with the held identity,
+  /// returning the raw 64-byte Ed25519 signature.
+  sign: async func(data: list<u8>) -> result<list<u8>, string>;
 }
 
 /// The browser-facing SSH terminal surface: what the static site drives
@@ -84,15 +91,14 @@ interface terminal {
   /// This browser's SSH identity, as an OpenSSH `authorized_keys` line
   /// (`ssh-ed25519 AAAA... wosh-browser`).
   ///
-  /// The key pair comes from the host through `identity-store`, so it
+  /// The key pair lives behind the host's `identity-store`, so it
   /// outlives this instance wherever the host has durable storage: in
   /// a browser the same line keeps working across page reloads. The
-  /// private half is a NON-EXTRACTABLE WebCrypto key (enforced here,
-  /// not assumed): this component can ask the authenticator to sign
-  /// with it, but nothing -- not this component, not the page, not an
-  /// XSS payload -- can read it out. Signing during SSH publickey auth
-  /// goes back through that same handle. Fetched once per instance and
-  /// cached.
+  /// private half is a NON-EXTRACTABLE WebCrypto key, and no handle to
+  /// it exists in this component: signing during SSH publickey auth
+  /// asks the store, and nothing -- not this component, not the page,
+  /// not an XSS payload -- can read the key out. Fetched once per
+  /// instance and cached.
   identity-openssh: async func() -> result<string, string>;
 
   resource session {

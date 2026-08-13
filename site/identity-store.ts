@@ -1,5 +1,6 @@
 // The `wosh:terminal/identity-store` host implementation: this
-// browser's SSH identity, persisted in IndexedDB.
+// browser's SSH identity, persisted in IndexedDB, exposed to the
+// component as public bytes and signatures only.
 //
 // Persistence lives HERE, not in the component, structurally: the
 // private half is a non-extractable WebCrypto key, and the only
@@ -7,12 +8,21 @@
 // objects by structured clone -- the handle survives, the material
 // never becomes readable. The component holds only per-instance
 // capability handles, so it could not persist anything even if it
-// wanted to; it verifies what this store hands it (Ed25519,
-// non-extractable, sign-only) rather than trusting it.
+// wanted to.
+//
+// The surface is deliberately sign-only: the CryptoKey never leaves
+// this module, so no private-key handle exists anywhere in the
+// component graph. (That is a structural tidiness, not an XSS
+// boundary: IndexedDB is origin-scoped, so any script in the origin
+// can reach the stored handle regardless. The mitigations that would
+// change that -- user-presence gating along the lines of main's
+// passkey/PRF escrow -- are a different feature.) The component
+// checks each signature against `public-key` on its side, so a bug
+// here that signs with the wrong key fails loudly at the client.
 //
 // Concretely: the first use mints a non-extractable Ed25519 pair and
 // stores it; every later call -- including after a page reload --
-// returns the same pair, so the authorized_keys line the user
+// returns the same identity, so the authorized_keys line the user
 // installed keeps working. Clearing the site's data deliberately
 // forgets the identity.
 //
@@ -23,23 +33,6 @@
 /// <reference lib="dom" />
 
 import { ComponentException } from "@deltic/runtime/embedder";
-import {
-  type SignatureAlgorithm,
-  SigningKey,
-  VerifyingKey,
-} from "@polymorph/webcrypto-deltic";
-
-// The mint-bound algorithm record the webcrypto host module attaches
-// to every signature key (its `ED25519_ALGORITHM`, which it does not
-// export). Plain data: the name is what `subtle.sign` is called with,
-// the lengths are the WIT-pinned Ed25519 wire widths.
-const ED25519: SignatureAlgorithm = Object.freeze({
-  name: "Ed25519",
-  namedCurve: undefined,
-  hash: undefined,
-  publicLength: 32,
-  signatureLength: 64,
-});
 
 const DB_NAME = "wosh";
 const STORE = "identity";
@@ -116,11 +109,15 @@ async function loadOrMint(): Promise<CryptoKeyPair> {
   }
 }
 
-async function identity(): Promise<[SigningKey, VerifyingKey]> {
-  let pair: CryptoKeyPair;
-  try {
+// Resolved once per page and cached: `public-key` and `sign` must
+// answer for the SAME pair even on the ephemeral fallback path, where
+// a second load would mint a second key.
+let pairPromise: Promise<CryptoKeyPair> | undefined;
+
+function identityPair(): Promise<CryptoKeyPair> {
+  pairPromise ??= (async () => {
     try {
-      pair = await loadOrMint();
+      return await loadOrMint();
     } catch (e) {
       // Storage trouble is not identity trouble: fall back to the
       // pre-persistence behaviour (a fresh key per page load) and say
@@ -129,21 +126,40 @@ async function identity(): Promise<[SigningKey, VerifyingKey]> {
         "wosh: IndexedDB unavailable; this browser's SSH identity will not survive a reload",
         e,
       );
-      pair = await mint();
+      return await mint();
     }
+  })();
+  return pairPromise;
+}
+
+/** Failures cross the WIT boundary as the `result`'s err arm. */
+const errArm = (what: string, e: unknown): ComponentException =>
+  new ComponentException(`${what}: ${(e as Error)?.message ?? e}`);
+
+async function publicKey(): Promise<Uint8Array> {
+  try {
+    const pair = await identityPair();
+    return new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   } catch (e) {
-    // No Ed25519 WebCrypto at all: the err arm of the WIT result.
-    throw new ComponentException(
-      `mint ssh identity: ${(e as Error)?.message ?? e}`,
-    );
+    throw errArm("ssh identity public key", e);
   }
-  return [
-    new SigningKey(pair.privateKey, ED25519),
-    new VerifyingKey(pair.publicKey, ED25519),
-  ];
+}
+
+async function sign(data: Uint8Array): Promise<Uint8Array> {
+  try {
+    const pair = await identityPair();
+    return new Uint8Array(
+      // The cast narrows `ArrayBufferLike` for the dom lib's
+      // `BufferSource`; deltic lowers `list<u8>` as a plain
+      // ArrayBuffer-backed Uint8Array.
+      await crypto.subtle.sign("Ed25519", pair.privateKey, data as BufferSource),
+    );
+  } catch (e) {
+    throw errArm("ssh identity sign", e);
+  }
 }
 
 /** The imports-record fragment for deltic's `instantiate`. */
 export function identityStoreImports(): Record<string, unknown> {
-  return { "wosh:terminal/identity-store": { identity } };
+  return { "wosh:terminal/identity-store": { publicKey, sign } };
 }

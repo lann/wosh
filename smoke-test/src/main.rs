@@ -1,7 +1,8 @@
 //! The end-to-end gate: the composed browser SSH client, under
 //! wasmtime, dialing a real listener over real iroh, proxied to a
-//! **real OpenSSH sshd**, authenticated with the non-extractable
-//! WebCrypto key the component mints for itself.
+//! **real OpenSSH sshd**, authenticated by publickey through the
+//! host's `identity-store` (in a browser that is a non-extractable
+//! WebCrypto key in IndexedDB; here, a per-run key this host holds).
 //!
 //! Everything the browser would do, minus the browser: the same
 //! composed artifact, the same `wosh:terminal` interface, the same
@@ -12,10 +13,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
-use polymorph_webcrypto_wasmtime::{
-    WasiWebcrypto, WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView,
-};
-use wasmtime::component::{Accessor, Component, Linker, Resource, ResourceTable};
+use ed25519_dalek::Signer;
+use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
+use wasmtime::component::{Accessor, Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView};
@@ -27,29 +27,22 @@ mod bindings {
         world: "composed-client",
         imports: { default: async | store | trappable },
         exports: { default: async },
-        // `identity-store` uses the signature resources, and the handles
-        // it returns must be THE SAME host resource types the webcrypto
-        // linker entries registered -- so those interfaces map onto the
-        // polymorph crate's generated bindings instead of regenerating.
-        with: {
-            "polymorph:webcrypto/types@0.1.0": polymorph_webcrypto_wasmtime::bindings::webcrypto::types,
-            "polymorph:webcrypto/signature@0.1.0": polymorph_webcrypto_wasmtime::bindings::webcrypto::signature,
-        },
     });
 }
 
 use bindings::exports::wosh::terminal::terminal::Status;
 use bindings::wosh::terminal::identity_store;
-use polymorph_webcrypto_wasmtime::bindings::webcrypto::ed25519_sign;
-use polymorph_webcrypto_wasmtime::bindings::webcrypto::signature::{
-    HostSigningKeyOptions, SigningKey, VerifyingKey,
-};
 
 struct Ctx {
     wasi: WasiCtx,
     webrtc: WebrtcCtx,
     webcrypto: WasiWebcryptoCtx,
     websocket: WasiWebsocketCtx,
+    /// The run's SSH identity, behind `wosh:terminal/identity-store`.
+    /// Minted fresh per run -- a gate run IS one browser visit; what
+    /// persistence adds in a real browser (IndexedDB) is the browser
+    /// gate's to assert. Sign-only surface, exactly like the page's.
+    identity: ed25519_dalek::SigningKey,
     table: ResourceTable,
 }
 
@@ -74,33 +67,20 @@ impl WasiWebsocketView for Ctx {
     }
 }
 
-// `wosh:terminal/identity-store`, natively: mint a fresh pair per run
-// through the SAME webcrypto host implementation the component uses for
-// everything else. No persistence -- a gate run IS one browser visit;
-// what persistence adds in a real browser (IndexedDB) is exercised by
-// the browser gate. Implemented on `WasiWebcrypto` (the polymorph
-// crate's data marker) so the accessor is already shaped for calling
-// its `generate-key`.
-impl identity_store::Host for WasiWebcryptoCtxView<'_> {}
+impl identity_store::Host for Ctx {}
 
-impl identity_store::HostWithStore<Ctx> for WasiWebcrypto {
-    async fn identity(
+impl identity_store::HostWithStore<Ctx> for HasSelf<Ctx> {
+    async fn public_key(
         accessor: &Accessor<Ctx, Self>,
-    ) -> wasmtime::Result<std::result::Result<(Resource<SigningKey>, Resource<VerifyingKey>), String>>
-    {
-        // Mint-time policy, exactly as the browser host: sign granted,
-        // extractable left at its default (false).
-        let options = accessor.with(|mut access| {
-            let mut view = access.get();
-            let options = HostSigningKeyOptions::new(&mut view)?;
-            let borrow = Resource::new_borrow(options.rep());
-            HostSigningKeyOptions::can_sign(&mut view, borrow, true)?;
-            Ok::<_, wasmtime::Error>(options)
-        })?;
-        let pair = <Self as ed25519_sign::HostWithStore<Ctx>>::generate_key(accessor, options)
-            .await?
-            .map_err(|e| format!("generate ssh identity: {e:?}"));
-        Ok(pair)
+    ) -> wasmtime::Result<std::result::Result<Vec<u8>, String>> {
+        Ok(Ok(accessor.with(|mut a| a.get().identity.verifying_key().to_bytes().to_vec())))
+    }
+
+    async fn sign(
+        accessor: &Accessor<Ctx, Self>,
+        data: Vec<u8>,
+    ) -> wasmtime::Result<std::result::Result<Vec<u8>, String>> {
+        Ok(Ok(accessor.with(|mut a| a.get().identity.sign(&data).to_bytes().to_vec())))
     }
 }
 
@@ -160,7 +140,7 @@ async fn main() -> Result<()> {
     webrtc_host::add_to_linker(&mut linker)?;
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
-    identity_store::add_to_linker::<Ctx, WasiWebcrypto>(&mut linker, |ctx| ctx.webcrypto())?;
+    identity_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_network();
@@ -171,6 +151,7 @@ async fn main() -> Result<()> {
             webrtc: WebrtcCtx::new(),
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
+            identity: ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng),
             table: ResourceTable::new(),
         },
     );
@@ -208,7 +189,7 @@ async fn main() -> Result<()> {
                 .call_identity_openssh(acc)
                 .await?
                 .map_err(|e| anyhow!("identity: {e}"))?;
-            println!("[1] identity (non-extractable WebCrypto key):\n    {line}");
+            println!("[1] identity (host-held, via identity-store):\n    {line}");
             if !line.starts_with("ssh-ed25519 ") {
                 bail!("identity is not an ssh-ed25519 authorized_keys line: {line}");
             }
@@ -266,7 +247,7 @@ async fn main() -> Result<()> {
                     _ => tokio::time::sleep(Duration::from_millis(25)).await,
                 }
             }
-            println!("[4] authenticated (signature produced by the WebCrypto key); shell is up");
+            println!("[4] authenticated (signature produced through identity-store); shell is up");
 
             // --- 5. interactive shell -----------------------------
             let marker = "WOSH_E2E_OK";
