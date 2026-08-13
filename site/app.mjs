@@ -382,6 +382,9 @@ function sessionEnded(session, why) {
   currentSession = null;
   flush(true);
   status(why);
+  // For the shell around the terminal (boot.mjs): the session this
+  // page was showing is gone, bring the connect panel back.
+  window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why } }));
 }
 
 /** Tear the session down and close the iroh connection. */

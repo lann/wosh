@@ -91,12 +91,18 @@ function savePin(endpointId, fp) {
   }
 }
 
+/// `panel` is a <dialog>: the connect form is a MODAL, so a live
+/// session gets the whole viewport. It opens itself whenever there is
+/// no session to look at (page load, session end, detach), stays open
+/// through the host-key prompt and any auth prompt batches, and closes
+/// on a successful connect. The always-visible #bar carries the status
+/// line, the detach button, and the button that reopens this dialog.
 export async function initBoot(panel, { onConnect }) {
   const notice = el("div", { className: "notice" });
   const keyRow = el("div", { className: "key" });
 
   const csInput = el("input", {
-    size: 48,
+    className: "connstring",
     placeholder: "connection string (from the listener's QR link)",
     value: connstringFromLocation(),
   });
@@ -114,17 +120,52 @@ export async function initBoot(panel, { onConnect }) {
   );
 
   const connectBtn = el("button", { textContent: "connect" });
-  const detachBtn = el("button", { textContent: "detach", disabled: true });
   const showKeyBtn = el("button", { textContent: "show this browser's public key" });
+  const closeBtn = el("button", { textContent: "×", title: "close" });
+
+  // The always-visible bar (index.html): session controls live there,
+  // not in the dialog, so they work while the dialog is closed.
+  const detachBtn = document.getElementById("detach-btn");
+  const settingsBtn = document.getElementById("settings-btn");
 
   panel.append(
-    el("div", { className: "row" }, el("label", { textContent: "connection" }), csInput),
-    el("div", { className: "row" }, el("label", { textContent: "user" }), userInput,
-      " ", method),
-    el("div", { className: "row" }, connectBtn, " ", detachBtn, " ", showKeyBtn),
+    el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
+    el("div", { className: "field", textContent: "connection string" }),
+    csInput,
+    el("div", { className: "row" },
+      el("label", { textContent: "user" }), userInput, method),
+    el("div", { className: "row" }, connectBtn, showKeyBtn),
     keyRow,
     notice,
   );
+
+  const openPanel = () => {
+    if (!panel.open) panel.showModal();
+    // Focus what the user actually has to type: the QR link prefills
+    // the connstring, so usually that is the user field.
+    (csInput.value.trim() ? userInput : csInput).focus();
+  };
+  // Esc (and the × button) close the dialog -- fine with a session to
+  // return to, and harmless without one (#bar's button reopens it) --
+  // but NOT mid-connect: a hidden host-key or OTP prompt looks exactly
+  // like a hang.
+  panel.addEventListener("cancel", (e) => {
+    if (connectBtn.disabled) e.preventDefault();
+  });
+  closeBtn.addEventListener("click", () => {
+    if (!connectBtn.disabled) panel.close();
+  });
+  settingsBtn.addEventListener("click", openPanel);
+
+  // The session is gone: surface why, restore the bar to its idle
+  // shape, and bring the connect form back.
+  const sessionOver = (why) => {
+    detachBtn.hidden = true;
+    settingsBtn.textContent = "connect…";
+    if (why) notice.textContent = why;
+    openPanel();
+  };
+  window.addEventListener("wosh:session-ended", (e) => sessionOver(e.detail?.why));
 
   // Method support depends on the loaded component; ask it rather
   // than assume. Probing also forces the component to load, so the
@@ -303,7 +344,18 @@ export async function initBoot(panel, { onConnect }) {
     connectBtn.disabled = true;
     try {
       const session = await onConnect({ connstring, user, ui });
-      detachBtn.disabled = !session;
+      if (session) {
+        // Out of the way: the session owns the screen now. The bar's
+        // buttons take over (detach, and reopening this dialog).
+        detachBtn.hidden = false;
+        settingsBtn.textContent = "settings";
+        panel.close();
+      } else if (!notice.textContent) {
+        // connect() resolved null without throwing (the user rejected
+        // the host key): the status line has the story; mirror it here
+        // where the user is looking.
+        notice.textContent = document.getElementById("status")?.textContent ?? "not connected";
+      }
     } catch (e) {
       notice.textContent = `${e.message ?? e}`;
     } finally {
@@ -312,10 +364,19 @@ export async function initBoot(panel, { onConnect }) {
   };
 
   connectBtn.addEventListener("click", doConnect);
+  // Enter in either field connects -- scoped to THESE fields: the
+  // prompt-batch rows manage their own Enter.
+  for (const input of [csInput, userInput]) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !connectBtn.disabled) doConnect();
+    });
+  }
   detachBtn.addEventListener("click", async () => {
     await detach();
-    detachBtn.disabled = true;
+    sessionOver("detached");
   });
+
+  openPanel();
 
   return { connect: doConnect, ui };
 }

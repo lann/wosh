@@ -14,30 +14,51 @@
   <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
     html, body { height: 100%; margin: 0; background: #000; }
-    #status {
+    /* The one always-visible strip: status + session controls. The
+       connect form lives in the #panel dialog so a live session gets
+       the whole viewport. */
+    #bar {
+      display: flex; align-items: center; gap: 8px;
       font: 12px system-ui, sans-serif; color: #9a9a9a; background: #111;
       padding: 4px 8px; border-bottom: 1px solid #222;
+    }
+    #status {
+      flex: 1; min-width: 0;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #bar button {
+      flex: none; font: 11px system-ui, sans-serif;
+      color: #ccc; background: #1c1c1c; border: 1px solid #333;
+      border-radius: 4px; padding: 2px 8px;
     }
     #wrap { display: flex; flex-direction: column; height: 100%; }
     #panel {
       font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
-      padding: 6px 8px; border-bottom: 1px solid #222;
+      border: 1px solid #333; border-radius: 8px;
+      padding: 10px 12px; margin: auto;
+      width: min(560px, 92vw); box-sizing: border-box;
     }
+    #panel::backdrop { background: rgba(0, 0, 0, 0.65); }
+    #panel .title {
+      display: flex; align-items: center; margin-bottom: 6px;
+      color: #ddd; font-weight: 600;
+    }
+    #panel .title span { flex: 1; }
     #panel button { font-size: 11px; }
-    #panel input {
+    #panel input, #panel select {
       background: #000; color: #ddd; border: 1px solid #333;
-      font: 12px monospace; padding: 2px 4px;
+      font: 12px monospace; padding: 3px 4px;
     }
-    #panel label { display: inline-block; min-width: 8em; }
-    #panel .row { margin-top: 4px; }
-    #panel .notice { color: #d90; margin-top: 4px; }
-    #panel .confirm { color: #d90; margin-top: 4px; }
+    #panel .connstring { width: 100%; box-sizing: border-box; }
+    #panel .field { color: #888; margin-top: 8px; margin-bottom: 2px; }
+    #panel .row { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    #panel .notice { color: #d90; margin-top: 8px; }
+    #panel .confirm { color: #d90; margin-top: 8px; }
     #panel .confirm code, #panel .key code { color: #fd5; }
     /* a changed pinned host key: the one alarming state on this page */
     #panel .confirm .warn { color: #f55; font-weight: bold; }
     #panel .key {
-      margin-top: 4px; font: 11px monospace; color: #8c8;
+      margin-top: 8px; font: 11px monospace; color: #8c8;
       word-break: break-all;
     }
     #panel .key code { user-select: all; }
@@ -63,8 +84,9 @@
       }
       #keys button.armed { color: #fff; background: #2d5e9e; border-color: #4a7ec0; }
       /* 16px stops the iOS focus auto-zoom on the connect panel */
-      #panel input { font-size: 16px; }
+      #panel input, #panel select { font-size: 16px; }
       #panel button { font-size: 14px; min-height: 32px; }
+      #bar button { font-size: 13px; min-height: 28px; }
     }
   </style>
   <script src="./xterm/xterm.js"></script>
@@ -72,11 +94,15 @@
 </head>
 <body>
   <div id="wrap">
-    <div id="status">idle</div>
-    <div id="panel"></div>
+    <div id="bar">
+      <span id="status">idle</span>
+      <button id="detach-btn" hidden>detach</button>
+      <button id="settings-btn">connect…</button>
+    </div>
     <div id="term"></div>
     <div id="keys"></div>
   </div>
+  <dialog id="panel"></dialog>
   <script type="module">
     import { connect } from "./app.mjs";
     import { initBoot } from "./boot.mjs";

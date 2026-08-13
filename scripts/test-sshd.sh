@@ -28,6 +28,12 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 StrictModes no
+# The gates deliberately hammer this sshd with rejected host keys
+# (connections that never attempt auth) and failed publickey probes;
+# OpenSSH 9.8+ per-source penalties would start refusing 127.0.0.1
+# outright after a few of those, which surfaces as flaky "tunnel died
+# before the host-key gate" hangs in whichever gate runs next.
+PerSourcePenalties no
 PrintMotd no
 X11Forwarding no
 LogLevel VERBOSE
