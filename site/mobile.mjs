@@ -133,17 +133,62 @@ const initKeysBar = (term) => {
     ["→", cursor("C")],
   ];
 
-  // Act on pointerdown and swallow it: the tap must never move focus
-  // out of xterm's hidden textarea (a blur would drop the soft
-  // keyboard mid-press). click after a prevented pointerdown is not
-  // reliable across mobile browsers, so pointerdown IS the action.
-  const key = (label, onDown) => {
+  // Press = down then up WITHOUT travel. The strip scrolls sideways and
+  // sits under the thumb, so fingers land on keys on their way
+  // somewhere else; firing on pointerdown turned every such drag into a
+  // keystroke (a flick to scroll the strip emitted whatever key it
+  // started on). So arm on down, fire on up, and drop the press the
+  // moment the finger travels past SLOP or the browser claims the
+  // gesture for scrolling (pointercancel).
+  //
+  // pointerdown is still swallowed: the press must never move focus out
+  // of xterm's hidden textarea, since a blur would drop the soft
+  // keyboard mid-press. That rules out click, which is unreliable after
+  // a prevented pointerdown across mobile browsers — but not pointerup,
+  // which fires regardless and, for touch pointers, is the event that
+  // actually carries user activation (pointerdown does not — see the ⌨
+  // key below, which needs a real gesture to summon the keyboard).
+  //
+  // Touch pointers are implicitly captured by their pointerdown target,
+  // so a wandering finger's move/up/cancel keep arriving here; asking
+  // for capture explicitly extends that to the mouse. It is deliberately
+  // not load-bearing — the travel check below drops the press either
+  // way, and capture does not affect scrolling, which touch-action
+  // governs.
+  const SLOP = 10; // px of travel that still counts as a press, not a drag
+
+  const key = (label, onPress) => {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
+
+    let held = null; // pointerId of the press in flight
+    let x0 = 0, y0 = 0;
+    const drop = () => {
+      held = null;
+      b.classList.remove("pressed");
+    };
+
     b.addEventListener("pointerdown", (ev) => {
       ev.preventDefault();
-      onDown();
+      held = ev.pointerId;
+      x0 = ev.clientX;
+      y0 = ev.clientY;
+      b.classList.add("pressed"); // the only feedback before the key lands
+      try {
+        b.setPointerCapture(ev.pointerId);
+      } catch { /* optional; the press works without it */ }
+    });
+    b.addEventListener("pointermove", (ev) => {
+      if (ev.pointerId === held && Math.hypot(ev.clientX - x0, ev.clientY - y0) > SLOP) drop();
+    });
+    b.addEventListener("pointerup", (ev) => {
+      if (ev.pointerId !== held) return; // dragged away, or never ours
+      drop();
+      onPress();
+    });
+    b.addEventListener("pointercancel", (ev) => {
+      if (ev.pointerId === held) drop(); // the browser took the gesture
     });
     return b;
   };
@@ -170,7 +215,7 @@ const initKeysBar = (term) => {
   bar.appendChild(strip);
 
   // Explicit keyboard summon/dismiss: blur hides the soft keyboard,
-  // focus (inside this pointerdown user gesture) brings it back.
+  // focus (inside this pointerup user gesture) brings it back.
   bar.appendChild(
     key("⌨", () => {
       if (document.activeElement === term.textarea) term.blur();
