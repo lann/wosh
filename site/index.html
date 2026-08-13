@@ -65,6 +65,24 @@
     #panel .field { color: #888; margin-top: 8px; margin-bottom: 2px; }
     #panel .row { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     #panel .notice { color: #d90; margin-top: 8px; }
+    /* connection history: tap a row to reconnect (tokenless; pairing
+       enrollment stands in for the QR's token) */
+    #panel .history { margin-bottom: 4px; }
+    #panel .histhead { display: flex; align-items: center; }
+    #panel .histhead span { flex: 1; }
+    #panel .histline { display: flex; gap: 4px; align-items: stretch; margin-top: 4px; }
+    #panel .histrow {
+      flex: 1; text-align: left; font: 12px monospace;
+      color: #ddd; background: #1c1c1c; border: 1px solid #333;
+      border-radius: 4px; padding: 4px 8px; cursor: pointer;
+    }
+    #panel .histrow:hover { background: #242424; }
+    #panel .histrow .sub { color: #8a8a8a; font-size: 11px; margin-top: 1px; }
+    #panel button.subtle {
+      color: #888; background: transparent; border: 1px solid #2a2a2a;
+      border-radius: 4px;
+    }
+    #panel .remember .hint { color: #777; font-size: 11px; }
     #panel .confirm { color: #d90; margin-top: 8px; }
     #panel .confirm code, #panel .key code { color: #fd5; }
     /* a changed pinned host key: the one alarming state on this page */

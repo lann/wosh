@@ -128,6 +128,143 @@ function savePin(endpointId, fp) {
   }
 }
 
+// --- connection history -----------------------------------------------------
+//
+// What a returning visitor needs to reconnect: the listener's endpoint
+// id, the relay it homes on, and the user name. DELIBERATELY NOT the
+// pairing token: history rebuilds a TOKENLESS connection string, and
+// reconnecting works anyway because this device's pairing enrollment
+// (its persistent iroh identity) already vouches for it -- which is
+// also why history is worthless to copy off the device. Host keys are
+// the pin store's business, not history's; the two share only the
+// endpoint-id key.
+
+const HISTORY_KEY = "wosh.history.v1";
+const HISTORY_CAP = 20;
+
+/// Mirrors WELL_KNOWN_RELAYS in connstring/src/lib.rs (append-only,
+/// indices never reused) -- needed to DECODE a v2 connstring whose
+/// relay rides as a table index. The tokenless connstrings this page
+/// ENCODES always spell the URL out: correct either way, and it keeps
+/// this copy of the table decode-only.
+const WELL_KNOWN_RELAYS = [
+  "https://use1-1.relay.n0.iroh.link",
+  "https://usw1-1.relay.n0.iroh.link",
+  "https://euc1-1.relay.n0.iroh.link",
+  "https://aps1-1.relay.n0.iroh.link",
+];
+
+/**
+ * Decode the fields history needs -- `{ id, relay }` -- from a v1 or
+ * v2 connection string; null when it doesn't parse. A fuller sibling
+ * of `endpointIdOf` (which stays prefix-only: pins never need the
+ * relay).
+ */
+export function connstringDetails(connstring) {
+  try {
+    const bin = atob(connstring.trim().replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    if (bytes.length < 34) return null;
+    let hex = "";
+    for (let i = 1; i < 33; i++) hex += bytes[i].toString(16).padStart(2, "0");
+
+    if (bytes[0] === 1) {
+      // v1: flags byte, optional 16-byte token, relay to the end.
+      const hasToken = (bytes[33] & 1) !== 0;
+      const relayStart = 34 + (hasToken ? 16 : 0);
+      const relay = new TextDecoder().decode(bytes.subarray(relayStart));
+      return relay ? { id: hex, relay } : null;
+    }
+    if (bytes[0] === 2) {
+      // v2 postcard payload: relay enum right after the pubkey.
+      let off = 33;
+      const varint = () => {
+        let v = 0, shift = 0;
+        for (;;) {
+          const b = bytes[off++];
+          v += (b & 0x7f) * 2 ** shift;
+          if ((b & 0x80) === 0) return v;
+          shift += 7;
+        }
+      };
+      const disc = varint();
+      if (disc === 0) {
+        const len = varint();
+        const relay = new TextDecoder().decode(bytes.subarray(off, off + len));
+        return relay ? { id: hex, relay } : null;
+      }
+      if (disc === 1) {
+        const relay = WELL_KNOWN_RELAYS[varint()];
+        return relay ? { id: hex, relay } : null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A v2 connection string carrying NO pairing token: version byte,
+ * pubkey, relay spelled out (`Url` variant -- the well-known-index
+ * encoding is an optimization this producer skips), `none` token.
+ * What a history entry dials with; enrollment stands in for the token.
+ */
+export function tokenlessConnstring(idHex, relay) {
+  const relayBytes = new TextEncoder().encode(relay);
+  const bytes = [2];
+  for (let i = 0; i < 64; i += 2) bytes.push(parseInt(idHex.slice(i, i + 2), 16));
+  bytes.push(0); // Relay::Url
+  // postcard varint length; relays are short but encode properly.
+  let len = relayBytes.length;
+  while (len >= 0x80) {
+    bytes.push((len & 0x7f) | 0x80);
+    len >>= 7;
+  }
+  bytes.push(len);
+  bytes.push(...relayBytes);
+  bytes.push(0); // token: None
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** MRU list of `{ id, relay, user, at }`; [] when unavailable. */
+function loadHistory() {
+  try {
+    const h = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+    return Array.isArray(h) ? h : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entries) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_CAP)));
+  } catch {
+    // Storage refused: this visit just isn't remembered.
+  }
+}
+
+/** Insert-or-bump, deduped by (endpoint id, user). */
+function recordConnection(id, relay, user) {
+  const rest = loadHistory().filter((e) => !(e.id === id && e.user === user));
+  saveHistory([{ id, relay, user, at: new Date().toISOString() }, ...rest]);
+}
+
+function removeConnection(id, user) {
+  saveHistory(loadHistory().filter((e) => !(e.id === id && e.user === user)));
+}
+
+/** "2 min ago" -- coarse on purpose; the exact time is in the tooltip. */
+function relTime(iso) {
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 172800) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+
 /// `panel` is a <dialog>: the connect form is a MODAL, so a live
 /// session gets the whole viewport. It opens itself whenever there is
 /// no session to look at (page load, session end, detach), stays open
@@ -175,6 +312,15 @@ export async function initBoot(panel, { onConnect }) {
   const showKeyBtn = el("button", { textContent: "show this browser's public key" });
   const closeBtn = el("button", { textContent: "×", title: "close" });
 
+  // Connection history: tap to reconnect. Rendered only when there is
+  // something to show; the whole section disappears otherwise.
+  const historySection = el("div", { className: "history" });
+  const rememberConn = el("input", {
+    type: "checkbox",
+    id: "remember-connection",
+    checked: true,
+  });
+
   // The always-visible bar (index.html): session controls live there,
   // not in the dialog, so they work while the dialog is closed.
   const detachBtn = document.getElementById("detach-btn");
@@ -182,15 +328,73 @@ export async function initBoot(panel, { onConnect }) {
 
   panel.append(
     el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
+    historySection,
     el("div", { className: "field", textContent: "connection string" }),
     scanRow,
     scanHost,
     el("div", { className: "row" },
       el("label", { textContent: "user" }), userInput, method),
     el("div", { className: "row" }, connectBtn, showKeyBtn),
+    el("div", { className: "row remember" },
+      rememberConn,
+      el("label", {
+        htmlFor: "remember-connection",
+        textContent: " remember this connection",
+      }),
+      el("span", {
+        className: "hint",
+        textContent: "(the pairing token is never saved)",
+      })),
     keyRow,
     notice,
   );
+
+  /// Rebuild the recent-connections section from storage. Each row is
+  /// a button (tap = fill the form with a TOKENLESS connstring and
+  /// connect); the relay and full endpoint id deliberately live in the
+  /// hover detail (title), not the row text -- they are diagnostics,
+  /// not identity. The pin badge marks the taps that will be
+  /// promptless.
+  const renderHistory = () => {
+    historySection.replaceChildren();
+    const entries = loadHistory();
+    if (entries.length === 0) return;
+    const pins = loadPins();
+    const clearBtn = el("button", { className: "subtle", textContent: "clear" });
+    clearBtn.addEventListener("click", () => {
+      saveHistory([]);
+      renderHistory();
+    });
+    historySection.append(
+      el("div", { className: "field histhead" },
+        el("span", { textContent: "recent" }), clearBtn),
+    );
+    for (const entry of entries) {
+      const detail = `relay ${entry.relay}\nendpoint ${entry.id}\nlast connected ${entry.at}`;
+      const row = el("button", { className: "histrow", title: detail });
+      const sub = [relTime(entry.at)];
+      if (pins[entry.id]?.fp) sub.push("key pinned");
+      row.append(
+        el("div", { textContent: `${entry.user}@${entry.id.slice(0, 8)}…` }),
+        el("div", { className: "sub", textContent: sub.join(" · ") }),
+      );
+      row.addEventListener("click", () => {
+        csInput.value = tokenlessConnstring(entry.id, entry.relay);
+        userInput.value = entry.user;
+        doConnect();
+      });
+      const del = el("button", {
+        className: "subtle",
+        textContent: "×",
+        title: "forget this connection (host-key pins are separate)",
+      });
+      del.addEventListener("click", () => {
+        removeConnection(entry.id, entry.user);
+        renderHistory();
+      });
+      historySection.append(el("div", { className: "histline" }, row, del));
+    }
+  };
 
   const openPanel = () => {
     if (!panel.open) panel.showModal();
@@ -432,6 +636,21 @@ export async function initBoot(panel, { onConnect }) {
     try {
       const session = await onConnect({ connstring, user, ui });
       if (session) {
+        // History bookkeeping, only for connects that actually reached
+        // a session: failed dials and rejected host keys are not
+        // "connections". Checked (the default) records or bumps the
+        // entry; UNCHECKED also forgets an existing one -- the box
+        // reads "remember this connection", and leaving it off for a
+        // known host should mean what it says.
+        const details = connstringDetails(connstring);
+        if (details) {
+          if (rememberConn.checked) {
+            recordConnection(details.id, details.relay, user);
+          } else {
+            removeConnection(details.id, user);
+          }
+          renderHistory();
+        }
         // Out of the way: the session owns the screen now. The bar's
         // buttons take over (detach, and reopening this dialog).
         detachBtn.hidden = false;
@@ -463,6 +682,7 @@ export async function initBoot(panel, { onConnect }) {
     sessionOver("detached");
   });
 
+  renderHistory();
   openPanel();
 
   return { connect: doConnect, ui };

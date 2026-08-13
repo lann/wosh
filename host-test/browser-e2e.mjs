@@ -371,6 +371,42 @@ try {
   await waitStatus("host key rejected; nothing was sent");
   console.log("[E] rejected the changed key: nothing was sent");
 
+  // --- leg F: connection history, tap to reconnect --------------------
+  // Legs A/C/D connected as the same (endpoint, user) with the
+  // remember-connection box at its CHECKED default, so history holds
+  // exactly one deduped row. Tapping it must rebuild a TOKENLESS
+  // connstring and connect -- pairing enrollment stands in for the
+  // token. (The pin is still the bogus one leg E seeded, so the tap
+  // rides through the changed-key warning: history grants no security
+  // shortcuts.)
+  await reload();
+  const rows = await page.locator("#panel .histrow").count();
+  if (rows !== 1) fail(`expected exactly 1 history row, found ${rows}`);
+  const detail = await page.locator("#panel .histrow").first().getAttribute("title");
+  if (!/relay http/.test(detail ?? "")) {
+    fail(`history hover detail must carry the relay; got: ${detail}`);
+  }
+  await page.click("#panel .histrow");
+  await waitPrompt();
+  const filled = await page.inputValue("#panel input[placeholder*='connection string']");
+  if (filled === CONNSTRING) fail("history dialed the original connstring (token included?)");
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
+  await page.click("#bar button:has-text('detach')");
+
+  // --- leg G: unchecking 'remember this connection' forgets it --------
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  await page.uncheck("#panel #remember-connection");
+  await page.click("#panel .histrow");
+  await waitPrompt();
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  const rowsAfter = await page.locator("#panel .histrow").count();
+  if (rowsAfter !== 0) fail(`opt-out should have removed the entry; ${rowsAfter} rows remain`);
+  console.log("[G] opt-out honored: connecting with the box unchecked forgot the entry");
+  await page.click("#bar button:has-text('detach')");
+
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }
@@ -378,7 +414,8 @@ try {
   if (!process.exitCode) {
     console.log("\nBROWSER E2E PASS: interactive TOFU on first contact, opt-in pinning, " +
       "prompt-free reconnect on a pinned key, a loud changed-key warning, " +
-      "and default-method auto resolving to the browser's key");
+      "default-method auto resolving to the browser's key, and tap-to-reconnect " +
+      "history (tokenless, opt-out honored)");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));
