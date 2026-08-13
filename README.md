@@ -239,7 +239,6 @@ Verified working:
   bound on a live relay, connstring + QR + link printed, pairing token
   enforced, and a peer's bytes proxied to a TCP service and back.
 - **The whole thing, end to end** (`just e2e`): the browser client
-- **The whole thing, end to end** (`just e2e`): the browser client
   component under wasmtime obtains its identity's public half from the
   host's `identity-store`, emits an `authorized_keys` line, dials the
   listener over real iroh, verifies the host key fingerprint against
@@ -247,15 +246,19 @@ Verified working:
   store produces and the component checks against that public key**
   (no private-key handle exists anywhere in the component), gets an
   interactive pty, round-trips a command through the tunnel, resizes,
-  and detaches cleanly.
+  and detaches cleanly. A second leg does the same via
+  `authenticate-auto`: the server steers method selection, and against
+  this publickey-only sshd that must resolve to the same silent
+  signature flow -- the leg fails if any prompt surfaces.
 - **Keyboard-interactive auth** (`just e2e-kbdint`): the same composed
   client answers two server-driven prompt batches (echoed and masked
   prompts, RFC 4256) over the same iroh path and reaches a shell; a
-  wrong answer is refused legibly. Runs against a scripted
-  `x/crypto/ssh` stand-in server (`kbdint-sshd/`), because a user-mode
-  OpenSSH sshd has no keyboard-interactive backend without PAM. This is
-  what PAM OTP/2FA setups need; the prompts render in the page with
-  masking honored.
+  wrong answer is refused legibly; and an `authenticate-auto` leg
+  proves the server steers auto to keyboard-interactive when that is
+  all it offers. Runs against a scripted `x/crypto/ssh` stand-in
+  server (`kbdint-sshd/`), because a user-mode OpenSSH sshd has no
+  keyboard-interactive backend without PAM. This is what PAM OTP/2FA
+  setups need; the prompts render in the page with masking honored.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs
@@ -267,13 +270,15 @@ Verified working:
 - **The page, live, end to end** (`just browser-e2e`): headless
   Chromium drives the real UI -- form, **interactive host-key
   confirmation** (the prompt must appear and the session parks on it:
-  TOFU is asserted, not assumed), publickey auth with the browser-minted
-  key, keystrokes round-tripping through xterm to the sshd and back, and
-  a rejected fingerprint ending the attempt with nothing sent. Plus the
-  whole pinning ladder: approval alone persists nothing (opt-in is
-  asserted), approval with "remember" checked skips the prompt on the
-  next connect, and a pinned listener presenting a DIFFERENT host key
-  gets the loud changed-key warning showing both fingerprints.
+  TOFU is asserted, not assumed), the default **auto** method steering
+  to publickey with the browser-minted key (silently: no prompt may
+  surface), keystrokes round-tripping through xterm to the sshd and
+  back, and a rejected fingerprint ending the attempt with nothing
+  sent. Plus the whole pinning ladder: approval alone persists nothing
+  (opt-in is asserted), approval with "remember" checked skips the
+  prompt on the next connect, and a pinned listener presenting a
+  DIFFERENT host key gets the loud changed-key warning showing both
+  fingerprints.
 - Listener identity persistence: the endpoint id (and so the browser's
   pins) survives listener restarts; `--ephemeral-identity` restores the
   old per-run behavior.

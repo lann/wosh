@@ -10,9 +10,10 @@
 //      may flow before a human approves the fingerprint). This is the
 //      regression test for the `{tag}` vs `{kind}` convention drift
 //      that silently skipped the prompt. Approving (WITHOUT opting
-//      into persistence) completes publickey auth with the
-//      browser-minted WebCrypto key and keystrokes round-trip through
-//      the real terminal.
+//      into persistence) completes auth via the DEFAULT method --
+//      auto, the server steering -- which against this publickey-only
+//      sshd must resolve silently to the browser-minted WebCrypto key;
+//      keystrokes round-trip through the real terminal.
 //   B. After a reload, the prompt appears AGAIN: approval is not
 //      persisted unless the user opted in. Rejecting ends the attempt
 //      with nothing sent.
@@ -131,7 +132,12 @@ try {
   const fillAndConnect = async () => {
     await page.fill("#panel input[placeholder*='connection string']", CONNSTRING);
     await page.fill("#panel input[placeholder='user']", USER);
-    await page.selectOption("#panel select", "publickey");
+    // Deliberately no selectOption: this drives the DEFAULT method,
+    // which must be auto -- the server steers, and against this sshd
+    // (publickey-only) that must complete silently with the browser
+    // key, prompting for nothing.
+    const method = await page.inputValue("#panel select");
+    if (method !== "auto") fail(`default auth method is ${method}, expected auto`);
     await page.click("#panel button:has-text('connect')");
   };
 
@@ -198,7 +204,7 @@ try {
   }
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
-  console.log(`[A] approved (without remembering); publickey auth completed as ${USER}`);
+  console.log(`[A] approved (without remembering); auto steered to publickey, connected as ${USER}`);
 
   // Round-trip through the real terminal: keystrokes in, output painted.
   const marker = "WOSH_BROWSER_E2E_OK";
@@ -302,7 +308,8 @@ try {
 
   if (!process.exitCode) {
     console.log("\nBROWSER E2E PASS: interactive TOFU on first contact, opt-in pinning, " +
-      "prompt-free reconnect on a pinned key, and a loud changed-key warning");
+      "prompt-free reconnect on a pinned key, a loud changed-key warning, " +
+      "and default-method auto resolving to the browser's key");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));

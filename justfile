@@ -100,6 +100,8 @@ spike-async:
 # End to end: the composed client under wasmtime, over real iroh,
 # through the listener, into a REAL OpenSSH sshd, authenticated with
 # the non-extractable WebCrypto key the component mints for itself.
+# Two legs: explicit publickey, then auto -- the sshd speaks only
+# publickey, so auto must resolve to the same silent signature flow.
 #
 # Brings up everything it needs: a local relay, a throwaway sshd, and a
 # listener pointed at it. smoke-test is excluded from the workspace
@@ -123,13 +125,19 @@ e2e: compose
         --connstring "$cs" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" --auth auto \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
 
 # Keyboard-interactive, end to end: the same composed client, over the
 # same real iroh path, against the scripted x/crypto stand-in server
 # (real sshd cannot do kbd-interactive as a user process -- its only
 # backends are PAM and BSDAuth). Positive leg answers two prompt
 # batches (echoed + masked, then a second round); negative leg proves
-# a wrong answer fails legibly.
+# a wrong answer fails legibly; auto leg proves the server steers auto
+# to keyboard-interactive when that is all it offers.
 e2e-kbdint: compose
     #!/usr/bin/env bash
     set -euo pipefail
@@ -157,6 +165,11 @@ e2e-kbdint: compose
         --connstring "$cs" --user gate --auth kbd \
         --kbd-answers 'gate-token-123,WRONG,gate-otp-789' \
         --expect-auth-fail
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user gate --auth auto \
+        --kbd-answers 'gate-token-123,gate-passphrase-456,gate-otp-789' \
+        --expect-host-key "$fp"
 
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.

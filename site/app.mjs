@@ -163,6 +163,7 @@ export async function capabilities() {
   // component ship together in one precache.
   const proto = t.Session?.prototype;
   return {
+    auto: !proto || typeof proto.authenticateAuto === "function",
     publickey: typeof t.identityOpenssh === "function",
     password: true,
     keyboardInteractive: !proto || typeof proto.pendingPrompts === "function",
@@ -237,13 +238,18 @@ async function settle(session, timeoutMs = 30000) {
  *   confirmHostKey(fingerprint, connstring) -> boolean
  *     (may resolve without interaction ONLY for a fingerprint the user
  *     previously approved and asked to remember; see boot.mjs)
- *   getCredential()            -> {kind: "publickey"}
+ *   getCredential()            -> {kind: "auto"}
+ *                               | {kind: "publickey"}
  *                               | {kind: "password", password?}
  *                               | {kind: "keyboard-interactive"}
  *   collectPrompts(batch)      -> string[] (one answer per prompt;
  *                                 batch is {instruction, prompts:
  *                                 [{text, echo}]}, echo=false meaning
  *                                 mask the input)
+ *
+ * An auto credential offers every method and lets the server steer
+ * (publickey first, silently, when the browser's key is installed);
+ * whatever needs typing arrives as prompt batches below.
  *
  * A password credential normally arrives WITHOUT the password: it is
  * collected through `collectPrompts` right here, after the host key is
@@ -307,6 +313,8 @@ export async function connect({ connstring, user, ui }) {
         : session.authenticate(password));
     } else if (cred.kind === "keyboard-interactive") {
       await session.authenticateInteractive();
+    } else if (cred.kind === "auto") {
+      await session.authenticateAuto();
     } else {
       await session.authenticatePublickey();
     }
@@ -317,11 +325,14 @@ export async function connect({ connstring, user, ui }) {
     fatal(`authentication: ${typeof e?.payload === "string" ? e.payload : e.message ?? e}`);
   }
 
-  // Keyboard-interactive is server-driven: poll for prompt batches and
-  // hand each to the panel until authentication settles one way or the
-  // other. (No deadline -- a human is typing; the ssh transport itself
-  // closes the session if the server goes away.)
-  if (cred.kind === "keyboard-interactive") {
+  // Prompt-driven authentication is server-paced: poll for prompt
+  // batches and hand each to the panel until it settles one way or the
+  // other. Keyboard-interactive always works this way; auto works this
+  // way whenever the server steers somewhere interactive (its password
+  // round is a one-prompt batch). (No deadline -- a human is typing;
+  // the ssh transport itself closes the session if the server goes
+  // away.)
+  if (cred.kind === "keyboard-interactive" || cred.kind === "auto") {
     for (;;) {
       const st = await session.status();
       const tag = statusOf(st);
