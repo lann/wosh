@@ -422,6 +422,41 @@ try {
   if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
   console.log("[G] forget is two-step: armed on the first click, done on the second");
 
+  // --- leg H: reload a LIVE session, then tap-reconnect ---------------
+  // Every other leg detaches before reloading; a real user reloads a
+  // live session, which parks it listener-side (a resume that will
+  // never come -- the page's session id died with the page) and leaves
+  // a half-dead QUIC connection. The next connect must be a clean,
+  // prompt-free new session regardless. (The 'reconnect after reload
+  // is inconsistent' report lived exactly here -- twin listeners, now
+  // locked out -- and this leg keeps the single-listener path honest.)
+  await fillAndConnect();
+  await waitPrompt();
+  await page.check("#panel #remember-connection"); // leg G unchecked it
+  await page.check("#panel .confirm input[type=checkbox]"); // re-pin: leg E left a bogus pin
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await waitConnected();
+  await page.reload({ waitUntil: "load" }); // a LIVE session dies with the page
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  await page.click("#panel .histrow");
+  {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      if (await page.locator("#panel .confirm").count() > 0) {
+        fail("reload+reconnect prompted despite the just-saved pin");
+        break;
+      }
+      if ((await diag()).status === `connected as ${USER}`) break;
+      if (Date.now() > deadline) {
+        console.error("page state:", await diag());
+        throw new Error("timed out reconnecting after reloading a live session");
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  console.log("[H] reloading a live session, then tap-reconnect: clean and promptless");
+  await page.click("#bar button:has-text('detach')");
+
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }
