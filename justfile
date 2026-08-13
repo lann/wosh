@@ -99,7 +99,10 @@ test-ssh-core:
 # README "Findings". The lifting probe is two direct wasmtime invokes
 # because the first is expected to trap.
 spike-async:
-    cd spikes/go-async && componentize-go build
+    # go.sum is deliberately not committed for the spike (.gitignore);
+    # regenerate it so a fresh tree builds (`go mod download` is not
+    # enough: it records the go.mod hash only, not the module sum).
+    cd spikes/go-async && go mod tidy && componentize-go build
     cargo build --release -p wosh-spike-go-async-host
     target/release/wosh-spike-go-async-host spikes/go-async/main.wasm all
     @echo "--- lifting: a SYNC export calling an async import must TRAP ---"
