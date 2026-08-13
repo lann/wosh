@@ -120,16 +120,32 @@ const sleep = (ms) =>
 const wakeNow = () => wake?.();
 
 // --- component --------------------------------------------------------------
-let terminalApi = null;
+// Memoized as a PROMISE, not a value: the boot-time capabilities probe
+// and an early connect click can overlap, and caching the resolved API
+// would let the second caller start a second instantiation. Every
+// status this loader sets it also leaves -- the boot probe finishes
+// without another status write, so a stale "loading…" would sit on
+// screen forever (it did).
+let clientLoad = null;
 let currentSession = null;
 
-async function api() {
-  if (!terminalApi) {
+function api() {
+  clientLoad ??= (async () => {
     const { loadClient } = await import(new URL("./dist/deltic.js", import.meta.url));
     status("loading the client component…");
-    terminalApi = await loadClient(DIST.client, DIST.translator);
-  }
-  return terminalApi;
+    try {
+      const t = await loadClient(DIST.client, DIST.translator);
+      status("client component ready");
+      return t;
+    } catch (e) {
+      // Leave the cache empty so a later call retries (a transient
+      // fetch failure should not brick the page until a reload).
+      clientLoad = null;
+      status("failed to load the client component");
+      throw e;
+    }
+  })();
+  return clientLoad;
 }
 
 /**
