@@ -4387,6 +4387,8 @@ name = "wosh-connstring"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "postcard",
+ "serde",
 ]
 
 [[package]]

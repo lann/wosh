@@ -77,9 +77,11 @@ serve out="out": (site out)
 
 # --- gates ------------------------------------------------------------
 
-# The connection-string format (shared by both ends).
+# The connection-string format (shared by both ends): the Rust owner
+# and the Go mirror decoder, both against the same pinned wire bytes.
 test-connstring:
     cargo test -p wosh-connstring
+    cd client-go && go test ./connstring/
 
 # The three componentize-go async measurements behind this design; see
 # README "Findings". The lifting probe is two direct wasmtime invokes

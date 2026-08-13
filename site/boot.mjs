@@ -51,15 +51,17 @@ const PINS_KEY = "wosh.hostkeys.v1";
 /**
  * The listener's endpoint id (raw Ed25519 pubkey, hex) out of a
  * connection string; null if it cannot be extracted. Duplicates ONLY
- * the fixed prefix of the versioned format (connstring/src/lib.rs:
- * version byte, then 32 pubkey bytes) and refuses other versions, so
- * a format change degrades to "no pinning" -- more prompting, never
- * less.
+ * the fixed prefix shared by every format version (connstring/src/
+ * lib.rs: version byte, then 32 raw pubkey bytes -- v2 keeps the
+ * pubkey as the FIRST postcard field precisely so this prefix never
+ * moves), and refuses versions it doesn't know, so a format change
+ * degrades to "no pinning" -- more prompting, never less.
  */
 export function endpointIdOf(connstring) {
   try {
     const bin = atob(connstring.trim().replace(/-/g, "+").replace(/_/g, "/"));
-    if (bin.length < 34 || bin.charCodeAt(0) !== 1) return null;
+    const version = bin.charCodeAt(0);
+    if (bin.length < 34 || (version !== 1 && version !== 2)) return null;
     let hex = "";
     for (let i = 1; i < 33; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
     return hex;
