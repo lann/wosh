@@ -26,6 +26,11 @@
 //      renders on the way to "connected".
 //   E. A pinned fingerprint that DIFFERS from the presented one gets
 //      the loud changed-key warning, with both fingerprints shown.
+//   S. The QR scan button opens a preview, puts what it decodes into
+//      the connstring field, and releases the camera afterwards.
+//      Camera and decoder are stubbed -- headless Chromium has neither
+//      a camera nor a QR to point it at -- so what this covers is the
+//      page's own scan path, not the platform's decoder.
 //
 // Environment (the `just browser-e2e` recipe supplies all of it):
 //   WOSH_CONNSTRING       the listener's connection string   (required)
@@ -179,9 +184,62 @@ try {
     await page.waitForSelector("#panel button", { timeout: 15_000 });
   };
 
+  // The QR scan path, stubbed at its two edges: headless Chromium has
+  // no camera, and no screen to point one at. Everything BETWEEN the
+  // edges is the page's own (button, preview, decode loop, teardown),
+  // and the payload is a real connect LINK, so leg S also proves a
+  // scanned link is reduced to its fragment. The fake stream is kept
+  // on window so the leg can assert the camera was released.
+  await page.addInitScript((cs) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    setInterval(() => {
+      ctx.fillStyle = "#111";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }, 100);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => (window.__woshFakeStream = canvas.captureStream(10)),
+      },
+    });
+    window.BarcodeDetector = class {
+      static async getSupportedFormats() {
+        return ["qr_code"];
+      }
+      async detect() {
+        return [{ rawValue: `https://wosh.example/#${cs}` }];
+      }
+    };
+  }, CONNSTRING);
+
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
   console.log("[1] page loaded");
+
+  // --- leg S: the scan button fills the field, then lets go -----------
+  await page.click("#panel button:has-text('scan QR')");
+  await page.waitForSelector("#panel .scan-view video", { timeout: 10_000 });
+  try {
+    await page.waitForFunction(
+      (cs) => document.querySelector("#panel input.connstring")?.value === cs,
+      CONNSTRING,
+      { timeout: 10_000 },
+    );
+    console.log("[S] a scanned link landed in the field as the bare connstring");
+  } catch {
+    const got = await page.inputValue("#panel input.connstring");
+    fail(`scan did not fill the connstring field; field holds: ${got}`);
+  }
+  if (await page.locator("#panel .scan-view").count() !== 0) {
+    fail("the camera preview outlived the scan");
+  }
+  const released = await page.evaluate(() =>
+    (window.__woshFakeStream?.getTracks() ?? []).every((t) => t.readyState === "ended"));
+  if (!released) fail("the camera was left running after the scan");
+  else console.log("[S] preview torn down and the camera released");
 
   // --- leg A: the prompt appears; approval is interactive ------------
   await installIdentity();
