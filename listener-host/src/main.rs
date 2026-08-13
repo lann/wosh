@@ -154,6 +154,7 @@ async fn main() -> Result<()> {
     // preopen. Skipped entirely in ephemeral mode (that flag is the
     // guest's, but it is peeked at here so `--ephemeral-identity`
     // leaves no directory behind).
+    let mut _identity_lock = None;
     if !guest_args.iter().any(|a| a == "--ephemeral-identity") {
         let dir = resolve_identity_dir(identity_dir_flag)?;
         std::fs::DirBuilder::new()
@@ -161,6 +162,34 @@ async fn main() -> Result<()> {
             .mode(0o700) // holds a private key
             .create(&dir)
             .map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
+        // Exactly ONE listener per identity, enforced with an advisory
+        // lock held for this process's lifetime. Twins are not a
+        // liveness problem but a ROUTING one: both register the same
+        // endpoint id, the relay sends every dial to whichever
+        // (re)registered last, and clients flap between a listener
+        // that knows their enrollment and one that does not --
+        // observed as "reconnect is inconsistent", with three
+        // forgotten listeners sharing one identity dir.
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("lock"))
+            .map_err(|e| anyhow::anyhow!("opening {}/lock: {e}", dir.display()))?;
+        rustix::fs::flock(
+            &lock,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "another wosh-listener is already running with the identity in {} -- \
+                 two listeners on one identity fight over the relay registration and \
+                 clients flap between them. Stop the other one, or give this one its \
+                 own --identity-dir (or --ephemeral-identity)",
+                dir.display()
+            )
+        })?;
+        _identity_lock = Some(lock);
         wasi.preopened_dir(&dir, "wosh-data", DirPerms::all(), FilePerms::all())
             .map_err(|e| anyhow::anyhow!("mounting {}: {e}", dir.display()))?;
         // The guest can only name its mount ("wosh-data/…"), which

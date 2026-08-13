@@ -10,6 +10,9 @@ anyhow = "1"
 wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
 wasmtime-wasi = { version = "47", features = ["p3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+# Advisory lock on the identity dir: exactly one listener per identity
+# (twins silently fight over the relay registration; see README).
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 
 # The polymorph-iroh endpoint component (fused into the composed
 # listener by `wac plug`) imports these three non-WASI interfaces
