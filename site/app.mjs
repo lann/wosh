@@ -5,8 +5,10 @@
 // the connection string, dialing iroh, the SSH transport, the host-key
 // gate, authentication, the pty -- lives inside the component behind
 // `wosh:terminal`. The page feeds keystrokes, paints output, reports
-// resizes, and renders the two decisions a human has to make: whether
-// the host key is the expected one, and which credential to offer.
+// resizes, and renders the human decisions: whether the host key is
+// the expected one, which credential to offer, and the answers to
+// whatever the server asks (a password, or keyboard-interactive
+// prompt batches -- one inline UI serves both).
 //
 // Every component export is Promise-shaped under deltic (including the
 // ones the WIT declares as plain functions), so the output pump is a
@@ -203,12 +205,18 @@ async function settle(session, timeoutMs = 30000) {
  *
  *   confirmHostKey(fingerprint) -> boolean
  *   getCredential()            -> {kind: "publickey"}
- *                               | {kind: "password", password}
+ *                               | {kind: "password", password?}
  *                               | {kind: "keyboard-interactive"}
  *   collectPrompts(batch)      -> string[] (one answer per prompt;
  *                                 batch is {instruction, prompts:
  *                                 [{text, echo}]}, echo=false meaning
  *                                 mask the input)
+ *
+ * A password credential normally arrives WITHOUT the password: it is
+ * collected through `collectPrompts` right here, after the host key is
+ * confirmed -- the same inline UI keyboard-interactive uses, instead
+ * of a standing text input. A caller that already holds the password
+ * may still supply it.
  */
 export async function connect({ connstring, user, ui }) {
   const t = await api();
@@ -240,11 +248,17 @@ export async function connect({ connstring, user, ui }) {
   const cred = await ui.getCredential();
   try {
     if (cred.kind === "password") {
+      const password = typeof cred.password === "string"
+        ? cred.password
+        : (await ui.collectPrompts({
+            instruction: "",
+            prompts: [{ text: `password for ${user}: `, echo: false }],
+          }))[0] ?? "";
       // `authenticate-password` is the target name; older builds expose
       // the password path as plain `authenticate`.
       await (session.authenticatePassword
-        ? session.authenticatePassword(cred.password)
-        : session.authenticate(cred.password));
+        ? session.authenticatePassword(password)
+        : session.authenticate(password));
     } else if (cred.kind === "keyboard-interactive") {
       await session.authenticateInteractive();
     } else {

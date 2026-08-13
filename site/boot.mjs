@@ -45,15 +45,6 @@ export async function initBoot(panel, { onConnect }) {
     el("option", { value: "password", textContent: "password" }),
     el("option", { value: "keyboard-interactive", textContent: "keyboard-interactive (OTP/2FA)" }),
   );
-  const passInput = el("input", {
-    size: 20,
-    type: "password",
-    placeholder: "password",
-    disabled: true,
-  });
-  method.addEventListener("change", () => {
-    passInput.disabled = method.value !== "password";
-  });
 
   const connectBtn = el("button", { textContent: "connect" });
   const detachBtn = el("button", { textContent: "detach", disabled: true });
@@ -62,7 +53,7 @@ export async function initBoot(panel, { onConnect }) {
   panel.append(
     el("div", { className: "row" }, el("label", { textContent: "connection" }), csInput),
     el("div", { className: "row" }, el("label", { textContent: "user" }), userInput,
-      " ", method, " ", passInput),
+      " ", method),
     el("div", { className: "row" }, connectBtn, " ", detachBtn, " ", showKeyBtn),
     keyRow,
     notice,
@@ -78,11 +69,10 @@ export async function initBoot(panel, { onConnect }) {
         for (const opt of [...method.options]) {
           if (opt.value === "publickey") opt.remove();
         }
-        passInput.disabled = false;
         showKeyBtn.disabled = true;
         notice.textContent =
-          "this build of the client component supports password auth only; " +
-          "publickey (WebCrypto) auth is not available yet";
+          "this build of the client component has no publickey (WebCrypto) " +
+          "auth yet; password and keyboard-interactive still work";
       }
       if (!caps.keyboardInteractive) {
         for (const opt of [...method.options]) {
@@ -133,8 +123,12 @@ export async function initBoot(panel, { onConnect }) {
       });
     },
     getCredential() {
+      // No password here: the password method collects it through
+      // `collectPrompts` at the moment auth runs -- after the host key
+      // is confirmed, in the same inline UI keyboard-interactive uses,
+      // and never parked in a long-lived DOM input.
       if (method.value === "password") {
-        return { kind: "password", password: passInput.value };
+        return { kind: "password" };
       }
       if (method.value === "keyboard-interactive") {
         return { kind: "keyboard-interactive" };
@@ -186,7 +180,6 @@ export async function initBoot(panel, { onConnect }) {
     try {
       const session = await onConnect({ connstring, user, ui });
       detachBtn.disabled = !session;
-      passInput.value = "";
     } catch (e) {
       notice.textContent = `${e.message ?? e}`;
     } finally {
