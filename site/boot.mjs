@@ -28,6 +28,7 @@ import {
   recoverPasskey,
   forgetPasskey,
   installPasskeyCeremonyGate,
+  note,
 } from "./app.mjs";
 import { scanQr } from "./qr.mjs";
 
@@ -505,7 +506,59 @@ export async function initBoot(panel, { onConnect }) {
     if (why) notice.textContent = why;
     openPanel();
   };
-  window.addEventListener("wosh:session-ended", (e) => sessionOver(e.detail?.why));
+
+  // In-memory only (never the pin/history store): the last endpoint
+  // and user actually dialed, so a `lost` session can be redialed
+  // without asking the user to retype anything. Set unconditionally in
+  // doConnect -- independent of the "remember this connection"
+  // checkbox, which governs persistent history, not this.
+  let lastConnected = null;
+  // One silent reconnect per minute: a session that keeps dying gets a
+  // human decision instead of silently churning fresh shells. Each
+  // automatic reconnect is a NEW session (a new shell), so silent
+  // churn is invisible lost work, not a convenience.
+  let lastAutoAt = 0;
+
+  /**
+   * Attempt a silent, same-parameters reconnect after a session was
+   * lost (terminal.wit's `close-kind` -- `lost` is the one kind the
+   * WIT enum exists to mark as reasonable to retry automatically,
+   * precisely so this decision needs no reason-string parsing).
+   * Returns whether a new session was actually established.
+   */
+  const autoReconnect = async (why) => {
+    if (!lastConnected) return false;
+    // password / keyboard-interactive need a human to type something;
+    // those fall through to the dialog like any other reconnect.
+    if (!["auto", "publickey", "passkey"].includes(method.value)) return false;
+    // An unpinned host key would render the confirm prompt into a
+    // CLOSED dialog -- indistinguishable from a hang. Only reconnect
+    // silently onto a key this browser has already pinned.
+    const id = endpointIdOf(lastConnected.connstring);
+    if (!id || !loadPins()[id]?.fp) return false;
+    if (Date.now() - lastAutoAt < 60_000) return false;
+    lastAutoAt = Date.now();
+    note(`${why} — starting a new session…`);
+    csInput.value = lastConnected.connstring;
+    userInput.value = lastConnected.user;
+    // A passkey (or auto steered to one) may trigger an authenticator
+    // ceremony here; that is fine -- the ceremony gate wired below
+    // supplies the user gesture it needs, same as any other passkey
+    // reconnect.
+    const s = await doConnect();
+    return !!s;
+  };
+  window.addEventListener("wosh:session-ended", async (e) => {
+    const { why, kind } = e.detail ?? {};
+    if (kind === "lost") {
+      try {
+        if (await autoReconnect(why ?? "connection lost")) return;
+      } catch {
+        // fall through to the dialog
+      }
+    }
+    sessionOver(why);
+  });
 
   // Method support depends on the loaded component; ask it rather
   // than assume. Probing also forces the component to load, so the
@@ -847,6 +900,10 @@ export async function initBoot(panel, { onConnect }) {
     try {
       const session = await onConnect({ connstring, user, ui });
       if (session) {
+        // In-memory, unconditional (not gated on rememberConn): the
+        // one thing autoReconnect needs to redial these exact
+        // parameters after a `lost` close-kind.
+        lastConnected = { connstring, user };
         // History bookkeeping, only for connects that actually reached
         // a session: failed dials and rejected host keys are not
         // "connections". Checked (the default) records or bumps the
@@ -868,8 +925,10 @@ export async function initBoot(panel, { onConnect }) {
         // where the user is looking.
         notice.textContent = document.getElementById("status")?.textContent ?? "not connected";
       }
+      return session ?? null;
     } catch (e) {
       notice.textContent = `${e.message ?? e}`;
+      return null;
     } finally {
       connectBtn.disabled = false;
       // An attempt that died mid-ceremony leaves nothing to tap: the

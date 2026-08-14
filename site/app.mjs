@@ -514,6 +514,15 @@ export async function connect({ connstring, user, ui }) {
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
   // The single output drainer for this session.
+  //
+  // `status` deliberately stays `ready` through a transport resume
+  // (terminal.wit's `link-state` doc): the SSH session IS still alive,
+  // just not receiving bytes, and claiming `closed` would be a lie the
+  // page could not take back. `link-state` is the only place the page
+  // learns the transport died and is being silently redialed, so the
+  // pump polls it -- coarsely, since it is not needed at output cadence.
+  let lastLinkState = null;
+  let linkPollTick = 0;
   (async () => {
     try {
       for (;;) {
@@ -523,6 +532,25 @@ export async function connect({ connstring, user, ui }) {
           const code = await session.exitStatus();
           sessionEnded(session, code === undefined ? "session ended" : `exited (${code})`);
           return;
+        }
+        // Every 32nd iteration of an 8ms sleep is ~every 250ms -- often
+        // enough to feel live, rare enough not to matter for cost.
+        if (typeof session.linkState === "function" && ++linkPollTick % 32 === 0) {
+          try {
+            const raw = await session.linkState();
+            const ls = typeof raw === "string" ? raw : raw?.kind;
+            if (ls && ls !== lastLinkState) {
+              lastLinkState = ls;
+              if (ls === "reconnecting" || ls === "stalled") {
+                status("reconnecting…");
+              } else if (ls === "attached") {
+                status(`connected as ${user}`);
+              }
+            }
+          } catch {
+            // A torn-down session mid-poll is not a pump failure --
+            // drain/exited above already own that error path.
+          }
         }
         await sleep(8);
       }
@@ -540,9 +568,34 @@ function sessionEnded(session, why) {
   flush(true);
   status(why);
   // For the shell around the terminal (boot.mjs): the session this
-  // page was showing is gone, bring the connect panel back.
-  window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why } }));
+  // page was showing is gone, bring the connect panel back. The event
+  // carries `kind` (terminal.wit's `close-kind`) best-effort, so
+  // boot.mjs can decide about automatic reconnection without parsing
+  // this `why` string -- fetched in a fire-and-forget tail so a slow
+  // or failing `close-kind` call never delays the synchronous cleanup
+  // above.
+  (async () => {
+    let kind;
+    try {
+      if (typeof session.closeKind === "function") {
+        const raw = await session.closeKind();
+        kind = typeof raw === "string" ? raw : raw?.kind;
+      }
+    } catch {
+      kind = undefined;
+    }
+    window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why, kind } }));
+  })();
 }
+
+/**
+ * The page's own annotation into the scrollback -- dim and prefixed so
+ * it reads as distinct from anything the pty sent, e.g. the divider
+ * printed across an automatic reconnect (boot.mjs).
+ */
+export const note = (text) => {
+  term.write(`\r\n\x1b[2m[wosh] ${text}\x1b[0m\r\n`);
+};
 
 /** Tear the session down and close the iroh connection. */
 export async function detach() {
