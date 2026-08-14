@@ -547,6 +547,7 @@ pub async fn serve_v2(
     reg: Rc<Registry>,
     target: SocketAddr,
     token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
+    listener_id: [u8; wosh_connstring::PUBKEY_LEN],
     paired: &RefCell<std::collections::HashSet<String>>,
     grace: u64,
 ) -> Result<String, String> {
@@ -562,7 +563,10 @@ pub async fn serve_v2(
     if let Some(want) = token {
         let enrolled = paired.borrow().contains(&peer);
         if !enrolled {
-            if wosh_connstring::token_eq(&hello.token, &want) {
+            // A proof, not the token: see `peer_proof` in lib.rs, and
+            // `wosh_connstring::pairing_proof` for what it binds.
+            let expected = crate::peer_proof(&conn, &want, &listener_id)?;
+            if wosh_connstring::proof_eq(&hello.pairing, &expected) {
                 paired.borrow_mut().insert(peer.clone());
                 crate::pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");

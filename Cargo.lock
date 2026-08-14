@@ -4398,8 +4398,10 @@ name = "wosh-connstring"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "hmac",
  "postcard",
  "serde",
+ "sha2",
  "subtle",
 ]
 

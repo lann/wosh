@@ -7,10 +7,12 @@ publish = false
 
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
-# One job: comparing a pairing token without leaking where it differs
-# (see `token_eq`). Already in this workspace's tree at the same
-# version, and no_std, so it costs the wasm components nothing.
+# The pairing proof (`pairing_proof`) and its comparison (`proof_eq`).
+# All three are already in this workspace's tree at these versions, and
+# all are no_std, so they cost the wasm components nothing.
 subtle = { version = "2.6", default-features = false }
+hmac = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
