@@ -62,7 +62,7 @@ const FIXTURE = `<!doctype html>
   <div id="keys"></div>
 </div>
 <script type="module">
-  import { initMobile, transformInput } from "/site/mobile.mjs";
+  import { autofocusTerminal, initMobile, transformInput } from "/site/mobile.mjs";
   const sent = [];
   const textarea = document.getElementById("fake-textarea");
   const term = {
@@ -74,6 +74,9 @@ const FIXTURE = `<!doctype html>
     focus: () => textarea.focus(),
     blur: () => textarea.blur(),
   };
+  // app.mjs's startup order, which is what leg 9 is about: it asks for
+  // the typing focus before wiring the mobile layer.
+  autofocusTerminal(term);
   initMobile(term);
   globalThis.wosh = { sent, term };
 </script>
@@ -275,9 +278,45 @@ try {
   else if (!afterSecond) fail("⌨ did not bring the keyboard back (textarea not refocused)");
   else console.log("[8] ⌨ still toggles the soft keyboard");
 
+  // 9. A fresh load must leave NOTHING focused on a touch device. The
+  //    page asks for a typing focus at startup (and again once a
+  //    session connects), but on a phone a programmatic focus() cannot
+  //    raise the keyboard -- it only leaves the textarea holding focus
+  //    with no keyboard behind it, and from there a tap on the terminal
+  //    is a no-op refocus and ⌨ reads the stale focus as "up" and
+  //    dismisses. That is the reopened-app bug: taps do nothing until
+  //    something defocuses the terminal once. Reload for a pristine
+  //    startup state, since the legs above have been moving focus.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => globalThis.wosh, null, { timeout: 15_000 });
+  const focusedAtStart = await page.evaluate(() => document.activeElement === globalThis.wosh.term.textarea);
+  await tap("⌨"); // the first thing the user touches after opening the app
+  const summoned = await page.evaluate(() => document.activeElement === globalThis.wosh.term.textarea);
+  if (focusedAtStart) {
+    fail("a fresh load left the terminal focused on a touch device: a focus with no keyboard behind it, which is the state where taps stop summoning");
+  } else if (!summoned) {
+    fail("the first ⌨ tap after a fresh load did not focus the terminal (it dismissed instead -- the keyboard would not open)");
+  } else {
+    console.log("[9] a fresh load leaves nothing focused, so the first ⌨ tap summons");
+  }
+
+  // 10. ...and the desktop autofocus survives, because there focus IS
+  //     typing: a fine pointer implies a real keyboard, and browser-e2e
+  //     types into the terminal without clicking it first.
+  const desktop = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const desktopPage = await desktop.newPage();
+  await desktopPage.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+  await desktopPage.waitForFunction(() => globalThis.wosh, null, { timeout: 15_000 });
+  const desktopFocused = await desktopPage.evaluate(() => document.activeElement === globalThis.wosh.term.textarea);
+  const barShown = await desktopPage.locator("#keys").isVisible();
+  await desktop.close();
+  if (!desktopFocused) fail("a fine pointer no longer autofocuses the terminal (a desktop page would open untypable)");
+  else if (barShown) fail("the extra-keys bar is visible on a fine pointer (it must stay inert off touch devices)");
+  else console.log("[10] a fine pointer still autofocuses the terminal, bar still inert");
+
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   if (!process.exitCode) {
-    console.log("\nKEYS-BAR GATE PASS: keys fire on a tap, never on a drag");
+    console.log("\nKEYS-BAR GATE PASS: keys fire on a tap not a drag; a touch device opens with the keyboard reachable");
   }
 } finally {
   if (!process.argv.includes("--keep")) await browser.close();

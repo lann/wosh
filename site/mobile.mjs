@@ -20,7 +20,9 @@
 //  - keyboard toggle: tapping the terminal focuses xterm's hidden
 //    textarea and summons the keyboard, but there is no way to dismiss
 //    it or to get it back after the browser hides it; the ⌨ button
-//    blurs/refocuses explicitly.
+//    blurs/refocuses explicitly. Both paths depend on focus meaning
+//    "the keyboard is up", which is why autofocusTerminal() below
+//    refuses to focus the terminal where that would be a lie.
 //
 // No framework, no dependencies; loaded by app.mjs next to the
 // terminal it drives.
@@ -74,6 +76,29 @@ export const transformInput = (s) => {
 };
 
 // --- the bar + viewport glue ---------------------------------------------------
+
+/**
+ * Focus the terminal for typing -- where focus means typing at all.
+ *
+ * A soft keyboard is an overlay the OS raises, and only for a focus
+ * change made inside a user gesture; a programmatic focus() cannot
+ * summon one. What it CAN do is leave xterm's hidden textarea holding
+ * focus with no keyboard behind it, and from that state every way back
+ * in is a no-op: a tap on the terminal refocuses what is already
+ * focused (xterm's own handler), and ⌨ reads the stale focus as
+ * "keyboard is up" and dismisses instead of summoning. That is the
+ * bug where a freshly (re)opened app ignores taps on the terminal and
+ * on ⌨ until something defocuses the terminal once, after which
+ * everything works. Doing nothing leaves the honest state -- nothing
+ * focused -- in which the first tap summons.
+ *
+ * Desktop still autofocuses, so a page that just opened is typable
+ * without clicking it first. Gated on the same predicate as the bar,
+ * so the mobile layer agrees with itself about what a phone is.
+ */
+export const autofocusTerminal = (term) => {
+  if (!matchMedia("(pointer: coarse)").matches) term.focus();
+};
 
 /**
  * Wire the mobile layer to the live terminal. Idempotent-enough for the
