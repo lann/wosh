@@ -31,6 +31,20 @@ interface StoredIdentity {
   /** Uncompressed P-256 point, 65 bytes, `0x04 || X || Y`. */
   publicKey: Uint8Array;
   rpId: string;
+  /**
+   * How this credential can be reached -- `internal` for the device's
+   * own provider, `hybrid` for a phone, `usb`/`nfc`/`ble` for a
+   * security key.
+   *
+   * Recording it is what spares the user a provider chooser on every
+   * connection. WebAuthn returns it once, at registration
+   * (`getTransports()`), and expects it back in the
+   * `allowCredentials` entry of later `get()` calls; without it the
+   * browser cannot tell where the credential lives, so it has to ask.
+   * Undefined for a credential this client did not enrol (adopted or
+   * recovered), until an assertion tells us more.
+   */
+  transports?: AuthenticatorTransport[];
 }
 
 const req = <T>(r: IDBRequest<T>): Promise<T> =>
@@ -59,7 +73,8 @@ function usable(v: unknown): v is StoredIdentity {
     typeof s === "object" && s !== null &&
     s.publicKey instanceof Uint8Array && s.publicKey.length === 65 &&
     typeof s.rpId === "string" &&
-    (s.credentialId === undefined || s.credentialId instanceof Uint8Array)
+    (s.credentialId === undefined || s.credentialId instanceof Uint8Array) &&
+    (s.transports === undefined || Array.isArray(s.transports))
   );
 }
 
@@ -309,10 +324,18 @@ async function enroll(): Promise<PasskeyIdentity> {
     );
     const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", key));
 
+    // The one moment WebAuthn will tell us where this credential
+    // lives. It is not asked again, so a registration that fails to
+    // record it condemns every later ceremony to a provider chooser.
+    const transports = response.getTransports?.() as
+      | AuthenticatorTransport[]
+      | undefined;
+
     const rec: StoredIdentity = {
       credentialId: new Uint8Array(cred.rawId),
       publicKey,
       rpId,
+      transports: transports?.length ? transports : undefined,
     };
     await saveRecord(rec);
     return { publicKey, relyingParty: rpId };
@@ -361,10 +384,19 @@ async function adopt(candidate: PasskeyIdentity): Promise<void> {
       );
     }
 
+    // The confirming ceremony also says which kind of authenticator
+    // answered, so an adopted credential need not spend its first
+    // real connection re-learning that (see `assert`). Only the
+    // `platform` case is recorded: it is a statement, whereas
+    // `cross-platform` spans phones and security keys alike and would
+    // be a guess.
     await saveRecord({
       credentialId: new Uint8Array(cred.rawId),
       publicKey: candidate.publicKey,
       rpId: candidate.relyingParty,
+      transports: cred.authenticatorAttachment === "platform"
+        ? ["internal"]
+        : undefined,
     });
   } catch (e) {
     throw errArm("passkey adopt", e);
@@ -400,8 +432,20 @@ async function assert(challenge: Uint8Array): Promise<{
         challenge: challenge as BufferSource,
         rpId: rec.rpId,
         userVerification: "preferred",
+        // Naming the credential AND how to reach it is what keeps this
+        // ceremony silent. Given transports, the browser goes straight
+        // to the authenticator that holds the key -- the platform
+        // prompt, or the phone -- instead of opening the "where is
+        // your passkey?" chooser it must fall back to when it has no
+        // idea where the credential lives. They are hints, not
+        // constraints: a browser that cannot find the credential the
+        // hinted way still offers the others.
         allowCredentials: rec.credentialId
-          ? [{ type: "public-key", id: rec.credentialId as BufferSource }]
+          ? [{
+            type: "public-key",
+            id: rec.credentialId as BufferSource,
+            ...(rec.transports?.length ? { transports: rec.transports } : {}),
+          }]
           : [],
         // No extensions requested: any extension output sets a flag
         // that changes the shape of what was signed, and the
@@ -426,11 +470,26 @@ async function assert(challenge: Uint8Array): Promise<{
       );
     }
 
-    // Learn the credential id if this record came from `adopt`
-    // without ever having asserted before.
+    // Learn what this ceremony taught us, for the next one. A record
+    // that arrived by `adopt` or `recover` has no credential id (its
+    // ceremony was a blind one) and no transports (only registration
+    // reports those) -- so both are picked up here, and the second
+    // connection is quieter than the first.
+    //
+    // `authenticatorAttachment` is the browser stating which kind of
+    // authenticator answered, so `platform` -> `internal` is a fact
+    // rather than a guess. Nothing is invented for `cross-platform`:
+    // that covers phones and security keys alike, and a wrong hint is
+    // worse than none, since it points the chooser away from where the
+    // credential actually is.
     const rawId = new Uint8Array(cred.rawId);
-    if (!rec.credentialId) {
-      await saveRecord({ ...rec, credentialId: rawId });
+    const learned: Partial<StoredIdentity> = {};
+    if (!rec.credentialId) learned.credentialId = rawId;
+    if (!rec.transports?.length && cred.authenticatorAttachment === "platform") {
+      learned.transports = ["internal"];
+    }
+    if (Object.keys(learned).length > 0) {
+      await saveRecord({ ...rec, ...learned });
     }
 
     return { authenticatorData, clientDataJson, signature };

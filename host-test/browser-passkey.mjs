@@ -120,6 +120,23 @@ try {
   // real platform authenticator (Touch ID, Windows Hello) offers, and
   // automaticPresenceSimulation means the "tap" happens the instant
   // the browser asks for it -- no synthetic click needed on our side.
+  // Record the options every `credentials.get()` is called with, so the
+  // gate can assert what the store ASKS FOR and not merely that a
+  // ceremony succeeded. Installed before any page script runs, and it
+  // forwards untouched -- the real ceremony still happens.
+  await page.addInitScript(() => {
+    globalThis.__getCalls = [];
+    const real = navigator.credentials.get.bind(navigator.credentials);
+    navigator.credentials.get = (opts) => {
+      const allow = (opts && opts.publicKey && opts.publicKey.allowCredentials) || [];
+      globalThis.__getCalls.push({
+        named: allow.length,
+        transports: allow.map((c) => (c.transports || []).join("+")),
+      });
+      return real(opts);
+    };
+  });
+
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("WebAuthn.enable");
   const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
@@ -201,6 +218,31 @@ try {
   }
   appendFileSync(AUTH_KEYS, line + "\n");
 
+  // Registration is the ONE time WebAuthn reports where a credential
+  // lives, and a client that drops it condemns every later ceremony to
+  // a "which passkey provider?" chooser. Assert it was kept.
+  const stored = await page.evaluate(() =>
+    new Promise((resolve, reject) => {
+      const open = indexedDB.open("wosh-passkey", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const get = db.transaction("identity").objectStore("identity").get("passkey");
+        get.onerror = () => reject(get.error);
+        get.onsuccess = () => {
+          const r = get.result;
+          resolve(r ? { transports: r.transports ?? null, hasId: !!r.credentialId } : null);
+        };
+      };
+    })
+  );
+  if (!stored?.hasId) fail("the enrolled record kept no credential id");
+  if (!Array.isArray(stored?.transports) || stored.transports.length === 0) {
+    fail(`enrolment did not record the credential's transports: ${JSON.stringify(stored)}`);
+  } else {
+    console.log(`[2b] transports recorded at enrolment: ${stored.transports.join("+")}`);
+  }
+
   // --- connect, confirm the host key, authenticate with the passkey ---
   await fillAndConnect("passkey");
   const promptFp = await waitPrompt();
@@ -236,6 +278,21 @@ try {
 
   await waitConnected();
   console.log(`[5] authenticated with the passkey, connected as ${USER}`);
+
+  // ...and it asked for the credential BY NAME, with the transports
+  // recorded at enrolment. That pairing is what lets the browser go
+  // straight to the authenticator holding the key; without it the user
+  // is asked which provider to use on every single connection.
+  const calls = await page.evaluate(() => globalThis.__getCalls ?? []);
+  const authCall = calls[calls.length - 1];
+  if (!authCall || authCall.named !== 1) {
+    fail(`the auth ceremony did not name exactly one credential: ${JSON.stringify(calls)}`);
+  } else if (!authCall.transports[0]) {
+    fail("the auth ceremony named the credential but passed no transports, " +
+      "so the browser must fall back to asking which provider to use");
+  } else {
+    console.log(`[5b] the ceremony named the credential and its transports (${authCall.transports[0]})`);
+  }
 
   // Round-trip through the real terminal: keystrokes in, output painted.
   const marker = "WOSH_BROWSER_PASSKEY_OK";
@@ -347,6 +404,30 @@ try {
   await waitConnected();
   console.log(`[11] authenticated with the RECOVERED passkey, connected as ${USER}`);
 
+  // A recovered record cannot carry transports -- only registration
+  // reports them, and recovery never registers. So the first real
+  // ceremony re-learns them from the attachment the browser reports,
+  // and the connection after this one is as quiet as an enrolled
+  // client's. Without that, recovery would silently leave the user
+  // choosing a provider forever.
+  const relearned = await page.evaluate(() =>
+    new Promise((resolve, reject) => {
+      const open = indexedDB.open("wosh-passkey", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const get = db.transaction("identity").objectStore("identity").get("passkey");
+        get.onerror = () => reject(get.error);
+        get.onsuccess = () => resolve(get.result ? get.result.transports ?? null : null);
+      };
+    })
+  );
+  if (!Array.isArray(relearned) || relearned.length === 0) {
+    fail(`the recovered record did not re-learn its transports: ${JSON.stringify(relearned)}`);
+  } else {
+    console.log(`[11b] the recovered record re-learned its transports (${relearned.join("+")})`);
+  }
+
   const marker2 = "WOSH_BROWSER_PASSKEY_RECOVERED_OK";
   await page.click(".xterm-screen");
   await page.keyboard.type(`echo ${marker2}\n`, { delay: 10 });
@@ -374,7 +455,9 @@ try {
     console.log("\nBROWSER PASSKEY PASS: enrolled a passkey through a real WebAuthn " +
       "ceremony in the page, authenticated for real through a real sshd, then simulated " +
       "an evicted browser store and RECOVERED the same identity from the credential alone " +
-      "-- the recovered line matched byte-for-byte and authenticated again" +
+      "-- the recovered line matched byte-for-byte and authenticated again. Every " +
+      "ceremony named its credential and that credential's transports, so the browser " +
+      "never had to ask which passkey provider to use" +
       (gated ? " (ceremony gate prompt released by hand)" : ""));
   }
 } catch (e) {
