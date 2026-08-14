@@ -76,6 +76,51 @@ for confirmation *before* any credential is sent; that ordering is
 structural, because `x/crypto/ssh` runs authentication strictly after
 its host-key callback returns.
 
+A **passkey** can be that key instead. OpenSSH has accepted browser-made
+WebAuthn assertions as publickey credentials since 8.4, under the
+signature algorithm `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`. The
+target needs an ordinary `authorized_keys` line
+(`sk-ecdsa-sha2-nistp256@openssh.com …`, the same kind of line a
+hardware token gets) and **nothing else installed** — no agent, no
+helper. Nothing in the listener participates. What it buys over the
+browser key: the private half lives in the platform authenticator
+rather than in browser storage, and every signature costs a deliberate
+human act — sshd enforces that, rejecting a signature whose
+user-presence flag is clear, and `verify-required` in `authorized_keys`
+can demand user verification too.
+
+One server-side caveat, and it is a configuration line rather than a
+capability: only **OpenSSH 10.3 and later** put that algorithm in the
+default `PubkeyAcceptedAlgorithms` (upstream enabled it in February
+2026). Every release from 8.4 on can *verify* these signatures, but
+8.4 through 10.2 refuse the offer before looking at one — sshd logs
+`signature algorithm ... not in PubkeyAcceptedAlgorithms` at
+`LogLevel VERBOSE`. On those, add:
+
+```
+PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com
+```
+
+Two consequences of how WebAuthn works, worth knowing. The key's
+`application` field is the **site's domain**, not the customary `ssh:`,
+because the authenticator signs over `sha256(rp-id)` and sshd rebuilds
+that hash from the `application` in `authorized_keys` — so the identity
+is stamped with the origin that minted it, and a clone of this page on
+another domain cannot use the same line. And because a WebAuthn
+assertion does not return the credential's public key (nor is there
+anywhere in the credential to stash it: the user handle is fixed at
+registration, before the key exists), a passkey that syncs to a second
+device arrives without the one thing SSH has to put on the wire. The
+public half is not a secret, so the cure is mundane: paste the same
+`authorized_keys` line into the other device (**adopt**), which
+confirms it by asserting once before storing it.
+
+Offering both is the default under server-steered `auto`: the passkey
+is offered first, each key is offered *unsigned* before any is signed
+for, so an sshd that will not take webauthn declines the passkey and
+the browser key answers inside the same connection, with no ceremony
+spent.
+
 The confirmation can be **remembered, per listener, with an explicit
 opt-in checkbox**: the page pins the approved fingerprint keyed by the
 listener's endpoint id (the one identity iroh itself authenticates
@@ -270,6 +315,11 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 - `tunnel/` — the tunnel framing (protocol v2): resumable sessions as
   frames + cumulative offsets + bounded replay buffers, one codec
   linked by both Rust ends, with golden-byte tests.
+- `webauthn-ssh/` — the WebAuthn-to-SSH wire mapping: a passkey's
+  `authorized_keys` line, and a browser assertion turned into an
+  OpenSSH `webauthn-sk-ecdsa` signature. A crate of its own because
+  every rule it enforces is one sshd enforces silently, several round
+  trips away, so they are cheaper as unit tests than as failed logins.
 - `listener-core/` — the `wasi:cli@0.3.1` listener component.
 - `listener-host/` — its native shell: wasmtime + the polymorph
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
@@ -277,7 +327,7 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   `wosh:terminal` exporter: connection-string parsing (links
   `connstring/` directly), the iroh dial and pairing frame, the
   never-cancelled reader and single-writer byte pump, and the
-  signature relay to the host's `identity-store`.
+  signature relay to the host's `identity-store` and `passkey-store`.
 - `ssh-core/` — the Go half: `x/crypto/ssh` as a sans-I/O component
   behind `wosh:ssh-core`. No I/O, no keys, no non-WASI imports; every
   export is a plain synchronous function, and every state change

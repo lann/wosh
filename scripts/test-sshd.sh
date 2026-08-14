@@ -34,6 +34,18 @@ StrictModes no
 # outright after a few of those, which surfaces as flaky "tunnel died
 # before the host-key gate" hangs in whichever gate runs next.
 PerSourcePenalties no
+# The passkey gate authenticates with OpenSSH's browser-webauthn
+# algorithm. Every sshd since 8.4 can VERIFY those signatures, but only
+# 10.3 and later put the algorithm in the default
+# PubkeyAcceptedAlgorithms -- upstream enabled it by default in
+# February 2026 (commit 6463960c5), which landed in 10.3. On anything
+# older the server refuses the offer before it ever looks at the
+# signature, logging "signature algorithm ... not in
+# PubkeyAcceptedAlgorithms", so the gate would be testing the refusal
+# rather than the wire format. Appending it is exactly what a real
+# deployment on such a server must do, so this line is documentation as
+# much as configuration. Harmless on 10.3+, where it is already there.
+PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com
 PrintMotd no
 X11Forwarding no
 LogLevel VERBOSE

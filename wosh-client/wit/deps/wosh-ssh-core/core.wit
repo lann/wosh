@@ -73,6 +73,75 @@ interface core {
     prompts: list<prompt>,
   }
 
+  /// A public key offered for publickey authentication, in the two
+  /// parts SSH actually puts on the wire.
+  ///
+  /// This core is deliberately ignorant of key ALGEBRA: it never
+  /// parses `blob`, never holds a private half, and cannot check a
+  /// signature it relays. It only needs the two strings RFC 4252 s7
+  /// asks of it -- so a new algorithm is an embedder change, not a
+  /// change here.
+  ///
+  /// The two fields are usually the same name, which is why it is
+  /// worth spelling out that they are not the same THING. `algorithm`
+  /// names the SIGNATURE and rides the userauth request (and the blob
+  /// that gets signed); `blob` encodes the KEY and carries its own
+  /// name inside. OpenSSH's browser-webauthn algorithm is the case
+  /// that separates them: a plain `sk-ecdsa-sha2-nistp256@openssh.com`
+  /// key blob -- exactly what sits in `authorized_keys` -- is offered
+  /// under the algorithm `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`,
+  /// because the bytes the browser signs are shaped by WebAuthn rather
+  /// than by SSH. Getting that pairing backwards is rejected by sshd
+  /// (it resolves the algorithm name and compares it against the name
+  /// inside the signature), so the split is load-bearing, not cosmetic.
+  record public-key {
+    /// The public key algorithm name for the userauth request: the
+    /// name the SIGNATURE will carry.
+    algorithm: string,
+    /// The public key blob (RFC 4253 s6.6): length-prefixed name
+    /// followed by algorithm-specific fields. Opaque here.
+    blob: list<u8>,
+  }
+
+  /// A finished signature, in the three parts an SSH signature blob is
+  /// built from -- `string format`, `string blob`, then whatever the
+  /// algorithm appends.
+  ///
+  /// `trailer` exists for the security-key algorithms, which hang
+  /// extra fields off the end of the standard two (authenticator
+  /// flags, the signature counter, and for webauthn the origin and
+  /// clientData the browser signed). It is appended verbatim, already
+  /// SSH-encoded by whoever produced the signature; for every ordinary
+  /// algorithm it is empty.
+  record signature {
+    /// The signature algorithm name, which must be the `algorithm` of
+    /// the key this signature answers for.
+    format: string,
+    /// The algorithm's own signature encoding (for Ed25519 the raw 64
+    /// bytes; for ECDSA an `mpint r, mpint s` pair).
+    blob: list<u8>,
+    /// Extra algorithm-specific fields, SSH-encoded, appended after
+    /// `blob`. Empty for everything but the security-key algorithms.
+    trailer: list<u8>,
+  }
+
+  /// A parked signature request: the bytes to sign, and the key they
+  /// are to be signed for.
+  ///
+  /// The key rides along because an embedder may offer more than one
+  /// (a browser key and a passkey, say), and only it knows which
+  /// keeper holds which private half. Matching on `key` is exact:
+  /// it is one of the records handed to `authenticate-publickey` or
+  /// `authenticate-auto`, echoed back.
+  record sign-request {
+    /// Which offered key the server accepted and now wants proof of.
+    key: public-key,
+    /// The SSH publickey-auth signature blob (session id, user,
+    /// service, algorithm, public key) to sign, verbatim. Not a hash:
+    /// hashing, if the algorithm wants any, belongs to the signer.
+    data: list<u8>,
+  }
+
   resource session {
     /// Start an SSH client session whose wire is `feed`/`drain`.
     /// Never fails synchronously -- watch `status`. `user` is needed
@@ -124,14 +193,21 @@ interface core {
     /// `feed`/`pump` ticks, so poll `status`.
     authenticate-password: func(password: string) -> result<_, string>;
 
-    /// Offer publickey auth for `public-key`, a raw 32-byte Ed25519
-    /// public key. The private key is deliberately NOT in this
-    /// component: when the ssh stack needs a signature it parks with
-    /// `status` = `signing`, the embedder answers via
-    /// `provide-signature`, and only the public half and the finished
-    /// signature ever cross this interface. Same host-key gating and
-    /// latch-then-poll contract as `authenticate-password`.
-    authenticate-publickey: func(public-key: list<u8>) -> result<_, string>;
+    /// Offer publickey auth for `keys`, in order. The private halves
+    /// are deliberately NOT in this component: when the ssh stack
+    /// needs a signature it parks with `status` = `signing`, the
+    /// embedder answers via `provide-signature`, and only public
+    /// halves and finished signatures ever cross this interface. Same
+    /// host-key gating and latch-then-poll contract as
+    /// `authenticate-password`.
+    ///
+    /// Offering several keys costs at most one ceremony: each is first
+    /// OFFERED unsigned, and only a key the server says it will accept
+    /// is ever signed for. A key whose algorithm the server does not
+    /// support is skipped without parking. Fails synchronously on an
+    /// empty list -- an offer of nothing is a caller mistake, not an
+    /// authentication attempt.
+    authenticate-publickey: func(keys: list<public-key>) -> result<_, string>;
 
     /// Start keyboard-interactive auth (RFC 4256): the server drives
     /// prompt batches; each parks the session at `auth-prompts` until
@@ -140,23 +216,25 @@ interface core {
     authenticate-interactive: func() -> result<_, string>;
 
     /// Let the server steer method selection like a stock ssh client:
-    /// publickey (when `public-key` is supplied) first, then password,
-    /// then keyboard-interactive, constrained to what the server says
-    /// can continue. Signatures park at `signing`; a password request
-    /// surfaces as a one-prompt masked batch at `auth-prompts`; OTP
-    /// rounds surface as their own batches. Same gating and
-    /// latch-then-poll contract.
-    authenticate-auto: func(public-key: option<list<u8>>) -> result<_, string>;
+    /// publickey (with `keys`, when any are supplied) first, then
+    /// password, then keyboard-interactive, constrained to what the
+    /// server says can continue. Signatures park at `signing`; a
+    /// password request surfaces as a one-prompt masked batch at
+    /// `auth-prompts`; OTP rounds surface as their own batches. Same
+    /// gating and latch-then-poll contract. An empty `keys` simply
+    /// declines to offer publickey.
+    authenticate-auto: func(keys: list<public-key>) -> result<_, string>;
 
-    /// The bytes awaiting a signature (the SSH publickey-auth
-    /// signature blob: session id, user, service, algorithm, public
-    /// key), present while `status` is `signing`.
-    pending-signature: func() -> option<list<u8>>;
+    /// The signature request authentication is parked on, present
+    /// while `status` is `signing`.
+    pending-signature: func() -> option<sign-request>;
 
-    /// Resume authentication with the raw 64-byte Ed25519 signature
-    /// over exactly the bytes `pending-signature` returned. Fails if
-    /// no signature is pending or the length is wrong.
-    provide-signature: func(signature: list<u8>) -> result<_, string>;
+    /// Resume authentication with a signature over exactly the bytes
+    /// `pending-signature` returned. Fails if no signature is pending,
+    /// or if `format` is not the pending key's algorithm -- sshd
+    /// rejects that mismatch several round trips later, with a message
+    /// that says nothing useful, so it is caught here instead.
+    provide-signature: func(sig: signature) -> result<_, string>;
 
     /// Abandon a pending signature (the signer refused or is
     /// unavailable) so authentication fails legibly instead of

@@ -1,0 +1,9 @@
+[package]
+name = "wosh-webauthn-ssh"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The WebAuthn-to-SSH wire mapping: turns a browser assertion into an OpenSSH webauthn-sk-ecdsa signature, and a P-256 credential into the authorized_keys line that verifies it."
+
+[dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }

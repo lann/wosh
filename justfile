@@ -186,6 +186,38 @@ e2e-kbdint: compose
         --kbd-answers 'gate-token-123,gate-passphrase-456,gate-otp-789' \
         --expect-host-key "$fp"
 
+# Passkey, end to end: the same composed client, over the same real
+# iroh path, into the same real OpenSSH sshd -- but authenticated by
+# `webauthn-sk-ecdsa-sha2-nistp256@openssh.com` instead of plain
+# publickey. This is what proves the OpenSSH webauthn WIRE FORMAT
+# (authenticatorData, clientDataJSON, the DER signature, the
+# authorized_keys line's `application` field) against a stock,
+# unmodified sshd -- no browser, no server-side change, just a
+# software authenticator standing in for the platform one (see
+# smoke-test/src/passkey.rs). What this gate cannot prove is the
+# ceremony itself (the user gesture, the platform prompt); that stays
+# the browser gate's job. If this leg passes, the browser gate only
+# has to show the ceremony happens -- the bytes it produces are
+# already proven to authenticate for real.
+e2e-passkey: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-passkey-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-e2e-passkey-listener.log | cut -d" " -f2)
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" --auth passkey \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
+
 # Pairing, end to end: a client that once presented a valid token is
 # REMEMBERED (its iroh id is enrolled), so a printed QR keeps working
 # for that device across listener restarts and token rotation -- while
@@ -233,6 +265,13 @@ e2e-pairing: compose
         --connstring "$cs1" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" 2>&1 \
         | grep -q 'E2E PASS'
+    # Wait for the refusal, do not race it: the client learns it was
+    # refused over the tunnel, which can beat the listener's own log
+    # write to disk. Grepping once turns that ordering into a flake.
+    for _ in $(seq 50); do
+        grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log && break
+        sleep 0.2
+    done
     grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log
     echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
 
@@ -271,6 +310,32 @@ browser-e2e: site hosts
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
     WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
         node host-test/browser-e2e.mjs
+
+# Browser passkey gate: the real page enrolling and authenticating with
+# a WebAuthn passkey (a CDP virtual authenticator standing in for a
+# platform one), through the real listener into a real sshd. This
+# proves the CEREMONY -- enrol/adopt/forget UI, the ceremony gate's
+# user-gesture prompt, the actual navigator.credentials calls; e2e-passkey
+# (above) is the sibling that proves the wire format (the OpenSSH
+# webauthn algorithm bytes) against real sshd with a software
+# authenticator and no browser at all. Each covers what the other
+# cannot.
+browser-passkey: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-passkey-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-browser-passkey-listener.log | cut -d" " -f2)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
+        node host-test/browser-passkey.mjs
 
 # Browser idle survival: the real page stays connected across an idle
 # window longer than QUIC's 30s max_idle_timeout, and a post-idle
@@ -322,9 +387,16 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-idle-e2e browser-resume
+check: test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
 test-tunnel:
     cargo test -p wosh-tunnel
+
+# The WebAuthn-to-SSH wire mapping: the authorized_keys line a passkey
+# produces, and the layout of the signature that answers for it. Every
+# rule in here is one sshd enforces silently several round trips away,
+# so these are the cheap versions of the e2e-passkey failure.
+test-webauthn-ssh:
+    cargo test -p wosh-webauthn-ssh

@@ -167,6 +167,12 @@ export async function capabilities() {
     publickey: typeof t.identityOpenssh === "function",
     password: true,
     keyboardInteractive: !proto || typeof proto.pendingPrompts === "function",
+    // Two independent things must both be true: the component build
+    // must export the passkey surface (an older precache may not),
+    // and the platform must actually support WebAuthn at all (some
+    // browsers, and non-secure-context http serving, do not expose
+    // PublicKeyCredential).
+    passkey: typeof t.enrollPasskey === "function" && !!globalThis.PublicKeyCredential,
   };
 }
 
@@ -183,6 +189,77 @@ export async function identity() {
     throw new Error("this build of the client component has no WebCrypto identity yet");
   }
   return await t.identityOpenssh();
+}
+
+/**
+ * This client's enrolled PASSKEY identity as an `authorized_keys` line
+ * (`sk-ecdsa-sha2-nistp256@openssh.com ...`), or `null` when none is
+ * enrolled. Mirrors `identity()`, but the private half never exists in
+ * this component or this page -- it lives in the platform
+ * authenticator (see site/passkey-store.ts).
+ */
+export async function passkeyIdentity() {
+  const t = await api();
+  if (typeof t.passkeyOpenssh !== "function") {
+    throw new Error("this build of the client component has no passkey support yet");
+  }
+  const line = await t.passkeyOpenssh();
+  // A lifted WIT `option` is the bare value, or `undefined` for none
+  // (deltic embedder contract, values.ts): the `{kind, value}` spelling
+  // is only for an option nested directly inside another option, which
+  // this is not. Normalised to null so callers can test one falsy
+  // shape.
+  return line ?? null;
+}
+
+/**
+ * Run a WebAuthn registration ceremony and enrol its result as this
+ * client's passkey identity, replacing any previous one. Returns the
+ * new `authorized_keys` line. The user is asked to approve the
+ * ceremony; a refusal or timeout surfaces as a rejected promise.
+ */
+export async function enrollPasskey() {
+  const t = await api();
+  return await t.enrollPasskey();
+}
+
+/**
+ * Adopt a passkey identity enrolled on another device, from the
+ * `authorized_keys` line it printed there. The passkey itself must
+ * already be reachable from this device (a synced passkey) -- this
+ * only supplies the public half the assertion ceremony cannot return.
+ */
+export async function adoptPasskey(line) {
+  const t = await api();
+  return await t.adoptPasskey(line);
+}
+
+/**
+ * Stop offering the enrolled passkey. The credential itself survives
+ * in the authenticator; only this client forgets it.
+ */
+export async function forgetPasskey() {
+  const t = await api();
+  return await t.forgetPasskey();
+}
+
+/**
+ * Install the pre-assertion ceremony gate (site/passkey-store.ts's
+ * `setCeremonyGate`): called before a WebAuthn `get()` that might lack
+ * a live user gesture (the server's demand for a signature during
+ * `authenticate-passkey` arrives while the page is polling, not while
+ * the user is clicking anything). `fn` is an async callback that
+ * should resolve once the user has made a fresh gesture (e.g. tapped
+ * a "touch your passkey" prompt); pass `undefined` to clear it.
+ *
+ * Routed through the bundled deltic module rather than imported
+ * directly, because passkey-store.ts is TypeScript bundled by `just
+ * web-bundle` -- boot.mjs, loaded unbundled by the browser, cannot
+ * import a .ts file directly.
+ */
+export async function installPasskeyCeremonyGate(fn) {
+  const { setCeremonyGate } = await import(new URL("./dist/deltic.js", import.meta.url));
+  setCeremonyGate(fn);
 }
 
 // Input wiring is re-established per session and the old handlers
@@ -240,6 +317,7 @@ async function settle(session, timeoutMs = 30000) {
  *     previously approved and asked to remember; see boot.mjs)
  *   getCredential()            -> {kind: "auto"}
  *                               | {kind: "publickey"}
+ *                               | {kind: "passkey"}
  *                               | {kind: "password", password?}
  *                               | {kind: "keyboard-interactive"}
  *   collectPrompts(batch)      -> string[] (one answer per prompt;
@@ -258,6 +336,30 @@ async function settle(session, timeoutMs = 30000) {
  * of a standing text input. A caller that already holds the password
  * may still supply it.
  */
+/**
+ * The one server-side reason a passkey fails that no error message
+ * explains, spelled out where the user will see it.
+ *
+ * OpenSSH has verified browser-webauthn signatures since 8.4, but only
+ * 10.3 and later accept the algorithm without being told to. Older
+ * servers refuse the OFFER -- before any signature is examined -- so
+ * what comes back is an unremarkable "no supported methods remain"
+ * with nothing pointing at the cause. Rather than guess (the client
+ * cannot tell this apart from a key that is simply not installed),
+ * this appends the check worth making first, and only when the passkey
+ * was the credential actually asked for. Auto is deliberately excluded:
+ * it falls back to the browser key inside the same connection, so a
+ * failure there is almost never about the passkey algorithm.
+ */
+function passkeyHint(cred, reason) {
+  if (cred?.kind !== "passkey") return "";
+  if (!/authenticate|no supported methods|publickey/i.test(String(reason ?? ""))) return "";
+  return "\n\nIf the passkey line is installed and this still fails, check the server: " +
+    "OpenSSH before 10.3 needs " +
+    "`PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com` " +
+    "in sshd_config to accept a browser passkey at all.";
+}
+
 export async function connect({ connstring, user, ui }) {
   const t = await api();
   status("dialing over iroh…");
@@ -329,6 +431,15 @@ export async function connect({ connstring, user, ui }) {
       await session.authenticateInteractive();
     } else if (cred.kind === "auto") {
       await session.authenticateAuto();
+    } else if (cred.kind === "passkey") {
+      // Unlike every other method, the ceremony itself happens DURING
+      // this call: the server's demand for a signature is what
+      // triggers the authenticator prompt (terminal.wit's
+      // `authenticate-passkey` doc comment). The page's ceremony gate
+      // (site/passkey-store.ts's `setCeremonyGate`, installed by
+      // boot.mjs) is what supplies a user gesture if the browser
+      // requires one here.
+      await session.authenticatePasskey();
     } else {
       await session.authenticatePublickey();
     }
@@ -353,7 +464,7 @@ export async function connect({ connstring, user, ui }) {
     const st = await session.status();
     const tag = statusOf(st);
     if (tag === "ready") break;
-    if (tag === "closed") fatal(`authentication: ${st.value ?? "closed"}`);
+    if (tag === "closed") fatal(`authentication: ${st.value ?? "closed"}${passkeyHint(cred, st.value)}`);
     if (tag === "auth-prompts") {
       const batch = await session.pendingPrompts();
       if (batch) {

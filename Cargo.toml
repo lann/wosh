@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "connstring",
     "tunnel",
+    "webauthn-ssh",
     "listener-core",
     "listener-host",
     "smoke-test",
@@ -24,6 +25,8 @@ members = [
 default-members = [
     "connstring",
     "tunnel",
+    "webauthn-ssh",
+    "webauthn-ssh",
     "listener-host",
     "smoke-test",
     "spikes/go-async-host",

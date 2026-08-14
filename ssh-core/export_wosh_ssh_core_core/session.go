@@ -90,38 +90,35 @@ func (s *Session) AuthenticatePassword(password string) witTypes.Result[witTypes
 	return unit(s.eng.AuthenticatePassword(password))
 }
 
-func (s *Session) AuthenticatePublickey(publicKey []uint8) witTypes.Result[witTypes.Unit, string] {
-	return unit(s.eng.AuthenticatePublickey(publicKey))
+func (s *Session) AuthenticatePublickey(keys []types.PublicKey) witTypes.Result[witTypes.Unit, string] {
+	return unit(s.eng.AuthenticatePublickey(engineKeys(keys)))
 }
 
 func (s *Session) AuthenticateInteractive() witTypes.Result[witTypes.Unit, string] {
 	return unit(s.eng.AuthenticateInteractive())
 }
 
-func (s *Session) AuthenticateAuto(publicKey witTypes.Option[[]uint8]) witTypes.Result[witTypes.Unit, string] {
-	// `none` means no key is available, which is materially different
-	// from an empty key: the engine's publickey method declines
-	// itself and the server steers to password / keyboard-interactive.
-	var key []uint8
-	if publicKey.Tag() == witTypes.OptionSome {
-		key = publicKey.Some()
-		if key == nil {
-			key = []uint8{} // preserve some-vs-none across the nil slice
-		}
-	}
-	return unit(s.eng.AuthenticateAuto(key))
+func (s *Session) AuthenticateAuto(keys []types.PublicKey) witTypes.Result[witTypes.Unit, string] {
+	return unit(s.eng.AuthenticateAuto(engineKeys(keys)))
 }
 
-func (s *Session) PendingSignature() witTypes.Option[[]uint8] {
-	blob := s.eng.PendingSignature()
-	if blob == nil {
-		return witTypes.None[[]uint8]()
+func (s *Session) PendingSignature() witTypes.Option[types.SignRequest] {
+	req := s.eng.PendingSignature()
+	if req == nil {
+		return witTypes.None[types.SignRequest]()
 	}
-	return witTypes.Some(blob)
+	return witTypes.Some(types.SignRequest{
+		Key:  types.PublicKey{Algorithm: req.Key.Algorithm, Blob: req.Key.Blob},
+		Data: req.Data,
+	})
 }
 
-func (s *Session) ProvideSignature(signature []uint8) witTypes.Result[witTypes.Unit, string] {
-	return unit(s.eng.ProvideSignature(signature))
+func (s *Session) ProvideSignature(sig types.Signature) witTypes.Result[witTypes.Unit, string] {
+	return unit(s.eng.ProvideSignature(core.Signature{
+		Format:  sig.Format,
+		Blob:    sig.Blob,
+		Trailer: sig.Trailer,
+	}))
 }
 
 func (s *Session) FailSignature(reason string) { s.eng.FailSignature(reason) }
@@ -161,6 +158,17 @@ func (s *Session) ExitStatus() witTypes.Option[int32] {
 }
 
 func (s *Session) Close() { s.eng.Close() }
+
+// engineKeys translates the offered key records; an empty list stays
+// empty, which is how `authenticate-auto` says "do not offer
+// publickey" now that the option wrapper is gone.
+func engineKeys(keys []types.PublicKey) []core.PublicKey {
+	out := make([]core.PublicKey, len(keys))
+	for i, k := range keys {
+		out[i] = core.PublicKey{Algorithm: k.Algorithm, Blob: k.Blob}
+	}
+	return out
+}
 
 // unit maps a Go error onto the WIT `result<_, string>` every
 // fallible export returns.
