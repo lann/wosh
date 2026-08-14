@@ -202,6 +202,11 @@ just serve                # the site on :8080 (or `just site out/` to deploy)
 
 `just listener` exposes 127.0.0.1:22 through n0's public relay; see
 `--help` for `--relay`, `--target`, pairing-token and identity options.
+It uses the machine's own identity (`~/.local/share/wosh`), and exactly
+one listener may hold it — a second fails fast rather than fighting
+over the relay registration. For hacking in a checkout, `just
+dev-listener` is the same thing with a worktree-local identity, so
+several can run at once.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
@@ -352,6 +357,11 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   happens inside one (feed bytes, tick, answer a parked signature or
   prompt batch). Its engine internals are plain Go with host-runnable
   tests (`ssh-core/core/`) against an in-process x/crypto server.
+- `scripts/gate-proc.sh` — the gates' process ownership: background
+  processes started under a name and stopped by pid, never by pattern,
+  with logs and pidfiles under `.deps/run/` (per worktree). Its own
+  self-test is `just test-gate-proc`; `just gates-down` stops whatever
+  this worktree left running.
 - `smoke-test/` — the end-to-end gate: the composed client under
   wasmtime, over real iroh, through the listener, into a real OpenSSH
   `sshd`.
@@ -449,6 +459,18 @@ Verified working:
 - Listener identity persistence: the endpoint id (and so the browser's
   pins) survives listener restarts; `--ephemeral-identity` restores the
   old per-run behavior.
+- **Gate isolation** (`just test-gate-proc`): stopping one gate's
+  process kills that process and nothing else. The gates used to open
+  by pkill-ing every `wosh-listener` on the machine — other worktrees'
+  gates and the operator's own dev listener included — which is also
+  how strays accumulated in the first place (nothing stopped what it
+  started). Now each is named, pid-tracked and stopped from a trap,
+  test listeners are `--ephemeral-identity` (nothing on disk to share),
+  and the logs gates read connstrings from live under `.deps/run/`
+  rather than fixed `/tmp` paths two worktrees would clobber. One
+  pattern-kill survives on purpose: `browser-resume` restarts the
+  RELAY, which is shared machine-wide, so that gate still reaches
+  further than its own worktree.
 
 Not finished:
 
