@@ -493,26 +493,24 @@ browser-idle-e2e: site hosts
 # wake-probe (a tunnel PING instead of waiting out QUIC's idle
 # timeout), resume, replay.
 #
-# This drill flushed out two upstream bugs, both fixed:
+# This drill flushed out THREE upstream bugs. Two are fixed in the
+# pinned chain, which is what lets this gate run in `check`:
 #  - polymorph-iroh: a resource outliving its connection acted on the
 #    slot's next occupant (handle reuse) -- its drop-implied reset(0)
 #    killed every freshly resumed connection at birth. Fixed by the
-#    epoch guard the PIROH_PIN now carries (polymorph-iroh#78/#79).
-#  - lann/rtc (via lann/webrtc): once ICE fails -- consent expiry on a
-#    vanished peer -- the agent's contact() early-returns without
-#    advancing last_checking_time, so the deadline poll_timeout derives
-#    from it freezes in the past, permanently due. The driver's event
-#    loop (handle-then-repoll, the standard sans-IO shape) then spins
-#    at full speed (measured 4.5M passes/s), starving the whole host:
-#    the listener endpoint went deaf and its zombie session never
-#    idle-timed-out. Root fix is one line in rtc-ice (advance the clock
-#    in the Failed path, the periodic twin of their issue-88 fix), plus
-#    a defense-in-depth floor in the driver's loop for the next timer
-#    bug of that class. NEITHER is in the pinned chain yet (both forks
-#    are outside this project's pins), so this gate stays out of
-#    `check` until wasmtime-webrtc-datachannels pins a webrtc rev that
-#    carries them. Verified green end to end with them applied locally
-#    -- the root fix alone suffices.
+#    epoch guard the PIROH_PIN carries (polymorph-iroh#78/#79).
+#  - polymorph-webrtc-datachannels: the wasmtime host ran webrtc's
+#    per-connection driver tasks on the embedder's own runtime, so one
+#    wedged driver froze the whole component (deaf endpoint, zombie
+#    sessions never idle-timing-out) AND starved the teardown that
+#    would have ended the wedge. Fixed by driver reactor isolation,
+#    carried by the datachannels rev pin (#158/#159): the wedge costs
+#    a pool thread, then self-heals.
+#  - The wedge's root -- rtc-ice pins a failed agent's wake-up
+#    deadline in the past, and the webrtc driver loop spins on it at
+#    full speed -- is fixed upstream in lann/rtc#2 (plus a
+#    forward-progress floor handed to lann/webrtc); not needed for
+#    this gate once the isolation is in, but worth landing.
 browser-freeze: site hosts
     #!/usr/bin/env bash
     set -euo pipefail
@@ -586,7 +584,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-fallthrough browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

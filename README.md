@@ -489,24 +489,25 @@ Verified working:
   a fresh session by itself — pinned host key, enrolled pairing
   outliving the token rotation, silent browser-key auth, and a dim
   `[wosh]` divider marking the seam. No dialog, no human.
-- The **freeze drill** (`just browser-freeze`, not yet in `check`):
-  SIGSTOP the page's renderer 45s — a faithful phone-in-pocket — then
-  thaw and demand the wake-probe/resume ladder recover the parked
-  session, which it does in under a second. The drill flushed out two
-  upstream bugs, since fixed: a polymorph-iroh resource that outlived
-  its connection acted on the slot's NEXT occupant (handle reuse), so
-  the dead attachment's dying send stream reset every freshly resumed
-  connection at birth (polymorph-iroh#78; the pinned revision carries
-  the epoch guard); and once ICE failed on the vanished peer, the ICE
-  agent's failed-state path never advanced the clock its next wake-up
-  is computed from, leaving a permanently-due deadline that the webrtc
-  driver's standard handle-then-repoll loop turned into a full-speed
-  spin (measured 4.5M passes/s) — starving the whole host, so the
-  listener endpoint went deaf and its zombie session never
-  idle-timed-out. The root fix is one line in rtc-ice, with a
-  defense-in-depth floor in the driver's loop. The gate joins `check`
-  once the pinned chain carries those; it runs green with them applied
-  locally, and the root fix alone suffices.
+- The **freeze drill** (`just browser-freeze`): SIGSTOP the page's
+  renderer 45s — a faithful phone-in-pocket — then thaw and demand the
+  wake-probe/resume ladder recover the parked session, which it does
+  in under a second. The drill flushed out three upstream bugs; the
+  two the pinned chain now fixes are what let it run in `check`. A
+  polymorph-iroh resource that outlived its connection acted on the
+  slot's NEXT occupant (handle reuse), so the dead attachment's dying
+  send stream reset every freshly resumed connection at birth
+  (polymorph-iroh#78; the pin carries the epoch guard). And the
+  wasmtime webrtc host ran its per-connection driver tasks on the
+  embedder's own runtime, so one wedged driver froze the whole
+  component — deaf endpoint, zombie sessions never idle-timing-out —
+  while starving the very teardown that would have ended the wedge
+  (polymorph-webrtc-datachannels#158; the pin carries driver reactor
+  isolation, under which the wedge costs a pool thread and then
+  self-heals). The wedge's root — rtc-ice pins a failed agent's
+  wake-up deadline in the past, and the webrtc driver loop spins on
+  it at full speed — is fixed upstream in lann/rtc#2 and no longer
+  gates anything here.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

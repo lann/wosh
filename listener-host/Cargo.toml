@@ -20,7 +20,9 @@ rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # these crates are their native-host implementations. Pinned to the
 # same revisions polymorph-iroh's own scripts/setup.sh pins (see this
 # project's scripts/setup.sh).
-wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "aa9460c674e9f9a5d3227291333a60ecd5bcd988" }
+# The head of polymorph-webrtc-datachannels PR #159 (driver reactor
+# isolation, found by the freeze drill here); re-pin once it lands.
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "67e91bfc947efaeb88c715cfc7e1aeb610900490" }
 polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", rev = "662586ad873469c2329a0a73986adef8d5e3c908" }
 wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "9808bdb5d3f62d5212e2e91c9645d2f6cdda9e74" }
 

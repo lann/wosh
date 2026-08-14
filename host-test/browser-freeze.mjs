@@ -136,13 +136,13 @@ try {
     for (let i = 0; i < buf.length; i++) t += buf.getLine(i)?.translateToString(true) + "\n";
     return t;
   });
-  const screenHas = (m, count) => page.waitForFunction(([mm, c]) => {
+  const screenHas = (m, count, timeout = 60_000) => page.waitForFunction(([mm, c]) => {
     const buf = window.__wosh.term?.buffer.active;
     if (!buf) return false;
     let t = "";
     for (let i = 0; i < buf.length; i++) t += buf.getLine(i)?.translateToString(true) + "\n";
     return t.split(mm).length - 1 >= c;
-  }, [m, count], { timeout: 60_000 });
+  }, [m, count], { timeout });
 
   await page.goto(`http://127.0.0.1:${PORT}/#${CONNSTRING}`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
@@ -227,9 +227,21 @@ try {
       fail("the connect dialog reopened: the session was declared dead instead of resumed");
     }
 
+    // One retry on the post-thaw keystroke: the click/type can race the
+    // renderer's first layout after 45s of not being scheduled, landing
+    // the keystrokes outside xterm entirely -- a harness hazard, not a
+    // session one (the session's own delivery is what MARK_AFTER then
+    // proves). The retry re-clicks to re-acquire focus.
     await page.click(".xterm-screen");
     await page.keyboard.type("echo MARK_AFTER\n", { delay: 10 });
-    await screenHas("MARK_AFTER", 2);
+    try {
+      await screenHas("MARK_AFTER", 2, 20_000);
+    } catch {
+      say("  (post-thaw keystrokes did not land; re-clicking and retrying once)");
+      await page.click(".xterm-screen");
+      await page.keyboard.type("echo MARK_AFTER\n", { delay: 10 });
+      await screenHas("MARK_AFTER", 2);
+    }
     say("[6] post-thaw round trip");
   } finally {
     clearInterval(watch);
