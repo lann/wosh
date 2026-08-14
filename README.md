@@ -391,6 +391,10 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   tree carries ~12 MB of wasm (the component plus deltic's translator)
   and because deltic runtime-links the component against the page
   bundle, so a cache mixing two deploys would be incoherent.
+- `site/lifecycle.mjs` — the page's lifecycle wired to the session:
+  hidden/frozen/pagehide mean "stop redialing, the network is being
+  taken away", visible/resumed mean "redial now". No mobile gate on
+  it: a desktop tab left in the background has the same problem.
 - `host-test/` — browser gates driven by playwright-core against the
   real assembled site.
 - `spikes/go-async/` — the three measurements above, as runnable code.
@@ -440,7 +444,12 @@ Verified working:
   death, rebinds its endpoint, redials with backoff and resumes; the
   listener rebinds its accept loop, re-registers under the same
   identity, and replays from the parked session. The page never
-  changes state; a post-restart keystroke round-trips. (The listener's
+  changes state; a post-restart keystroke round-trips. The client's
+  resume budget is spent in time spent TRYING, not in time elapsed: a
+  backgrounded phone suspends the component mid-loop and a hidden tab
+  has its timers throttled, so wall-clock would burn the budget
+  without a single attempt being made -- for a session the listener is
+  still holding parked. (The listener's
   accept loop previously went permanently deaf on the first relay
   hiccup — found by this gate's drill.)
 - All three spike measurements above.
@@ -476,7 +485,11 @@ Verified working:
   taps that would look like no-ops. And scrolling, against a real
   xterm: a finger drags the scrollback (or the scrollbar's thumb)
   instead of panning the page, without the drag also landing as a tap
-  that summons the keyboard. No other gate can see any of this; the
+  that summons the keyboard. Plus the lifecycle wiring: hidden,
+  pagehide and freeze all suspend the session, visible, pageshow and
+  resume all wake it, and a missing or torn-down session is survived
+  quietly -- these run on the browser's way out of the page, where
+  there is nobody to report an exception to. No other gate can see any of this; the
   e2e legs type through xterm, and none of them synthesize a finger
   that moves.
 - Listener identity persistence: the endpoint id (and so the browser's

@@ -105,15 +105,28 @@ use wosh_tunnel::{
 const READ_CHUNK: u32 = 16 * 1024;
 
 /// Backoff for the resume machine: 500ms doubling to a 15s cap, giving
-/// up once 90s have passed since the transport died. Long enough to
-/// ride out a relay restart plus both sides re-registering; short
-/// enough that a listener that is actually gone is not mistaken for a
-/// slow one forever. Sleeping is real (`wasi:clocks/monotonic-clock`,
-/// imported for exactly this): between attempts every other task in
-/// the component keeps running.
+/// up once 90s of TRYING have been spent. Long enough to ride out a
+/// relay restart plus both sides re-registering; short enough that a
+/// listener that is actually gone is not mistaken for a slow one
+/// forever. Sleeping is real (`wasi:clocks/monotonic-clock`, imported
+/// for exactly this): between attempts every other task in the
+/// component keeps running.
+///
+/// Trying, not elapsing. A backgrounded phone suspends this component
+/// mid-loop, and a hidden tab has its timers throttled to a fraction
+/// of what they asked for; wall-clock time would then be spent without
+/// a single attempt being made, and the budget would be gone before
+/// the page came back -- for a session the listener still holds parked
+/// (its grace is 600s by default, more than six times this). So each
+/// pass adds what it MEANT to take: the sleep it asked for, plus the
+/// attempt itself capped, because an attempt that appears to have
+/// taken minutes was suspended, not slow.
 const RESUME_BACKOFF_START_MS: u64 = 500;
 const RESUME_BACKOFF_CAP_MS: u64 = 15_000;
 const RESUME_WINDOW_MS: u64 = 90_000;
+/// The most a single attempt can charge the budget. A dial that runs
+/// past this was not dialing, it was suspended.
+const RESUME_ATTEMPT_CAP_MS: u64 = 20_000;
 
 async fn sleep_ms(ms: u64) {
     bindings::wasi::clocks::monotonic_clock::wait_for(ms * 1_000_000).await;
@@ -198,6 +211,15 @@ struct Inner {
     ack_due: bool,
     /// A resume is in flight; exactly one task runs the loop.
     resuming: bool,
+    /// The page told us it is going away (`suspend`). While this is
+    /// set, nothing redials: a phone that has been backgrounded cannot
+    /// reach the network, and trying only wakes its radio and spends a
+    /// budget measured for a page that can see the result.
+    suspended: bool,
+    /// The transport went while suspended (or a resume stood down for
+    /// it). The session is neither attached nor dead: it waits for
+    /// `wake`, which is the only thing that starts it moving again.
+    stalled: bool,
 }
 
 impl Inner {
@@ -584,6 +606,12 @@ async fn link_lost(state: &Rc<State>, generation: u64, reason: &str) {
             // Both tasks of this generation noticed the same death.
             // Exactly one runs the loop.
             Next::Retire
+        } else if inner.suspended {
+            // The page is away. Redialing now would be a radio wake-up
+            // for a network that is not there; the listener holds the
+            // session parked either way. `wake` picks this up.
+            inner.stalled = true;
+            Next::Retire
         } else {
             inner.resuming = true;
             Next::Resume
@@ -631,27 +659,60 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
 
     let (addr, token) = (state.addr.clone(), state.token.clone());
 
-    let started = now_ms();
+    // Budget spent, in milliseconds of trying. See RESUME_WINDOW_MS:
+    // this is deliberately not `now_ms() - started`.
+    //
+    // Charged in two places, both of which every route out of an
+    // attempt must pass through: the sleep charges itself, and the top
+    // of the loop charges the attempt that just ended. Nothing is
+    // charged where an attempt FAILS, because there are several such
+    // places and one of them will eventually be written without it --
+    // which is exactly the bug this arrangement exists to make
+    // unwritable (an uncharged failure path is an infinite retry: the
+    // budget stops advancing and the give-up below is unreachable).
+    let mut spent = 0u64;
+    let mut attempt_started = now_ms();
     let mut backoff = RESUME_BACKOFF_START_MS;
-    // Sleep-then-retry on any dead attempt; the window is wall-clock,
-    // so fast failures (relay port closed) and slow ones (dial timeout)
-    // spend the same budget.
+    // The sleep charges what it ASKED for, whatever the clock says it
+    // actually took: a phone suspended mid-backoff, or a hidden tab
+    // whose timers are throttled to a fraction of the rate they
+    // requested, must not pay for time it could not use.
+    macro_rules! backoff_sleep {
+        () => {{
+            spent += backoff;
+            sleep_ms(backoff).await;
+            backoff = (backoff * 2).min(RESUME_BACKOFF_CAP_MS);
+        }};
+    }
     macro_rules! next_attempt {
         ($cleanup:stmt) => {{
             $cleanup
-            sleep_ms(backoff).await;
-            backoff = (backoff * 2).min(RESUME_BACKOFF_CAP_MS);
+            backoff_sleep!();
             continue;
         }};
     }
 
     loop {
+        // The attempt that just ended costs what it took, capped: one
+        // that appears to have taken minutes was suspended, not slow.
+        // Unconditional, so no `continue` above can dodge it.
+        spent += now_ms()
+            .saturating_sub(attempt_started)
+            .min(RESUME_ATTEMPT_CAP_MS);
+        attempt_started = now_ms();
+
         // Every await below is a place the page may have detached or a
         // later resume may have won; re-check on the way back.
         if abandoned(state, generation) {
             return;
         }
-        if now_ms().saturating_sub(started) > RESUME_WINDOW_MS {
+        // The page went away since the last pass. Stop here rather
+        // than at the end of the budget: what is left of it is worth
+        // more when there is a page to see the result.
+        if stand_down(state) {
+            return;
+        }
+        if spent > RESUME_WINDOW_MS {
             break;
         }
 
@@ -684,8 +745,7 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
             // and let the next attempt use the fresh one. Mirrors the
             // listener's own accept-loop rebind.
             rebind_endpoint(state).await;
-            sleep_ms(backoff).await;
-            backoff = (backoff * 2).min(RESUME_BACKOFF_CAP_MS);
+            backoff_sleep!();
             continue;
         };
         if abandoned(state, generation) {
@@ -767,6 +827,21 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
     }
 
     declare_dead(state, "connection lost and could not be resumed within 90s").await;
+}
+
+/// The page suspended mid-resume: leave the session stalled -- neither
+/// attached nor dead -- for `wake` to pick up, and stop redialing. The
+/// listener is holding it parked regardless; the only thing another
+/// attempt would buy is a radio wake-up on a device that cannot
+/// answer.
+fn stand_down(state: &Rc<State>) -> bool {
+    let mut inner = state.inner.borrow_mut();
+    if !inner.suspended {
+        return false;
+    }
+    inner.resuming = false;
+    inner.stalled = true;
+    true
 }
 
 /// True when the resume should stop touching the session: the page
@@ -1114,6 +1189,8 @@ impl GuestSession for Session {
                 acked_to_peer: 0,
                 ack_due: false,
                 resuming: false,
+                suspended: false,
+                stalled: false,
             }),
             endpoint: RefCell::new(Rc::new(endpoint)),
             identity,
@@ -1352,6 +1429,38 @@ impl GuestSession for Session {
 
     async fn exit_status(&self) -> Option<i32> {
         self.state.inner.borrow().core.exit_status()
+    }
+
+    /// The page is going away. See wit/terminal.wit: this spends no
+    /// budget and tears nothing down; it only stops the redialing that
+    /// a suspended device cannot complete anyway. A resume already in
+    /// flight notices at its next await and stands down, leaving the
+    /// session stalled rather than dead.
+    async fn suspend(&self) {
+        let mut inner = self.state.inner.borrow_mut();
+        if inner.detached || inner.link_down || inner.legacy {
+            return; // nothing to stand down, or nothing that could resume
+        }
+        inner.suspended = true;
+        // A live connection is left exactly as it is: the OS may keep
+        // it, and a short absence should cost nothing at all.
+    }
+
+    /// The page is back. If the transport went while we were away,
+    /// start the resume now rather than at the end of a backoff sized
+    /// for a page that was watching.
+    async fn wake(&self) {
+        let generation = {
+            let mut inner = self.state.inner.borrow_mut();
+            inner.suspended = false;
+            if inner.detached || inner.link_down || !inner.stalled || inner.resuming {
+                return; // still connected, already resuming, or genuinely over
+            }
+            inner.stalled = false;
+            inner.resuming = true;
+            inner.generation
+        };
+        resume_loop(&self.state, generation).await;
     }
 
     /// Stop the session and close the iroh connection. The core is
