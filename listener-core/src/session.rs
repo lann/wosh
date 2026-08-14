@@ -562,7 +562,7 @@ pub async fn serve_v2(
     if let Some(want) = token {
         let enrolled = paired.borrow().contains(&peer);
         if !enrolled {
-            if hello.token.len() == want.len() && hello.token == want {
+            if wosh_connstring::token_eq(&hello.token, &want) {
                 paired.borrow_mut().insert(peer.clone());
                 crate::pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");

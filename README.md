@@ -65,7 +65,11 @@ relays** — indices are never reused, so old QR codes keep meaning the
 same relay), and an optional 16-byte pairing token. `connstring/` owns
 the format, and is its only decoder: the Rust client links the crate
 directly (the previous Go client carried a hand-matched mirror decoder;
-the split retired it).
+the split retired it). It also owns the one operation the token has
+beyond being carried — `token_eq`, a constant-time comparison. A `==`
+over the presented bytes stops at the first difference, so how long it
+takes reports how much of a guess was right; the listener checks tokens
+against bytes a peer chose, in two places, and both go through it.
 
 Authentication is SSH's own. The browser mints an **Ed25519 key through
 `polymorph:webcrypto` with `extractable: false`**, prints it as an

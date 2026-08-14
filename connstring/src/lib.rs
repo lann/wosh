@@ -262,10 +262,55 @@ impl ConnString {
     }
 }
 
+/// Compare a presented pairing token against the expected one without
+/// leaking, in the time it takes, how much of the guess was right.
+///
+/// The token is the secret that authorizes first contact, and the
+/// comparison runs on bytes the caller chose. A plain `==` over slices
+/// stops at the first differing byte, so its duration reports the
+/// length of the matching prefix -- which turns guessing a 16-byte
+/// secret into guessing 16 one-byte secrets in turn. That the channel
+/// is narrow here (the peer must already hold the endpoint id to
+/// connect at all, and the path is relayed and jittery) is an argument
+/// about today's deployment, not about the comparison: a secret is
+/// compared in constant time because there is no reason not to.
+///
+/// The LENGTH is not secret -- a token is always `TOKEN_LEN` bytes and
+/// the frame carries its own length -- so a length mismatch may (and
+/// does) return early.
+pub fn token_eq(presented: &[u8], expected: &[u8; TOKEN_LEN]) -> bool {
+    use subtle::ConstantTimeEq as _;
+    presented.ct_eq(&expected[..]).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine as _;
+
+    #[test]
+    fn token_eq_accepts_only_the_whole_token() {
+        let expected = [7u8; TOKEN_LEN];
+        assert!(token_eq(&expected, &expected));
+
+        // Wrong in one byte, at either end: the prefix length must not
+        // change the answer (nor, though this cannot assert it, the
+        // time).
+        let mut first_off = expected;
+        first_off[0] ^= 1;
+        assert!(!token_eq(&first_off, &expected));
+        let mut last_off = expected;
+        last_off[TOKEN_LEN - 1] ^= 1;
+        assert!(!token_eq(&last_off, &expected));
+
+        // Lengths the wire can present: the frame's length byte is the
+        // peer's to choose.
+        assert!(!token_eq(&[], &expected));
+        assert!(!token_eq(&expected[..TOKEN_LEN - 1], &expected));
+        let mut longer = expected.to_vec();
+        longer.push(0);
+        assert!(!token_eq(&longer, &expected));
+    }
 
     fn sample_pubkey() -> [u8; PUBKEY_LEN] {
         let mut k = [0u8; PUBKEY_LEN];

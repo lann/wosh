@@ -326,7 +326,7 @@ async fn serve_connection(
         let peer = encode_hex(&conn.peer());
         let enrolled = paired.borrow().contains(&peer);
         if !enrolled {
-            if presented.len() == want.len() && presented == want {
+            if wosh_connstring::token_eq(&presented, &want) {
                 paired.borrow_mut().insert(peer.clone());
                 pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");
