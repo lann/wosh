@@ -11,19 +11,23 @@
 // vocabulary). This gate holds both fixes in place: the session must
 // SURVIVE the idle window, and nothing may trap.
 //
-// An optional second mode (WOSH_KILL_PATTERN) covers the other half of
+// An optional second mode (WOSH_KILL_NAME) covers the other half of
 // that investigation -- a tunnel dying mid-session (listener killed)
 // must surface as a clean "session ended", never a trap, with
 // keystrokes racing the death cascade one per second. It kills the
 // listener it is pointed at, so `just check` does not run it; use it
-// when touching teardown paths.
+// when touching teardown paths. The name is a gate-proc name, not a
+// pkill pattern: this kills the listener THIS gate started and no
+// other, the same discipline the recipes follow.
 //
 // Usage (the `just browser-idle-e2e` recipe supplies the env):
 //   WOSH_CONNSTRING=...        the listener's connection string
 //   WOSH_AUTHORIZED_KEYS=...   sshd's authorized_keys path
 //   WOSH_USER                  login user       (default: $USER)
 //   WOSH_IDLE_MS               idle window      (default: 40000)
-//   WOSH_KILL_PATTERN          pkill -f pattern (kill mode; off by default)
+//   WOSH_KILL_NAME             gate-proc name   (kill mode; off by
+//                              default; this recipe's listener is
+//                              started as `browser-idle`)
 //   WOSH_KILL_AFTER_MS         kill delay       (default: 3000)
 //
 // Exits 0 on pass, 1 on failure (wedge, trap, or no round-trip), 2 on
@@ -42,9 +46,9 @@ const CONNSTRING = process.env.WOSH_CONNSTRING;
 const AUTH_KEYS = process.env.WOSH_AUTHORIZED_KEYS;
 const USER = process.env.WOSH_USER ?? process.env.USER;
 const IDLE_MS = Number(process.env.WOSH_IDLE_MS ?? 40_000);
-// When set: pkill this pattern KILL_AFTER_MS after the first round-trip,
-// then type once a second through the death cascade.
-const KILL_PATTERN = process.env.WOSH_KILL_PATTERN ?? "";
+// When set: stop this gate-proc-named listener KILL_AFTER_MS after the
+// first round-trip, then type once a second through the death cascade.
+const KILL_NAME = process.env.WOSH_KILL_NAME ?? "";
 const KILL_AFTER_MS = Number(process.env.WOSH_KILL_AFTER_MS ?? 3_000);
 
 if (!CONNSTRING || !AUTH_KEYS || !USER) {
@@ -180,11 +184,11 @@ try {
   );
   log("first command round-tripped");
 
-  if (KILL_PATTERN) {
+  if (KILL_NAME) {
     // --- kill mode: the tunnel dies mid-session; death must be clean ---
-    log(`waiting ${KILL_AFTER_MS}ms, then killing '${KILL_PATTERN}'`);
+    log(`waiting ${KILL_AFTER_MS}ms, then killing '${KILL_NAME}'`);
     await new Promise((r) => setTimeout(r, KILL_AFTER_MS));
-    execFileSync("pkill", ["-f", KILL_PATTERN]);
+    execFileSync(new URL("../scripts/gate-proc.sh", import.meta.url).pathname, ["stop", KILL_NAME]);
     log("listener killed");
     // Type through the cascade: one keystroke per second, racing the
     // teardown. The historical wedge surfaced here as an "input: wasm

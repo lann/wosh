@@ -26,7 +26,7 @@ import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 const ROOT = new URL("../", import.meta.url).pathname;
-const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8099);
+const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8101); // 8098/8099/8123/8129 are the other gates'
 
 const MIME = { ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css" };
 

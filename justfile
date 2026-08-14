@@ -57,6 +57,15 @@ relay:
 listener *args: build
     target/release/wosh-listener {{args}}
 
+# The same listener with a WORKTREE-LOCAL identity, for hacking: each
+# checkout gets its own endpoint id, so two of these coexist instead of
+# fighting over the one identity in ~/.local/share/wosh (whose lock
+# lets exactly one win). `just listener` keeps the machine-global
+# identity -- that one is somebody's actual way in, and re-keying it
+# would silently unpair their browsers.
+dev-listener *args: build
+    target/release/wosh-listener --identity-dir .deps/dev-identity {{args}}
+
 # --- the static site --------------------------------------------------
 
 # Bundle the deltic host layer for the page. The Deno-only WebRTC
@@ -82,6 +91,34 @@ serve out="out": (site out)
     python3 -m http.server -d {{out}} 8080
 
 # --- gates ------------------------------------------------------------
+
+# Gate processes are OWNED, never pattern-killed. scripts/gate-proc.sh
+# starts each background process under a name, records its pid, and a
+# recipe-level trap stops exactly those. Every gate here used to open
+# with `pkill -f 'wosh-listene[r]'`, which killed other worktrees'
+# gates and the operator's own dev listener along with the strays it
+# was aiming at -- and it was there because nothing stopped what it
+# started, so strays were the norm.
+#
+# Test listeners are --ephemeral-identity too: no identity on disk
+# means no shared directory, no lock to contend for, and nothing left
+# behind for the next run to trip over. e2e-pairing is the exception,
+# because an enrollment outliving a restart is precisely its subject.
+#
+# Logs and pidfiles live under .deps/run/, which is per worktree; the
+# logs gates grep their connstrings out of used to be fixed /tmp paths
+# that two worktrees would clobber -- and then read each other's
+# connstring out of, silently dialing the wrong listener.
+
+# The ownership rules above, tested against a stand-in process: needs
+# nothing built, and fails if `stop` ever reaches past its own pid.
+test-gate-proc:
+    scripts/gate-proc-test.sh
+
+# Stop every gate process THIS worktree started, by pid. Never another
+# worktree's, never your dev listener.
+gates-down:
+    scripts/gate-proc.sh stop-all
 
 # The connection-string format: the Rust crate is the single owner and
 # decoder now (the Go core never sees a connstring).
@@ -128,13 +165,13 @@ e2e: compose
     cargo build --release -p wosh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop e2e' EXIT
+    trap 'exit 130' INT TERM # cleanup stays in ONE place: the EXIT trap
+    scripts/gate-proc.sh start e2e target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-e2e-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field e2e connstring)
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" \
@@ -159,17 +196,15 @@ e2e-kbdint: compose
     cargo build --release -p wosh-smoke-test
     (cd kbdint-sshd && go build -o ../target/gate/kbdint-sshd .)
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    pkill -f 'kbdint-ssh[d]' 2>/dev/null || true
-    sleep 1
-    target/gate/kbdint-sshd --port 2223 > /tmp/wosh-kbdint-sshd.log 2>&1 &
-    sleep 1
-    fp=$(grep '^fingerprint: ' /tmp/wosh-kbdint-sshd.log | cut -d" " -f2)
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop kbdint kbdint-sshd' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start kbdint-sshd target/gate/kbdint-sshd --port 2223
+    fp=$(scripts/gate-proc.sh field kbdint-sshd fingerprint)
+    scripts/gate-proc.sh start kbdint target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:2223 --no-qr > /tmp/wosh-kbdint-listener.log 2>&1 &
+        --target 127.0.0.1:2223 --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-kbdint-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field kbdint connstring)
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user gate --auth kbd \
@@ -197,29 +232,31 @@ e2e-pairing: compose
     cargo build --release -p wosh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
+    trap 'scripts/gate-proc.sh stop pairing-1 pairing-2' EXIT
+    trap 'exit 130' INT TERM
     rm -rf .deps/test-pairing && mkdir -p .deps/test-pairing
     # --- run 1: pair with a valid token --------------------------------
-    target/release/wosh-listener --identity-dir .deps/test-pairing \
+    # The one gate that needs a listener identity on disk: enrollment
+    # outliving a restart is what it is about. Its dir is its own.
+    scripts/gate-proc.sh start pairing-1 target/release/wosh-listener --identity-dir .deps/test-pairing \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-pairing-1.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs1=$(grep '^connstring: ' /tmp/wosh-pairing-1.log | cut -d" " -f2)
+    cs1=$(scripts/gate-proc.sh field pairing-1 connstring)
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs1" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --pairing-store .deps/test-pairing/client-blob
-    grep -q 'paired (valid token' /tmp/wosh-pairing-1.log
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
+    grep -q 'paired (valid token' "$(scripts/gate-proc.sh log pairing-1)"
+    scripts/gate-proc.sh stop pairing-1
+    sleep 1 # the identity dir's lock is released as run 1 exits
     # --- run 2: same listener identity, ROTATED token ------------------
-    target/release/wosh-listener --identity-dir .deps/test-pairing \
+    scripts/gate-proc.sh start pairing-2 target/release/wosh-listener --identity-dir .deps/test-pairing \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-pairing-2.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs2=$(grep '^connstring: ' /tmp/wosh-pairing-2.log | cut -d" " -f2)
+    cs2=$(scripts/gate-proc.sh field pairing-2 connstring)
     test "$cs1" != "$cs2"   # same identity, different token: genuinely stale
     # the PAIRED device, still holding the run-1 connstring: must work
     target/release/wosh-smoke-test \
@@ -233,7 +270,7 @@ e2e-pairing: compose
         --connstring "$cs1" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" 2>&1 \
         | grep -q 'E2E PASS'
-    grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log
+    grep -q 'refused: bad pairing token (and not a paired device)' "$(scripts/gate-proc.sh log pairing-2)"
     echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
 
 # Mobile keyboard layer: a key fires on a tap and never on a drag (the
@@ -261,13 +298,13 @@ browser-e2e: site hosts
     set -euo pipefail
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop browser-e2e' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-e2e target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-e2e-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-browser-e2e-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field browser-e2e connstring)
     WOSH_CONNSTRING="$cs" \
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
     WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
@@ -285,13 +322,13 @@ browser-idle-e2e: site hosts
     set -euo pipefail
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop browser-idle' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-idle target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-idle-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-browser-idle-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field browser-idle connstring)
     WOSH_CONNSTRING="$cs" \
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
         node host-test/browser-idle-e2e.mjs
@@ -306,13 +343,13 @@ browser-resume: site hosts
     set -euo pipefail
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop browser-resume' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-resume target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-resume-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-browser-resume-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field browser-resume connstring)
     WOSH_CONNSTRING="$cs" \
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
     WOSH_RELAY_BIN="{{RELAY}}" \
@@ -323,7 +360,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-idle-e2e browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel spike-async e2e e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
