@@ -106,6 +106,12 @@
       width: 100%; box-sizing: border-box;
     }
     #term { flex: 1; min-height: 0; padding: 2px; }
+    /* Vertical drags in the terminal belong to mobile.mjs, which scrolls
+       the scrollback with them -- xterm itself answers only to a mouse
+       and a wheel, so without this the browser takes the gesture and
+       pans the page. Pinch-zoom and horizontal panning stay the
+       browser's; touch-action is inert for mouse input. */
+    #term { touch-action: pan-x pinch-zoom; }
     /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
        keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. */
     #keys { display: none; }
