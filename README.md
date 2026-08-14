@@ -497,12 +497,16 @@ Verified working:
   its connection acted on the slot's NEXT occupant (handle reuse), so
   the dead attachment's dying send stream reset every freshly resumed
   connection at birth (polymorph-iroh#78; the pinned revision carries
-  the epoch guard); and the webrtc peer-connection driver hot-spun at
-  100% CPU on a timeout its core would not advance once the peer
-  vanished, starving the whole host — the listener endpoint went deaf
-  and its zombie session never idle-timed-out. The gate joins `check`
-  once the pinned chain carries the webrtc driver guard; it runs green
-  with that guard applied locally.
+  the epoch guard); and once ICE failed on the vanished peer, the ICE
+  agent's failed-state path never advanced the clock its next wake-up
+  is computed from, leaving a permanently-due deadline that the webrtc
+  driver's standard handle-then-repoll loop turned into a full-speed
+  spin (measured 4.5M passes/s) — starving the whole host, so the
+  listener endpoint went deaf and its zombie session never
+  idle-timed-out. The root fix is one line in rtc-ice, with a
+  defense-in-depth floor in the driver's loop. The gate joins `check`
+  once the pinned chain carries those; it runs green with them applied
+  locally, and the root fix alone suffices.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

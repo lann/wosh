@@ -498,14 +498,21 @@ browser-idle-e2e: site hosts
 #    slot's next occupant (handle reuse) -- its drop-implied reset(0)
 #    killed every freshly resumed connection at birth. Fixed by the
 #    epoch guard the PIROH_PIN now carries (polymorph-iroh#78/#79).
-#  - lann/webrtc: the peer-connection driver hot-spun at 100% CPU on a
-#    timeout its core would not advance (a vanished peer), starving the
-#    whole host -- the listener endpoint went deaf and its zombie
-#    session never idle-timed-out. Fix is a forward-progress guard in
-#    the driver's event loop; NOT YET in the pinned chain (the fork is
-#    outside this project's pins), so this gate stays out of `check`
-#    until wasmtime-webrtc-datachannels pins a webrtc rev that carries
-#    it. Verified green end to end with that guard applied locally.
+#  - lann/rtc (via lann/webrtc): once ICE fails -- consent expiry on a
+#    vanished peer -- the agent's contact() early-returns without
+#    advancing last_checking_time, so the deadline poll_timeout derives
+#    from it freezes in the past, permanently due. The driver's event
+#    loop (handle-then-repoll, the standard sans-IO shape) then spins
+#    at full speed (measured 4.5M passes/s), starving the whole host:
+#    the listener endpoint went deaf and its zombie session never
+#    idle-timed-out. Root fix is one line in rtc-ice (advance the clock
+#    in the Failed path, the periodic twin of their issue-88 fix), plus
+#    a defense-in-depth floor in the driver's loop for the next timer
+#    bug of that class. NEITHER is in the pinned chain yet (both forks
+#    are outside this project's pins), so this gate stays out of
+#    `check` until wasmtime-webrtc-datachannels pins a webrtc rev that
+#    carries them. Verified green end to end with them applied locally
+#    -- the root fix alone suffices.
 browser-freeze: site hosts
     #!/usr/bin/env bash
     set -euo pipefail
