@@ -1,4 +1,6 @@
-// Gate: the extra-keys bar's tap-vs-drag rule, under real touch input.
+// Gate: the mobile layer (site/mobile.mjs) under real touch input --
+// the extra-keys bar's tap-vs-drag rule, the focus rule that keeps the
+// soft keyboard reachable, and scrolling the terminal with a finger.
 //
 // The bar (site/mobile.mjs) is the one part of the page a thumb touches
 // constantly, and its key strip scrolls sideways -- so fingers land on
@@ -17,7 +19,12 @@
 // through the bar, and neither they nor any native test synthesize a
 // finger that moves.
 //
-// Usage: node host-test/browser-keys.mjs [--keep]
+// The scrolling legs need a REAL terminal (xterm's scrollback, its own
+// scrollbar), so they run against a second fixture that mounts xterm
+// from site/node_modules -- `just web-deps` puts it there. Everything
+// else drives a stub terminal.
+//
+// Usage: node host-test/browser-mobile.mjs [--keep]
 
 import { chromium } from "playwright-core";
 import { existsSync, readdirSync } from "node:fs";
@@ -82,10 +89,68 @@ const FIXTURE = `<!doctype html>
 </script>
 `;
 
+// A REAL terminal, for the scrolling legs: xterm's scrollback and its
+// own drawn scrollbar are the subject, so a stub cannot stand in. The
+// page below is the app's structure and stylesheet plus one deliberate
+// addition -- a spacer that makes the DOCUMENT scrollable, which is
+// what a phone looks like whenever the layout viewport outgrows the
+// visual one (iOS with the keyboard up). Without it the "and the page
+// must not move" assertion could pass on a page that had nowhere to
+// move to.
+const XTERM_DIR = join(ROOT, "site/node_modules/@xterm");
+const TERMINAL_FIXTURE = `<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>terminal fixture</title>
+<link rel="stylesheet" href="/site/node_modules/@xterm/xterm/css/xterm.css">
+<style>${style}</style>
+<div id="wrap">
+  <div id="bar"><span id="status">fixture</span></div>
+  <div id="term"></div>
+  <div id="keys"></div>
+</div>
+<div id="spacer" style="height: 240px"></div>
+<script src="/site/node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="/site/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script type="module">
+  import { initMobile } from "/site/mobile.mjs";
+  const term = new Terminal({ fontSize: 14, cursorBlink: false, scrollback: 1000 });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("term"));
+  fit.fit();
+  for (let i = 1; i <= 300; i++) term.write("line " + i + "\\r\\n");
+  initMobile(term);
+  globalThis.wosh = {
+    term,
+    focused: () => document.activeElement === term.textarea,
+    state: () => ({
+      viewportY: term.buffer.active.viewportY,
+      baseY: term.buffer.active.baseY,
+      rows: term.rows,
+      cellHeight: document.querySelector(".xterm-screen").getBoundingClientRect().height / term.rows,
+      pageScrollY: window.scrollY,
+      docScrollable: document.documentElement.scrollHeight > document.documentElement.clientHeight,
+    }),
+    // The scrollbar xterm draws: only grabbable while it is visible
+    // (its own CSS gives it pointer-events: none when faded out).
+    scrollbar: () => {
+      const bar = document.querySelector(".xterm-scrollable-element > .scrollbar.vertical");
+      const slider = bar?.querySelector(".slider");
+      const box = (el) => { const b = el?.getBoundingClientRect(); return b && b.height ? { x: b.x, y: b.y, w: b.width, h: b.height } : null; };
+      return { visible: Boolean(bar?.classList.contains("visible")), bar: box(bar), slider: box(slider) };
+    },
+  };
+</script>
+`;
+
 const server = createServer(async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
   if (path === "/") {
     res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(FIXTURE);
+    return;
+  }
+  if (path === "/terminal") {
+    res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(TERMINAL_FIXTURE);
     return;
   }
   if (path === "/favicon.ico") {
@@ -159,7 +224,18 @@ try {
     await send("touchEnd", []);
     await page.waitForTimeout(60);
   };
-  // A finger that lands on `label` and travels (dx, dy) before lifting.
+  // A finger that lands at (x, y) and travels (dx, dy) before lifting.
+  const dragAt = async (x, y, dx, dy, steps = 8) => {
+    await send("touchStart", points(x, y));
+    await page.waitForTimeout(30);
+    for (let i = 1; i <= steps; i++) {
+      await send("touchMove", points(x + (dx * i) / steps, y + (dy * i) / steps));
+      await page.waitForTimeout(16);
+    }
+    await send("touchEnd", []);
+    await page.waitForTimeout(120);
+  };
+  // The same, aimed at a key by label.
   const drag = async (label, dx, dy, steps = 8) => {
     const { x, y } = await box(label);
     await send("touchStart", points(x, y));
@@ -314,9 +390,175 @@ try {
   else if (barShown) fail("the extra-keys bar is visible on a fine pointer (it must stay inert off touch devices)");
   else console.log("[10] a fine pointer still autofocuses the terminal, bar still inert");
 
+  // --- scrolling, against a real terminal ------------------------------
+  //
+  // xterm scrolls for a mouse and a wheel, not for a finger: the
+  // scrollbar it draws answers to mousedown, its touch-gesture support
+  // is never registered, and .xterm-viewport is not natively scrollable
+  // (scrollHeight == clientHeight -- the renderer owns the position).
+  // So every one of these legs measured NOTHING moving before
+  // mobile.mjs took the gesture on, while the page moved instead.
+  if (!existsSync(join(XTERM_DIR, "xterm/lib/xterm.js"))) {
+    fail("site/node_modules/@xterm is missing: run `just web-deps` (the scrolling legs need a real xterm)");
+  } else {
+    await page.goto(`http://127.0.0.1:${PORT}/terminal`, { waitUntil: "load" });
+    await page.waitForFunction(() => globalThis.wosh?.state, null, { timeout: 15_000 });
+    await page.waitForTimeout(400);
+    const tstate = () => page.evaluate(() => globalThis.wosh.state());
+    const termBox = await page.locator("#term").boundingBox();
+    const mid = { x: termBox.x + termBox.width / 2, y: termBox.y + termBox.height / 2 };
+
+    let t0 = await tstate();
+    if (!ok(t0.baseY > 50, `the fixture has no scrollback to drag (baseY=${t0.baseY})`) ||
+        !ok(t0.docScrollable, "the fixture page cannot scroll, so 'the page must not move' would prove nothing")) {
+      // fall through: the legs below would be meaningless
+    } else {
+      // 11. A finger drags the scrollback, and by the distance it
+      //     travelled -- the text follows the finger.
+      const dragPx = 200;
+      await dragAt(mid.x, mid.y, 0, dragPx);
+      let t1 = await tstate();
+      const expected = Math.round(dragPx / t0.cellHeight);
+      const moved = t0.viewportY - t1.viewportY;
+      if (!ok(moved > 0, `a finger dragged down the terminal and nothing scrolled (viewportY stayed ${t1.viewportY})`)) {
+        // no point measuring how far
+      } else if (ok(Math.abs(moved - expected) <= 2, `the text did not follow the finger: ${dragPx}px moved ${moved} lines, expected ~${expected}`)) {
+        console.log(`[11] a finger drags the scrollback ${moved} lines for ${dragPx}px (~1 line per cell)`);
+      }
+
+      // 12. THE REPORT: the gesture never reaches the browser's own
+      //     panning. Dragging UP is the direction that can move this
+      //     page (it sits at scrollY 0, so a downward drag has nowhere
+      //     to go and would prove nothing), and the terminal is put
+      //     mid-scrollback first so it has somewhere to go too.
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-40));
+      await page.waitForTimeout(150);
+      const t2 = await tstate();
+      await dragAt(mid.x, mid.y, 0, -150);
+      const t3 = await tstate();
+      const forward = t3.viewportY > t2.viewportY;
+      if (ok(t3.pageScrollY === 0, `the drag scrolled the PAGE instead of the terminal (scrollY=${t3.pageScrollY})`) &&
+          ok(forward, `dragging up did not scroll the terminal forward (${t2.viewportY} -> ${t3.viewportY})`)) {
+        console.log("[12] dragging up scrolls the terminal forward and leaves the page at 0");
+      }
+
+      // 13. A scroll must not also land as a tap -- the keyboard
+      //     leaping up at the end of every drag is its own bug.
+      if (ok(!(await page.evaluate(() => globalThis.wosh.focused())), "a scroll gesture focused the terminal (the soft keyboard would open)")) {
+        console.log("[13] scrolling does not summon the keyboard");
+      }
+
+      // 14. ...while a tap still does, which is how it is summoned.
+      await page.evaluate(() => globalThis.wosh.term.blur());
+      await send("touchStart", points(mid.x, mid.y));
+      await page.waitForTimeout(60);
+      await send("touchEnd", []);
+      await page.waitForTimeout(250);
+      if (ok(await page.evaluate(() => globalThis.wosh.focused()), "a tap on the terminal no longer focuses it (the keyboard could not be summoned)")) {
+        console.log("[14] a tap still focuses the terminal");
+      }
+
+      // 15. The scrollbar the report was about. Asserting the THUMB
+      //     mapping, not merely that something moved: a thumb drag
+      //     covers the whole scrollback across the track it can
+      //     travel, so 90px of thumb is many more lines than 90px of
+      //     content. Measuring only the direction let this leg pass
+      //     against a terminal that ignores the finger entirely.
+      await page.evaluate(() => { window.scrollTo(0, 0); globalThis.wosh.term.scrollToBottom(); });
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-Math.floor(globalThis.wosh.state().baseY / 2)));
+      await page.waitForTimeout(200);
+      const sb = await page.evaluate(() => globalThis.wosh.scrollbar());
+      if (!ok(Boolean(sb.slider), "xterm drew no vertical scrollbar thumb to drag")) {
+        // nothing to grab
+      } else {
+        const before = (await tstate()).viewportY;
+        const thumbPx = 90;
+        const perPx = before > 0 ? (await tstate()).baseY / (sb.bar.h - sb.slider.h) : 0;
+        const expected = Math.round(thumbPx * perPx);
+        await dragAt(sb.slider.x + sb.slider.w / 2, sb.slider.y + sb.slider.h / 2, 0, thumbPx);
+        const after = (await tstate()).viewportY;
+        const moved = after - before;
+        if (ok(moved > 0, `dragging the scrollbar thumb down did not scroll forward (${before} -> ${after})`) &&
+            ok(Math.abs(moved - expected) <= Math.max(3, expected * 0.25),
+               `the thumb did not carry the scrollback with it: ${thumbPx}px moved ${moved} lines, expected ~${expected}`)) {
+          console.log(`[15] the scrollbar thumb drags the scrollback ${moved} lines for ${thumbPx}px (expected ~${expected})`);
+        }
+      }
+
+      // 16. Only VERTICAL drags are ours. A sideways one stays the
+      //     browser's, which on iOS is where the back gesture comes
+      //     from -- and it starts at the screen edge, over the
+      //     terminal.
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-30));
+      await page.waitForTimeout(150);
+      const sideways0 = (await tstate()).viewportY;
+      await dragAt(mid.x, mid.y, 160, 0);
+      const sideways1 = (await tstate()).viewportY;
+      if (ok(sideways0 === sideways1, `a sideways drag scrolled the terminal (${sideways0} -> ${sideways1})`)) {
+        console.log("[16] a sideways drag is left to the browser");
+      }
+
+      // 17. And xterm keeps the mouse: we took the finger, nothing else.
+      await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+      const sb2 = await page.evaluate(() => globalThis.wosh.scrollbar());
+      if (sb2.slider) {
+        const before = (await tstate()).viewportY;
+        await page.mouse.move(sb2.slider.x + sb2.slider.w / 2, sb2.slider.y + sb2.slider.h / 2);
+        await page.mouse.down();
+        for (let i = 1; i <= 8; i++) await page.mouse.move(sb2.slider.x + sb2.slider.w / 2, sb2.slider.y + sb2.slider.h / 2 - i * 12);
+        await page.mouse.up();
+        await page.waitForTimeout(200);
+        const after = (await tstate()).viewportY;
+        if (ok(after < before, `xterm's own mouse drag on the thumb stopped working (${before} -> ${after})`)) {
+          console.log("[17] xterm still owns the mouse: its thumb drag is untouched");
+        }
+      }
+
+      // 18. The terminal moves ITSELF while a finger is down: output
+      //     arriving while the view sits at the bottom carries it
+      //     along. A drag that remembers an absolute position from
+      //     where the finger landed goes dead that many lines short of
+      //     the top; measuring the finger absolutely but applying it as
+      //     a delta against the live position does not. Small
+      //     scrollback here so one drag can reach the top at all.
+      await page.evaluate(() => {
+        const t = globalThis.wosh.term;
+        t.clear();
+        for (let i = 0; i < t.rows + 15; i++) t.write("pre " + i + "\r\n");
+      });
+      await page.waitForTimeout(400); // xterm parses writes off the main path
+      await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+      await page.waitForTimeout(200);
+      const t6 = await tstate();
+      if (ok(t6.baseY > 5 && t6.viewportY === t6.baseY, `leg 18 needs a small scrollback sitting at the bottom (viewportY=${t6.viewportY} baseY=${t6.baseY})`)) {
+        await send("touchStart", points(mid.x, mid.y));
+        await page.waitForTimeout(40);
+        // ...output lands mid-gesture, and the view follows it down.
+        await page.evaluate(() => {
+          for (let i = 0; i < 10; i++) globalThis.wosh.term.write("late " + i + "\r\n");
+        });
+        await page.waitForTimeout(200);
+        const drop = (t6.baseY + 12) * t6.cellHeight; // more than enough to hit the top
+        for (let i = 1; i <= 16; i++) {
+          await send("touchMove", points(mid.x, mid.y + (drop * i) / 16));
+          await page.waitForTimeout(14);
+        }
+        await send("touchEnd", []);
+        await page.waitForTimeout(250);
+        const t7 = await tstate();
+        if (ok(t7.viewportY === 0, `output arriving mid-drag left the gesture ${t7.viewportY} lines short of the top`)) {
+          console.log("[18] a drag still reaches the top when output moves the view under it");
+        }
+      }
+    }
+  }
+
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   if (!process.exitCode) {
-    console.log("\nKEYS-BAR GATE PASS: keys fire on a tap not a drag; a touch device opens with the keyboard reachable");
+    console.log(
+      "\nMOBILE GATE PASS: keys fire on a tap not a drag, the keyboard is " +
+        "reachable on open, and a finger scrolls the terminal instead of the page",
+    );
   }
 } finally {
   if (!process.argv.includes("--keep")) await browser.close();

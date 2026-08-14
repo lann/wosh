@@ -344,14 +344,17 @@ e2e-pairing: compose
     grep -q 'refused: bad pairing token (and not a paired device)' "$log2"
     echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
 
-# Mobile keyboard layer: a key fires on a tap and never on a drag (the
-# strip scrolls under the same thumb), and a freshly opened page leaves
-# the soft keyboard reachable -- nothing may hold a focus that cannot
-# summon it. Drives site/mobile.mjs and the page's own stylesheet with
-# synthesized touch in headless Chromium -- no component, no relay -- so
-# it needs no `just site`, only `just web-deps` once.
-browser-keys:
-    node host-test/browser-keys.mjs
+# The mobile layer under synthesized touch: a key fires on a tap and
+# never on a drag (the strip scrolls under the same thumb), a freshly
+# opened page leaves the soft keyboard reachable (nothing may hold a
+# focus that cannot summon it), and a finger scrolls the TERMINAL
+# rather than the page -- xterm answers only to a mouse and a wheel, so
+# that gesture is the mobile layer's to drive. Drives site/mobile.mjs
+# and the page's own stylesheet in headless Chromium -- no component,
+# no relay -- so it needs no `just site`, only `just web-deps` once
+# (the scrolling legs mount the real xterm from site/node_modules).
+browser-mobile:
+    node host-test/browser-mobile.mjs
 
 # Browser gate: deltic instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
@@ -457,7 +460,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

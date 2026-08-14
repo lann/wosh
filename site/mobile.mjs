@@ -1,4 +1,4 @@
-// Mobile UX for the wosh page. Three pieces, all inert on desktop:
+// Mobile UX for the wosh page. Four pieces, all inert on desktop:
 //
 //  - visual-viewport fit: soft keyboards don't resize the window on
 //    iOS Safari (the keyboard overlays the page and `resize` never
@@ -23,6 +23,15 @@
 //    blurs/refocuses explicitly. Both paths depend on focus meaning
 //    "the keyboard is up", which is why autofocusTerminal() below
 //    refuses to focus the terminal where that would be a lie.
+//
+//  - touch scrolling: xterm scrolls for a mouse and a wheel, not for
+//    a finger. Its scrollbar is a drawn widget wired to mousedown, and
+//    the viewport element is not natively scrollable (scrollHeight ==
+//    clientHeight -- the renderer owns the scroll position), so no
+//    touch reaches the scrollback at all; the browser then does what it
+//    does with any unclaimed gesture and pans the page instead.
+//    initTouchScroll drives it from pointer events, and the CSS says
+//    (touch-action) that vertical drags in the terminal are ours.
 //
 // No framework, no dependencies; loaded by app.mjs next to the
 // terminal it drives.
@@ -106,6 +115,7 @@ export const autofocusTerminal = (term) => {
  */
 export const initMobile = (term) => {
   initViewportFit();
+  initTouchScroll(term);
   initKeysBar(term);
 };
 
@@ -132,6 +142,138 @@ const initViewportFit = () => {
   };
   vv.addEventListener("resize", schedule);
   vv.addEventListener("scroll", schedule);
+};
+
+// --- touch scrolling ----------------------------------------------------------
+
+// Travel before a finger is scrolling rather than tapping. Below it the
+// gesture still belongs to xterm, which focuses the terminal (and so
+// summons the keyboard) on a tap.
+const SCROLL_SLOP = 8;
+
+/**
+ * Scroll the terminal by finger: drag the content, or drag the
+ * scrollbar's thumb.
+ *
+ * xterm offers nothing here. The scrollbar it draws (a vendored VS Code
+ * widget) listens for mousedown, its touch-gesture support is never
+ * registered, and .xterm-viewport does not scroll natively -- the
+ * renderer keeps the scroll position itself. So a finger on the
+ * terminal does nothing at all, and the browser, seeing a gesture
+ * nobody claimed, pans the page: "drag the scrollbar a little and it
+ * scrolls the viewport instead".
+ *
+ * Both gestures move through the SAME public API the wheel uses
+ * (scrollLines), so the renderer, the scrollbar's own position and the
+ * alt-buffer rules stay consistent.
+ */
+const initTouchScroll = (term) => {
+  const host = document.getElementById("term");
+  if (!host) return;
+
+  let held = null; // pointerId of the finger that owns the gesture
+  let y0 = 0, x0 = 0;
+  let scrolling = false; // decided: this gesture is a scroll, and ours
+  let declined = false; // decided the other way, and it stays decided
+  let onThumb = false; // grabbed the scrollbar, not the content
+  let applied = 0; // lines this gesture has scrolled so far
+  let travel = 0; // usable thumb travel, for a scrollbar drag
+
+  // Lines per CSS pixel of finger movement. Content drags move the
+  // text with the finger (down = back into history, so viewportY
+  // falls); a thumb drag maps the whole scrollback onto the track the
+  // thumb can travel, and moves with the thumb.
+  const linesPerPixel = () => {
+    const base = term.buffer.active.baseY;
+    if (onThumb) return travel > 0 ? base / travel : 0;
+    const screen = host.querySelector(".xterm-screen");
+    const cell = (screen?.getBoundingClientRect().height ?? host.clientHeight) / (term.rows || 1);
+    return cell > 0 ? -1 / cell : 0;
+  };
+
+  // Where the finger says to be, measured from where the gesture
+  // started -- so rounding cannot accumulate -- but applied as a DELTA
+  // against the live buffer position. The terminal moves itself while a
+  // finger is down (output arriving follows the bottom; scrollback at
+  // capacity trims from the top), and a remembered absolute position
+  // would answer that by jumping. Clamping to what the buffer can still
+  // do, rather than letting the finger run past the ends, keeps a drag
+  // that overshoots responsive the moment it turns back.
+  const scrollBy = (dy) => {
+    const buf = term.buffer.active;
+    if (buf.baseY <= 0) return; // nothing scrolled off the top yet
+    const lowest = applied - buf.viewportY;
+    const highest = applied + (buf.baseY - buf.viewportY);
+    const target = Math.max(lowest, Math.min(highest, Math.round(dy * linesPerPixel())));
+    if (target !== applied) {
+      term.scrollLines(target - applied);
+      applied = target;
+    }
+  };
+
+  host.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType !== "touch" || held !== null) return; // xterm owns the mouse
+    held = ev.pointerId;
+    x0 = ev.clientX;
+    y0 = ev.clientY;
+    scrolling = declined = false;
+    applied = 0;
+    // The scrollbar only takes the gesture when it is actually there to
+    // be grabbed: xterm's CSS gives it pointer-events: none while faded
+    // out, so this hit test is the browser's, not a guess at its rect.
+    const bar = ev.target.closest?.(".xterm-scrollable-element > .scrollbar");
+    onThumb = Boolean(bar);
+    if (bar) {
+      const thumb = bar.querySelector(".slider");
+      travel = bar.getBoundingClientRect().height - (thumb?.getBoundingClientRect().height ?? 0);
+    }
+  });
+
+  host.addEventListener("pointermove", (ev) => {
+    if (ev.pointerId !== held) return;
+    const dy = ev.clientY - y0;
+    const dx = ev.clientX - x0;
+    if (declined) return;
+    if (!scrolling) {
+      if (Math.hypot(dx, dy) < SCROLL_SLOP) return; // still a tap
+      // Only vertical drags are ours. A sideways one is the browser's
+      // to keep (touch-action leaves it pan-x), which on iOS is how
+      // the back gesture starts -- and it starts at the screen edge,
+      // i.e. over the terminal. Decided once per gesture: a drag that
+      // has already been let go must not be caught halfway through.
+      if (Math.abs(dy) <= Math.abs(dx)) {
+        declined = true;
+        return;
+      }
+      scrolling = true;
+    }
+    scrollBy(dy);
+  });
+
+  const end = (ev) => {
+    if (ev.pointerId !== held) return;
+    held = null;
+    scrolling = declined = false;
+  };
+  host.addEventListener("pointerup", end);
+  host.addEventListener("pointercancel", end);
+
+  // A scroll must not also land as a tap: a touch that ends without
+  // being cancelled leaves compatibility mouse events behind, and xterm
+  // reads those as "focus me" -- so the keyboard would leap up at the
+  // end of every drag. Cancelling the touch stream once the gesture is
+  // a scroll is what suppresses them, for THIS sequence only: a timer
+  // around the tap would eventually eat a real one (asked for by the
+  // gate, which taps a fraction of a second after scrolling).
+  //
+  // Guaranteed by the spec only when the FIRST touchmove is cancelled,
+  // and the slop phase means ours is not; Chromium honors it mid-stream
+  // (the gate holds that), and iOS refuses the synthetic click after
+  // ~10px of travel anyway -- but that second half is a spec argument
+  // this environment cannot run, so it wants a look on a real phone.
+  host.addEventListener("touchmove", (ev) => {
+    if (scrolling) ev.preventDefault();
+  }, { passive: false });
 };
 
 const initKeysBar = (term) => {
