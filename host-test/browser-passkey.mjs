@@ -45,7 +45,7 @@ import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 const ROOT = new URL("../out/", import.meta.url).pathname;
-const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8098);
+const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8102); // 8098 is browser-identity's
 const CONNSTRING = process.env.WOSH_CONNSTRING;
 const AUTH_KEYS = process.env.WOSH_AUTHORIZED_KEYS;
 const EXPECT_FP = process.env.WOSH_EXPECT_FP ?? "";

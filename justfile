@@ -240,13 +240,13 @@ e2e-passkey: compose
     cargo build --release -p wosh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop e2e-passkey' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start e2e-passkey target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-passkey-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-e2e-passkey-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field e2e-passkey connstring)
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" --auth passkey \
@@ -271,13 +271,13 @@ e2e-passkey-recover: compose
     cargo build --release -p wosh-smoke-test
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop e2e-passkey-recover' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start e2e-passkey-recover target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-passkey-recover-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-e2e-passkey-recover-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field e2e-passkey-recover connstring)
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" --auth passkey-recover \
@@ -395,13 +395,13 @@ browser-passkey: site hosts
     set -euo pipefail
     pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
     scripts/test-sshd.sh start
-    pkill -f 'wosh-listene[r]' 2>/dev/null || true
-    sleep 1
-    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+    trap 'scripts/gate-proc.sh stop browser-passkey' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-passkey target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
-        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-browser-passkey-listener.log 2>&1 &
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
-    cs=$(grep '^connstring: ' /tmp/wosh-browser-passkey-listener.log | cut -d" " -f2)
+    cs=$(scripts/gate-proc.sh field browser-passkey connstring)
     WOSH_CONNSTRING="$cs" \
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
     WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
