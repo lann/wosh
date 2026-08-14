@@ -59,7 +59,7 @@
 //! * **v1** (`ALPN_V1`) is the legacy raw pipe, kept as a one-shot dial
 //!   fallback so a freshly-deployed page still reaches a listener that
 //!   has not been updated. In legacy mode this component behaves
-//!   exactly as it did before resume existed: `[len][token]` pairing
+//!   exactly as it did before resume existed: `[len][proof]` pairing
 //!   frame, raw bytes, transport death = `wire-broken`.
 //!
 //! Two pieces of state make the resume machine tractable:
@@ -382,8 +382,11 @@ struct State {
     relay_url: String,
     /// Where to redial. Same address as the original dial.
     addr: EndpointAddr,
-    /// The pairing token, replayed in every `Hello`.
-    token: Vec<u8>,
+    /// The v2 pairing proof, replayed in every `Hello` (resume sends
+    /// one too). Not the token: see the proof's construction in
+    /// `connect`. Empty in open mode. Held even on a v1 dial, where it
+    /// is never sent -- v1 has no second Hello, and resume is v2-only.
+    pairing: Vec<u8>,
     /// Fires when the writer task has bytes to send (or must retire).
     writer_signal: Signal,
     /// Fires when the core's status may have changed. Nothing parks on
@@ -943,7 +946,7 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
     old.close(0, "resuming");
     drop(old);
 
-    let (addr, token) = (state.addr.clone(), state.token.clone());
+    let (addr, pairing) = (state.addr.clone(), state.pairing.clone());
 
     // Budget spent, in milliseconds of trying. See RESUME_WINDOW_MS:
     // this is deliberately not `now_ms() - started`.
@@ -1059,7 +1062,7 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
             (inner.session_id, inner.received)
         };
         let hello = Hello {
-            token: token.clone(),
+            pairing: pairing.clone(),
             resume: Some(Resume { session_id, received }),
         };
         let mut decoder = Decoder::new();
@@ -1424,7 +1427,27 @@ impl GuestSession for Session {
                 TransportAddr::Webrtc(parsed.relay_url.clone()),
             ],
         };
-        let token = parsed.token.map(|t| t.to_vec()).unwrap_or_default();
+        // The token itself never goes on the wire: what the listener
+        // sees is a proof over both endpoint identities and the ALPN,
+        // keyed by it (wosh_connstring::pairing_proof). It is computed
+        // per dialect below, because the ALPN is part of what the
+        // proof binds, and stored rather than the token so that every
+        // later Hello (resume replays one) presents the same value.
+        //
+        // A tokenless connstring stays an empty field, exactly as
+        // before: open mode has nothing to prove.
+        let client_id: [u8; wosh_connstring::PUBKEY_LEN] = endpoint
+            .id()
+            .try_into()
+            .map_err(|_| "endpoint id is not 32 bytes".to_string())?;
+        let prove = |alpn: &[u8]| -> Vec<u8> {
+            match parsed.token {
+                Some(t) => {
+                    wosh_connstring::pairing_proof(&t, &parsed.pubkey, &client_id, alpn).to_vec()
+                }
+                None => Vec::new(),
+            }
+        };
 
         // The connection is authenticated against the connstring's
         // public key: a peer holding a different key never connects.
@@ -1466,13 +1489,14 @@ impl GuestSession for Session {
             // connection, which surfaces as the ssh handshake seeing
             // the stream end. (v2 replaces that silent drop with a
             // `Refused` reply -- see below.)
-            debug_assert!(token.len() <= u8::MAX as usize);
-            let mut hello = Vec::with_capacity(1 + token.len());
-            hello.push(token.len() as u8);
-            hello.extend_from_slice(&token);
+            let proof = prove(ALPN_V1);
+            debug_assert!(proof.len() <= u8::MAX as usize);
+            let mut hello = Vec::with_capacity(1 + proof.len());
+            hello.push(proof.len() as u8);
+            hello.extend_from_slice(&proof);
             send.write(hello).await.map_err(err("pairing"))?;
         } else {
-            let hello = Hello { token: token.clone(), resume: None };
+            let hello = Hello { pairing: prove(proto.alpn()), resume: None };
             let (reply, pre) = handshake(&send, &recv, &mut decoder, &hello)
                 .await
                 .map_err(|e| format!("tunnel handshake: {e}"))?;
@@ -1529,7 +1553,10 @@ impl GuestSession for Session {
             identity,
             relay_url: parsed.relay_url.clone(),
             addr,
-            token,
+            // A resume redials the session's own dialect
+            // (`State.proto`), and the proof binds the ALPN, so the
+            // one stored here is the one every resume replays.
+            pairing: prove(proto.alpn()),
             writer_signal: Signal::default(),
             status_signal: Signal::default(),
         });

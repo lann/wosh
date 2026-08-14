@@ -100,7 +100,7 @@ const PINS_KEY = "wosh.hostkeys.v1";
  * The listener's endpoint id (raw Ed25519 pubkey, hex) out of a
  * connection string; null if it cannot be extracted. Duplicates ONLY
  * the fixed prefix shared by every format version (connstring/src/
- * lib.rs: version byte, then 32 raw pubkey bytes -- v2 keeps the
+ * lib.rs: version byte, then 32 raw pubkey bytes -- v2 and v3 keep the
  * pubkey as the FIRST postcard field precisely so this prefix never
  * moves), and refuses versions it doesn't know, so a format change
  * degrades to "no pinning" -- more prompting, never less.
@@ -109,7 +109,7 @@ export function endpointIdOf(connstring) {
   try {
     const bin = atob(connstring.trim().replace(/-/g, "+").replace(/_/g, "/"));
     const version = bin.charCodeAt(0);
-    if (bin.length < 34 || (version !== 1 && version !== 2)) return null;
+    if (bin.length < 34 || version < 1 || version > 3) return null;
     let hex = "";
     for (let i = 1; i < 33; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
     return hex;
@@ -154,7 +154,7 @@ const HISTORY_KEY = "wosh.history.v1";
 const HISTORY_CAP = 20;
 
 /// Mirrors WELL_KNOWN_RELAYS in connstring/src/lib.rs (append-only,
-/// indices never reused) -- needed to DECODE a v2 connstring whose
+/// indices never reused) -- needed to DECODE a v2/v3 connstring whose
 /// relay rides as a table index. The tokenless connstrings this page
 /// ENCODES always spell the URL out: correct either way, and it keeps
 /// this copy of the table decode-only.
@@ -166,8 +166,8 @@ const WELL_KNOWN_RELAYS = [
 ];
 
 /**
- * Decode the fields history needs -- `{ id, relay }` -- from a v1 or
- * v2 connection string; null when it doesn't parse. A fuller sibling
+ * Decode the fields history needs -- `{ id, relay }` -- from a v1, v2
+ * or v3 connection string; null when it doesn't parse. A fuller sibling
  * of `endpointIdOf` (which stays prefix-only: pins never need the
  * relay).
  */
@@ -186,8 +186,10 @@ export function connstringDetails(connstring) {
       const relay = new TextDecoder().decode(bytes.subarray(relayStart));
       return relay ? { id: hex, relay } : null;
     }
-    if (bytes[0] === 2) {
-      // v2 postcard payload: relay enum right after the pubkey.
+    if (bytes[0] === 2 || bytes[0] === 3) {
+      // v2/v3 postcard payload (identical; the version marks how the
+      // token is proven, not how the blob is laid out): relay enum
+      // right after the pubkey.
       let off = 33;
       const varint = () => {
         let v = 0, shift = 0;
@@ -216,14 +218,14 @@ export function connstringDetails(connstring) {
 }
 
 /**
- * A v2 connection string carrying NO pairing token: version byte,
+ * A v3 connection string carrying NO pairing token: version byte,
  * pubkey, relay spelled out (`Url` variant -- the well-known-index
  * encoding is an optimization this producer skips), `none` token.
  * What a history entry dials with; enrollment stands in for the token.
  */
 export function tokenlessConnstring(idHex, relay) {
   const relayBytes = new TextEncoder().encode(relay);
-  const bytes = [2];
+  const bytes = [3];
   for (let i = 0; i < 64; i += 2) bytes.push(parseInt(idHex.slice(i, i + 2), 16));
   bytes.push(0); // Relay::Url
   // postcard varint length; relays are short but encode properly.

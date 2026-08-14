@@ -67,6 +67,27 @@ the format, and is its only decoder: the Rust client links the crate
 directly (the previous Go client carried a hand-matched mirror decoder;
 the split retired it).
 
+**The token is never sent.** In versions 1 and 2 it was a bearer
+secret — the client wrote it on the wire, the listener compared bytes —
+so anything that saw a pairing frame learned a secret good for pairing
+any device of its own, for as long as the token lived. From version 3
+the client sends `pairing_proof`: an HMAC over both endpoint identities
+and the ALPN, keyed by the token. The listener recomputes it from the
+identity iroh authenticated during the handshake (`connection.peer()`),
+which is what makes a captured proof worthless to anyone who cannot
+also produce that peer's signature — that is, to anyone who is not that
+device already. It is compared with `proof_eq`, in constant time: a
+byte-by-byte `==` stops at the first difference, so its duration
+reports how much of a forgery was right.
+
+What this does not defend, and is not meant to: a leaked connection
+string. The token is printed in a QR code and handed around on purpose,
+and whoever holds it can compute proofs of their own. Rotation — and
+enrollment surviving it — is that story. The version bump is what makes
+the change legible: the payload is byte-identical to v2's, so an older
+client refuses a v3 link by version rather than sending a bearer token
+to a listener that will only answer "bad pairing token".
+
 Authentication is SSH's own. The browser mints an **Ed25519 key through
 `polymorph:webcrypto` with `extractable: false`**, prints it as an
 `authorized_keys` line, and signs with it during publickey auth — the

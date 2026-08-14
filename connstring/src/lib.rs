@@ -56,7 +56,22 @@
 use serde::{Deserialize, Serialize};
 
 /// The version `encode` emits.
-pub const VERSION: u8 = 2;
+///
+/// The payload is byte-identical to version 2's: the bump marks a
+/// change in what the TOKEN MEANS, not in how the blob is laid out. In
+/// 1 and 2 the token was a bearer secret the client sent; from 3 it is
+/// a key the client proves knowledge of and never transmits (see
+/// [`pairing_proof`]). A listener cannot tell those apart from the
+/// bytes on the pairing frame, so the version says it instead: an
+/// older client meeting a version-3 link refuses it by version, which
+/// is legible, rather than sending a bearer token to a listener that
+/// will only answer "bad pairing token".
+pub const VERSION: u8 = 3;
+
+/// Emitted until the pairing proof landed; still decoded, and still
+/// usable -- the secret it carries is the same one, and only the way
+/// it is proven changed.
+pub const VERSION_2: u8 = 2;
 
 /// The original fixed-layout version; decoded for compatibility with
 /// already-printed QR codes and links.
@@ -67,6 +82,9 @@ pub const PUBKEY_LEN: usize = 32;
 
 /// Pairing token length, when present.
 pub const TOKEN_LEN: usize = 16;
+
+/// Length of a [`pairing_proof`].
+pub const PROOF_LEN: usize = 32;
 
 const FLAG_HAS_TOKEN: u8 = 0x01; // v1 only
 
@@ -170,7 +188,7 @@ impl core::fmt::Display for DecodeError {
 impl ConnString {
     /// Encode as the base64url string that goes after `#` in the QR
     /// link (and is pasted/typed manually as a fallback). Emits
-    /// version 2; a relay URL found in [`WELL_KNOWN_RELAYS`] rides as
+    /// version 3; a relay URL found in [`WELL_KNOWN_RELAYS`] rides as
     /// its index (transparently -- `decode` hands back the URL).
     pub fn encode(&self) -> String {
         use base64::Engine as _;
@@ -192,7 +210,7 @@ impl ConnString {
 
     /// Decode a connection string (the raw base64url blob -- the
     /// caller strips any leading `#` from a URL fragment first).
-    /// Accepts versions 1 and 2.
+    /// Accepts versions 1, 2 and 3.
     pub fn decode(s: &str) -> Result<Self, DecodeError> {
         use base64::Engine as _;
 
@@ -202,7 +220,9 @@ impl ConnString {
 
         match bytes.split_first() {
             None => Err(DecodeError::Truncated),
-            Some((&VERSION, payload)) => Self::decode_v2(payload),
+            // 3 and 2 share a payload; the version distinguishes how
+            // the token is used, which is the caller's business.
+            Some((&VERSION, payload)) | Some((&VERSION_2, payload)) => Self::decode_v2(payload),
             Some((&VERSION_1, payload)) => Self::decode_v1(payload),
             Some((&other, _)) => Err(DecodeError::UnsupportedVersion(other)),
         }
@@ -262,10 +282,158 @@ impl ConnString {
     }
 }
 
+/// Domain separation for [`pairing_proof`]: this key is used for
+/// exactly one thing, and says so in every input it hashes.
+const PROOF_DOMAIN: &[u8] = b"wosh pairing proof v1";
+
+/// Prove knowledge of the pairing token without sending it, bound to
+/// the connection it is presented on.
+///
+/// Version 1 and 2 connection strings made the token a bearer secret:
+/// the client wrote it on the wire and the listener compared bytes.
+/// Anything that saw a pairing frame learned the token, and could pair
+/// any device of its own from then on -- the token outlives the
+/// connection it was seen on, and outlives rotation for every device
+/// already enrolled.
+///
+/// A proof does not. It is an HMAC over the two endpoint identities
+/// and the ALPN, keyed by the token: the listener recomputes it from
+/// the identity iroh authenticated during the handshake
+/// (`connection.peer()`), so a captured proof is worthless to anyone
+/// who cannot also produce that peer's signature -- which is to say,
+/// to anyone who is not that device already. The token itself never
+/// appears on the wire.
+///
+/// What this does NOT defend against, and is not meant to: a leaked
+/// connection string. The token is printed in a QR code and handed
+/// around on purpose, and whoever holds it can compute proofs of their
+/// own. Rotation (and enrollment surviving it) is that story, not this
+/// one.
+///
+/// Both identities are fixed-width and the ALPN is length-prefixed, so
+/// no two different contexts can hash the same bytes.
+pub fn pairing_proof(
+    token: &[u8; TOKEN_LEN],
+    listener_id: &[u8; PUBKEY_LEN],
+    client_id: &[u8; PUBKEY_LEN],
+    alpn: &[u8],
+) -> [u8; PROOF_LEN] {
+    use hmac::Mac as _;
+
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(token)
+        .expect("HMAC accepts a key of any length");
+    mac.update(PROOF_DOMAIN);
+    mac.update(listener_id);
+    mac.update(client_id);
+    mac.update(&(alpn.len() as u32).to_le_bytes());
+    mac.update(alpn);
+
+    let mut proof = [0u8; PROOF_LEN];
+    proof.copy_from_slice(&mac.finalize().into_bytes());
+    proof
+}
+
+/// Compare a presented pairing proof against the expected one without
+/// leaking, in the time it takes, how much of it was right.
+///
+/// A byte-by-byte `==` stops at the first difference, so its duration
+/// reports the length of the matching prefix -- which is what turns
+/// forging a 32-byte value into forging 32 one-byte values in turn.
+/// The comparison runs on bytes a peer chose, so it is done in
+/// constant time; that the channel looks narrow in today's deployment
+/// is an argument about the deployment, not about the comparison.
+///
+/// The LENGTH is not secret -- a proof is always `PROOF_LEN` bytes --
+/// so a length mismatch may (and does) return early.
+pub fn proof_eq(presented: &[u8], expected: &[u8; PROOF_LEN]) -> bool {
+    use subtle::ConstantTimeEq as _;
+    presented.ct_eq(&expected[..]).into()
+}
+
 #[cfg(test)]
 mod tests {
+    /// Pinned output of `pairing_proof` for the synthetic inputs below.
+    const PROOF_GOLDEN: &str = "deb21acb79418ed5d9afb9994d8f4f0c4087b350bd5bb243079deed9d3a90520";
     use super::*;
     use base64::Engine as _;
+
+    // Synthetic throughout: a token of all 7s and identities of 1s and
+    // 2s, so nothing here resembles key material anyone could mistake
+    // for real.
+    fn sample_proof_inputs() -> ([u8; TOKEN_LEN], [u8; PUBKEY_LEN], [u8; PUBKEY_LEN]) {
+        ([7u8; TOKEN_LEN], [1u8; PUBKEY_LEN], [2u8; PUBKEY_LEN])
+    }
+
+    #[test]
+    fn proof_eq_accepts_only_the_whole_proof() {
+        let expected = [9u8; PROOF_LEN];
+        assert!(proof_eq(&expected, &expected));
+
+        // Wrong in one byte, at either end: where it differs must not
+        // change the answer (nor, though this cannot assert it, the
+        // time it takes to say so).
+        let mut first_off = expected;
+        first_off[0] ^= 1;
+        assert!(!proof_eq(&first_off, &expected));
+        let mut last_off = expected;
+        last_off[PROOF_LEN - 1] ^= 1;
+        assert!(!proof_eq(&last_off, &expected));
+
+        // Lengths the wire can present: the frame's length is the
+        // peer's to choose.
+        assert!(!proof_eq(&[], &expected));
+        assert!(!proof_eq(&expected[..PROOF_LEN - 1], &expected));
+        let mut longer = expected.to_vec();
+        longer.push(0);
+        assert!(!proof_eq(&longer, &expected));
+    }
+
+    #[test]
+    fn pairing_proof_binds_every_part_of_its_context() {
+        let (token, listener, client) = sample_proof_inputs();
+        let base = pairing_proof(&token, &listener, &client, b"wosh/2");
+
+        // Change any one input and the proof must change: a proof that
+        // ignored the client identity would be replayable by anyone
+        // holding a recording of it, which is the whole point of it.
+        let mut other_token = token;
+        other_token[0] ^= 1;
+        assert_ne!(base, pairing_proof(&other_token, &listener, &client, b"wosh/2"));
+
+        let mut other_listener = listener;
+        other_listener[0] ^= 1;
+        assert_ne!(base, pairing_proof(&token, &other_listener, &client, b"wosh/2"));
+
+        let mut other_client = client;
+        other_client[0] ^= 1;
+        assert_ne!(base, pairing_proof(&token, &listener, &other_client, b"wosh/2"));
+
+        assert_ne!(base, pairing_proof(&token, &listener, &client, b"wosh/1"));
+
+        // The two identities are not interchangeable: swapping them
+        // must not produce the same proof (it would, if they were
+        // concatenated without their fixed widths mattering).
+        assert_ne!(base, pairing_proof(&token, &client, &listener, b"wosh/2"));
+
+        // And the ALPN is length-prefixed, so no two different ALPNs
+        // can run together into the same bytes.
+        assert_ne!(
+            pairing_proof(&token, &listener, &client, b"ab"),
+            pairing_proof(&token, &listener, &client, b"a"),
+        );
+    }
+
+    #[test]
+    fn pairing_proof_is_stable() {
+        // The proof is a WIRE value: both ends compute it
+        // independently, so a change to the context encoding that
+        // nobody noticed would break pairing in the field rather than
+        // here. Pinned against synthetic inputs (see above).
+        let (token, listener, client) = sample_proof_inputs();
+        let proof = pairing_proof(&token, &listener, &client, b"wosh/2");
+        let hex: String = proof.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, PROOF_GOLDEN);
+    }
 
     fn sample_pubkey() -> [u8; PUBKEY_LEN] {
         let mut k = [0u8; PUBKEY_LEN];
@@ -365,8 +533,10 @@ mod tests {
         assert_eq!(decode_b64(&cs.encode()), expected);
     }
 
-    /// The version||pubkey prefix is shared by v1 and v2 at the same
-    /// offsets -- boot.mjs's endpointIdOf() reads exactly that prefix.
+    /// The version||pubkey prefix is shared by every version at the
+    /// same offsets -- boot.mjs's endpointIdOf() reads exactly that
+    /// prefix, and refuses versions it does not know, so this is the
+    /// one thing a version bump must not move.
     #[test]
     fn pubkey_prefix_is_stable_across_versions() {
         let cs = ConnString {
@@ -377,6 +547,27 @@ mod tests {
         let v2 = decode_b64(&cs.encode());
         assert_eq!(v2[0], VERSION);
         assert_eq!(&v2[1..1 + PUBKEY_LEN], &sample_pubkey());
+    }
+
+    /// A v2 blob still decodes, and means the same connection: the
+    /// version bump marks how the token is PROVEN (bearer before,
+    /// `pairing_proof` from 3), and the secret it carries is
+    /// unchanged, so an already-printed QR keeps working against a
+    /// listener that has moved on.
+    #[test]
+    fn decodes_v2_as_the_same_connection() {
+        let cs = ConnString {
+            pubkey: sample_pubkey(),
+            relay_url: "https://relay.example.com".into(),
+            token: Some([3u8; TOKEN_LEN]),
+        };
+        let mut v3 = decode_b64(&cs.encode());
+        assert_eq!(v3[0], VERSION);
+        // Same payload, older version byte: that is the whole
+        // difference between the two.
+        v3[0] = VERSION_2;
+        let as_v2 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&v3);
+        assert_eq!(ConnString::decode(&as_v2).unwrap(), cs);
     }
 
     /// A v1 blob (as every already-printed QR code is) still decodes.

@@ -3916,7 +3916,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-webrtc-datachannels"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?rev=67e91bfc947efaeb88c715cfc7e1aeb610900490#67e91bfc947efaeb88c715cfc7e1aeb610900490"
+source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?rev=f703a158b7a9736e9e2c85c2701d601221b60216#f703a158b7a9736e9e2c85c2701d601221b60216"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4398,8 +4398,11 @@ name = "wosh-connstring"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "hmac",
  "postcard",
  "serde",
+ "sha2",
+ "subtle",
 ]
 
 [[package]]
