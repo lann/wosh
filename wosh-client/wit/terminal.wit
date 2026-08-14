@@ -478,5 +478,22 @@ interface terminal {
 
     /// Stop the session and close the iroh connection.
     detach: async func();
+
+    /// The page is going away: backgrounded, frozen, or about to be
+    /// discarded. Stand down -- do not spend the resume budget on a
+    /// device whose network is being taken away, and do not wake its
+    /// radio to try. Nothing is torn down: the session keeps its core,
+    /// its endpoint and its place in the listener's parked registry,
+    /// and a transport that dies while suspended leaves the session
+    /// stalled rather than dead.
+    ///
+    /// Idempotent, and safe to call when there is nothing to suspend.
+    suspend: async func();
+
+    /// The page is back. Resume now if the transport went while we
+    /// were away, rather than waiting out a backoff that was measured
+    /// for a page that could see it. Idempotent; a no-op on a session
+    /// that is still connected, and on one that is genuinely over.
+    wake: async func();
   }
 }

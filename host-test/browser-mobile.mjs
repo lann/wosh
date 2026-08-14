@@ -143,10 +143,58 @@ const TERMINAL_FIXTURE = `<!doctype html>
 </script>
 `;
 
+// The page-lifecycle wiring (site/lifecycle.mjs), against a stub
+// session that records what it was told. No component and no listener:
+// what is under test is which browser event means "away" and which
+// means "back", and that the handlers cannot throw on the way out of a
+// page that is being frozen.
+const LIFECYCLE_FIXTURE = `<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lifecycle fixture</title>
+<script type="module">
+  import { initLifecycle } from "/site/lifecycle.mjs";
+  const calls = [];
+  let session = {
+    suspend: async () => { calls.push("suspend"); },
+    wake: async () => { calls.push("wake"); },
+  };
+  let painted = 0;
+  initLifecycle(() => session, () => { painted++; });
+  globalThis.wosh = {
+    calls,
+    painted: () => painted,
+    reset: () => { calls.length = 0; painted = 0; },
+    // Sessions come and go under the handlers; and both of these are
+    // states the page really reaches (before connect, after detach).
+    clearSession: () => { session = null; },
+    breakSession: () => {
+      session = {
+        suspend: () => { throw new Error("torn down"); },
+        wake: () => Promise.reject(new Error("torn down")),
+      };
+    },
+    // document.visibilityState is not settable, so shadow it: the
+    // handler reads it, and this is the only way to make it read
+    // "hidden" without a real backgrounding.
+    setVisibility: (state) => {
+      Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    },
+  };
+  globalThis.addEventListener("unhandledrejection", (e) => {
+    globalThis.wosh.calls.push("UNHANDLED:" + e.reason);
+  });
+</script>
+`;
+
 const server = createServer(async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
   if (path === "/") {
     res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(FIXTURE);
+    return;
+  }
+  if (path === "/lifecycle") {
+    res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(LIFECYCLE_FIXTURE);
     return;
   }
   if (path === "/terminal") {
@@ -551,6 +599,67 @@ try {
         }
       }
     }
+  }
+
+  // --- the page lifecycle, against a stub session ----------------------
+  //
+  // A backgrounded phone takes the network away, and the client must
+  // stop redialing into it and start again the moment the page is back.
+  // The page is the only thing that knows which is happening.
+  await page.goto(`http://127.0.0.1:${PORT}/lifecycle`, { waitUntil: "load" });
+  await page.waitForFunction(() => globalThis.wosh?.calls, null, { timeout: 15_000 });
+  const calls = () => page.evaluate(() => globalThis.wosh.calls.slice());
+  const reset = () => page.evaluate(() => globalThis.wosh.reset());
+
+  // 19. Hidden means away, visible means back -- and the screen is
+  //     still flushed on the way out, which is what this handler used
+  //     to do and only do. (`pageshow` fires once on load too, which
+  //     is a wake at a moment when there is no session to wake: reset
+  //     past it rather than pretend it does not happen.)
+  await reset();
+  await page.evaluate(() => globalThis.wosh.setVisibility("hidden"));
+  await page.evaluate(() => globalThis.wosh.setVisibility("visible"));
+  const seen19 = await calls();
+  const painted = await page.evaluate(() => globalThis.wosh.painted());
+  if (ok(seen19.join(",") === "suspend,wake", `hiding then showing the page did not suspend then wake: ${JSON.stringify(seen19)}`) &&
+      ok(painted === 1, `the screen was not flushed on the way out (painted ${painted}x)`)) {
+    console.log("[19] hidden suspends the session and paints; visible wakes it");
+  }
+
+  // 20. "Away" arrives under three names and platforms disagree about
+  //     which they send -- iOS often skips freeze, bfcache uses
+  //     pagehide -- so all three must mean the same thing. The events
+  //     are synthesized: this headless Chromium fires neither a real
+  //     freeze (Page.setWebLifecycleState is silently inert) nor a
+  //     real visibilitychange (every page reports itself visible), so
+  //     what is pinned here is the wiring, not the platform's delivery
+  //     of it.
+  await reset();
+  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+  await page.evaluate(() => dispatchEvent(new Event("pageshow")));
+  await page.evaluate(() => document.dispatchEvent(new Event("freeze")));
+  await page.evaluate(() => document.dispatchEvent(new Event("resume")));
+  const seen20 = await calls();
+  if (ok(seen20.join(",") === "suspend,wake,suspend,wake",
+         `pagehide/pageshow and freeze/resume do not both mean away/back: ${JSON.stringify(seen20)}`)) {
+    console.log("[20] pagehide and freeze also mean away; pageshow and resume mean back");
+  }
+
+  // 21. These handlers run on the browser's way OUT of the page, where
+  //     there is nobody to report to: a session that is missing or
+  //     already torn down must not throw, and must not leave an
+  //     unhandled rejection behind in a page about to be frozen.
+  await reset();
+  await page.evaluate(() => globalThis.wosh.clearSession());
+  await page.evaluate(() => globalThis.wosh.setVisibility("hidden"));
+  await page.evaluate(() => globalThis.wosh.setVisibility("visible"));
+  await page.evaluate(() => globalThis.wosh.breakSession());
+  await page.evaluate(() => globalThis.wosh.setVisibility("hidden"));
+  await page.evaluate(() => globalThis.wosh.setVisibility("visible"));
+  await page.waitForTimeout(300);
+  const quiet = await calls();
+  if (ok(quiet.length === 0, `a missing or broken session was not survived quietly: ${JSON.stringify(quiet)}`)) {
+    console.log("[21] no session, or a torn-down one, is survived quietly");
   }
 
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

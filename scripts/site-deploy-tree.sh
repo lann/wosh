@@ -22,7 +22,8 @@ for f in "$bundle" "$client" "$translator"; do
   [ -f "$f" ] || { echo "missing $f -- run: just web-bundle compose" >&2; exit 1; }
 done
 
-cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs site/qr.mjs "$dest/"
+cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs \
+   site/lifecycle.mjs site/qr.mjs "$dest/"
 cp site/manifest.json "$dest/"
 cp site/icons/*.png "$dest/icons/"
 

@@ -16,6 +16,7 @@
 // interleave screen bytes out of order.
 
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
+import { initLifecycle } from "./lifecycle.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
@@ -98,10 +99,6 @@ const paint = (out) => {
   }
 };
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && chunks.length) flush(true);
-});
-
 // A sleep the input path can cut short, so a keystroke's echo paints
 // without waiting out the poll interval.
 let wake = null;
@@ -128,6 +125,13 @@ const wakeNow = () => wake?.();
 // screen forever (it did).
 let clientLoad = null;
 let currentSession = null;
+
+// The page going away and coming back is a session event, not just a
+// painting one: see lifecycle.mjs. The flush stays on the moment it
+// always had -- the last frame before the page stops getting them.
+initLifecycle(() => currentSession, () => {
+  if (chunks.length) flush(true);
+});
 
 function api() {
   clientLoad ??= (async () => {
