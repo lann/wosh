@@ -1,6 +1,6 @@
 //! The wosh tunnel protocol, version 2: resumable sessions.
 //!
-//! Protocol v1 (ALPN `wosh/1`) is a raw byte pipe: a `[len:u8][token]`
+//! Protocol v1 (ALPN `wosh/1`) is a raw byte pipe: a `[len:u8][proof]`
 //! pairing frame, then SSH bytes verbatim. A transport death -- relay
 //! restart, network roam, laptop sleep -- kills the session, because
 //! neither side can know which bytes the other actually received.
@@ -33,8 +33,8 @@
 //! minted by the listener. A resume is honored only when it arrives
 //! from the SAME iroh endpoint id that created the session (the dial
 //! is authenticated against that id by iroh itself) AND names a known
-//! session id. The pairing token in `Hello.token` follows the
-//! enrollment rules regardless (a stale token from an enrolled device
+//! session id. The pairing proof in `Hello.pairing` follows the
+//! enrollment rules regardless (a stale one from an enrolled device
 //! is fine; see the listener's pairing docs).
 //!
 //! Buffer discipline: replay buffers are capped ([`REPLAY_CAP`]). If a
@@ -71,10 +71,12 @@ pub const HEADER_LEN: usize = 5;
 /// The client's first frame on a fresh connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
-    /// The pairing token from the connstring (empty when the
+    /// The pairing proof (`wosh_connstring::pairing_proof`) -- NOT the
+    /// token it is keyed by, which never goes on the wire. Empty when
+    /// the
     /// connstring carries none). Judged by the listener's enrollment
     /// rules, exactly like v1's pairing frame.
-    pub token: Vec<u8>,
+    pub pairing: Vec<u8>,
     /// Present when resuming an existing session.
     pub resume: Option<Resume>,
 }
@@ -103,7 +105,7 @@ pub enum HelloReply {
     /// retransmits from there.
     Resumed { received: u64 },
     /// Not happening (unknown session, wrong endpoint, expired grace,
-    /// replay gap, bad token). The reason is for humans.
+    /// replay gap, bad pairing). The reason is for humans.
     Refused { reason: String },
 }
 
@@ -279,7 +281,7 @@ mod tests {
 
     #[test]
     fn frames_round_trip_across_chunk_boundaries() {
-        let hello = Hello { token: vec![7; 16], resume: None };
+        let hello = Hello { pairing: vec![7; 16], resume: None };
         let mut wire = encode_hello(&hello);
         wire.extend_from_slice(&encode_data(b"abc"));
         wire.extend_from_slice(&encode_ack(42));
@@ -311,13 +313,13 @@ mod tests {
     fn golden_bytes() {
         assert_eq!(encode_data(b"hi"), vec![0, 2, 0, 0, 0, b'h', b'i']);
         assert_eq!(encode_ack(1), vec![1, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
-        // Hello{token: [9,9], resume: Some{id=[1;16], received=5}}:
-        // postcard = len-prefixed token, option tag, 16 raw id bytes,
+        // Hello{pairing: [9,9], resume: Some{id=[1;16], received=5}}:
+        // postcard = len-prefixed proof, option tag, 16 raw id bytes,
         // varint received.
-        let h = Hello { token: vec![9, 9], resume: Some(Resume { session_id: [1; 16], received: 5 }) };
+        let h = Hello { pairing: vec![9, 9], resume: Some(Resume { session_id: [1; 16], received: 5 }) };
         let mut want = vec![FT_HELLO];
         let body: Vec<u8> = [
-            vec![2, 9, 9], // token: varint len + bytes
+            vec![2, 9, 9], // pairing: varint len + bytes
             vec![1],       // Some
             vec![1; 16],   // session id (fixed array: raw)
             vec![5],       // received: varint

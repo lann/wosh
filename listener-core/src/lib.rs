@@ -258,6 +258,10 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
             Ok(conn) => {
                 let target = cli.target;
                 let token = cli.token;
+                // Half of what a pairing proof is bound to; the other
+                // half is the peer id iroh authenticated on this very
+                // connection.
+                let listener_id = pk;
                 let grace = cli.resume_grace;
                 let paired = paired.clone();
                 let sessions = sessions.clone();
@@ -271,7 +275,7 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
                         // the FIN cascade, as in v1.
                         let conn = Rc::new(conn);
                         match session::serve_v2(
-                            conn, sessions, target, token, &paired, grace,
+                            conn, sessions, target, token, listener_id, &paired, grace,
                         )
                         .await
                         {
@@ -280,7 +284,7 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
                         }
                         return;
                     }
-                    match serve_connection(&conn, target, token, &paired).await {
+                    match serve_connection(&conn, target, token, listener_id, &paired).await {
                         Ok(summary) => eprintln!("[{peer}] {summary}"),
                         Err(e) => eprintln!("[{peer}] {e}"),
                     }
@@ -306,10 +310,27 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     }
 }
 
+/// The proof this peer should have presented on this connection.
+fn peer_proof(
+    conn: &Connection,
+    token: &[u8; wosh_connstring::TOKEN_LEN],
+    listener_id: &[u8; wosh_connstring::PUBKEY_LEN],
+) -> Result<[u8; wosh_connstring::PROOF_LEN], String> {
+    let client_id: [u8; wosh_connstring::PUBKEY_LEN] = conn
+        .peer()
+        .try_into()
+        .map_err(|_| "peer endpoint id is not 32 bytes".to_string())?;
+    // The ALPN as NEGOTIATED, not as assumed: it is part of what the
+    // proof binds, and reading it back cannot drift from the dialect
+    // this connection is actually speaking.
+    Ok(wosh_connstring::pairing_proof(token, listener_id, &client_id, &conn.alpn()))
+}
+
 async fn serve_connection(
     conn: &Connection,
     target: SocketAddr,
     token: Option<[u8; wosh_connstring::TOKEN_LEN]>,
+    listener_id: [u8; wosh_connstring::PUBKEY_LEN],
     paired: &RefCell<std::collections::HashSet<String>>,
 ) -> Result<String, String> {
     let (send, recv) = conn.accept_bi().await.map_err(|e| format!("accept-bi: {e:?}"))?;
@@ -319,14 +340,25 @@ async fn serve_connection(
     //                         (no token means no enrollment signal);
     //   enrolled peer      -> bridges, whatever the frame says (its
     //                         token may be stale -- that is the point);
-    //   valid token        -> bridges AND enrolls the peer id;
+    //   valid proof        -> bridges AND enrolls the peer id;
     //   anything else      -> refused.
+    //
+    // The frame carries a PROOF, not the token: an HMAC over both
+    // endpoint identities and the ALPN, keyed by the token
+    // (wosh_connstring::pairing_proof). Recomputing it here from
+    // `conn.peer()` -- the identity iroh authenticated during the
+    // handshake -- is what makes a captured frame worthless to anyone
+    // but the device that sent it.
     let (presented, leftover) = tcp::read_pairing_frame(&recv).await?;
     if let Some(want) = token {
         let peer = encode_hex(&conn.peer());
         let enrolled = paired.borrow().contains(&peer);
         if !enrolled {
-            if presented.len() == want.len() && presented == want {
+            let expected = match peer_proof(conn, &want, &listener_id) {
+                Ok(p) => p,
+                Err(e) => return Err(e),
+            };
+            if wosh_connstring::proof_eq(&presented, &expected) {
                 paired.borrow_mut().insert(peer.clone());
                 pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");
