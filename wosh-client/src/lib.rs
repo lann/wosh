@@ -75,6 +75,7 @@ mod bindings {
 }
 
 mod pairing;
+mod passkey;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -88,7 +89,10 @@ use bindings::exports::wosh::terminal::terminal::{
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions, RecvStream, SendStream};
 use bindings::polymorph::iroh::identity::Identity;
 use bindings::polymorph::iroh::types::{EndpointAddr, TransportAddr};
-use bindings::wosh::ssh_core::core::{Session as CoreSession, Status as CoreStatus};
+use bindings::wosh::ssh_core::core::{
+    PublicKey as CoreKey, Session as CoreSession, SignRequest as CoreSignRequest,
+    Signature as CoreSignature, Status as CoreStatus,
+};
 use bindings::wosh::terminal::identity_store;
 
 use wosh_connstring::ConnString;
@@ -297,31 +301,31 @@ async fn drive(state: &Rc<State>) {
             }
             match inner.core.status() {
                 CoreStatus::Signing if !inner.signing => {
-                    let blob = inner.core.pending_signature();
-                    if blob.is_some() {
+                    let request = inner.core.pending_signature();
+                    if request.is_some() {
                         inner.signing = true;
                     }
-                    blob
+                    request
                 }
                 _ => None,
             }
         };
         state.status_signal.notify();
 
-        let Some(blob) = pending else { return };
+        let Some(request) = pending else { return };
 
         // No borrow is held here -- see the module header.
-        let signed = identity_store::sign(blob).await;
+        let signed = sign_for(&request).await;
 
         {
             let mut inner = state.inner.borrow_mut();
             inner.signing = false;
             match signed {
-                // The signature is relayed as the store produced it.
-                // The store sits on the host side of the trust
-                // boundary (it IS the keeper of the key), and the
+                // The signature is relayed as the keeper produced it.
+                // The keeper sits on the host side of the trust
+                // boundary (it IS the holder of the key), and the
                 // server verifies the signature against the offered
-                // public key anyway -- a store that signs with a
+                // public key anyway -- a keeper that signs with a
                 // different key than it reports surfaces as a
                 // server-side auth rejection.
                 Ok(sig) => {
@@ -329,11 +333,44 @@ async fn drive(state: &Rc<State>) {
                         inner.core.fail_signature(&format!("signature rejected: {e}"));
                     }
                 }
-                Err(e) => inner.core.fail_signature(&format!("identity-store sign: {e}")),
+                Err(e) => inner.core.fail_signature(&e),
             }
         }
         // Round again: the answer above is a state-changing call.
     }
+}
+
+/// Route one signature request to the keeper that holds the key.
+///
+/// The core parks with the OFFERED KEY, not just the bytes, precisely
+/// so this decision can be made without the client tracking which
+/// offer the server settled on. Matching on the algorithm is enough:
+/// each keeper owns exactly one.
+async fn sign_for(request: &CoreSignRequest) -> Result<CoreSignature, String> {
+    if request.key.algorithm == wosh_webauthn_ssh::WEBAUTHN_SK_ECDSA_ALGORITHM {
+        let sig = passkey::sign(&request.data).await?;
+        return Ok(CoreSignature {
+            format: sig.format,
+            blob: sig.blob,
+            trailer: sig.trailer,
+        });
+    }
+    if request.key.algorithm == wosh_webauthn_ssh::SSH_ED25519_KEY_TYPE {
+        let blob = identity_store::sign(request.data.clone())
+            .await
+            .map_err(|e| format!("identity-store sign: {e}"))?;
+        return Ok(CoreSignature {
+            format: wosh_webauthn_ssh::SSH_ED25519_KEY_TYPE.to_string(),
+            blob,
+            trailer: Vec::new(),
+        });
+    }
+    // Unreachable while the core only ever parks on a key this client
+    // offered, but a legible refusal beats a park that never ends.
+    Err(format!(
+        "no keeper holds a {} key",
+        request.key.algorithm
+    ))
 }
 
 /// The reader task. It owns `recv` for the whole lifetime of ONE
@@ -882,38 +919,49 @@ impl Guest for Component {
         let raw = identity_store::public_key()
             .await
             .map_err(|e| format!("obtain ssh identity: {e}"))?;
-        let line = authorized_keys_line(&raw)?;
+        let line = passkey::browser_line(&raw)?;
         IDENTITY_LINE.with(|c| *c.borrow_mut() = Some(line.clone()));
         Ok(line)
+    }
+
+    /// The enrolled passkey's `authorized_keys` line, or `none`.
+    ///
+    /// Deliberately NOT cached, unlike the browser key's line: a
+    /// passkey can be enrolled, adopted or forgotten while the page
+    /// lives, and a stale line here would be shown to a user about to
+    /// paste it into a server.
+    async fn passkey_openssh() -> Result<Option<String>, String> {
+        match passkey::identity().await? {
+            Some(identity) => Ok(Some(passkey::passkey_line(&identity)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Enrol a passkey and return the line to install on the target.
+    async fn enroll_passkey() -> Result<String, String> {
+        passkey::enroll().await
+    }
+
+    /// Adopt an identity from the line another device printed.
+    async fn adopt_passkey(line: String) -> Result<String, String> {
+        passkey::adopt(&line).await
+    }
+
+    /// Stop offering the enrolled passkey.
+    async fn forget_passkey() -> Result<(), String> {
+        passkey::forget().await
+    }
+
+    /// Work the passkey identity back out of the credential itself,
+    /// for when this browser's storage did not survive but the passkey
+    /// did.
+    async fn recover_passkey() -> Result<String, String> {
+        passkey::recover().await
     }
 }
 
 thread_local! {
     static IDENTITY_LINE: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Port of client-go/export_wosh_terminal_terminal/identity.go's
-/// `IdentityOpenssh`: `ssh-ed25519 <base64(wire blob)> wosh-browser`,
-/// where the wire blob is the standard SSH public-key encoding --
-/// the algorithm name and the raw 32-byte key, each u32-length-prefixed
-/// (RFC 4253 s6.6, what `ssh.PublicKey.Marshal` produces).
-fn authorized_keys_line(raw: &[u8]) -> Result<String, String> {
-    const ALGO: &str = "ssh-ed25519";
-    if raw.len() != 32 {
-        return Err(format!(
-            "ssh public key is {} bytes, expected 32",
-            raw.len()
-        ));
-    }
-    let mut blob = Vec::with_capacity(4 + ALGO.len() + 4 + raw.len());
-    blob.extend_from_slice(&(ALGO.len() as u32).to_be_bytes());
-    blob.extend_from_slice(ALGO.as_bytes());
-    blob.extend_from_slice(&(raw.len() as u32).to_be_bytes());
-    blob.extend_from_slice(raw);
-
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&blob);
-    Ok(format!("{ALGO} {b64} wosh-browser"))
 }
 
 impl Session {
@@ -923,6 +971,19 @@ impl Session {
         identity_store::public_key()
             .await
             .map_err(|e| format!("obtain ssh identity: {e}"))
+    }
+
+    /// This browser's key, as an offer for the SSH core.
+    async fn browser_offer() -> Result<CoreKey, String> {
+        passkey::browser_key(&Self::identity_public_key().await?)
+    }
+
+    /// The enrolled passkey as an offer, or `None` if none is enrolled.
+    async fn passkey_offer() -> Result<Option<CoreKey>, String> {
+        match passkey::identity().await? {
+            Some(identity) => Ok(Some(passkey::passkey_key(&identity)?)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1176,16 +1237,35 @@ impl GuestSession for Session {
 
     /// Authenticate with this browser's non-extractable key. Only the
     /// public half is handed to the core; when the ssh stack needs a
-    /// signature it parks at `signing` and `drive` relays the blob to
-    /// the host's store. Same latch-then-poll contract.
+    /// signature it parks at `signing` and `drive` relays the request
+    /// to the host's store. Same latch-then-poll contract.
     async fn authenticate_publickey(&self) -> Result<(), String> {
-        let public = Self::identity_public_key().await?;
+        let keys = vec![Self::browser_offer().await?];
         let res = self
             .state
             .inner
             .borrow()
             .core
-            .authenticate_publickey(&public);
+            .authenticate_publickey(&keys);
+        drive(&self.state).await;
+        res
+    }
+
+    /// Authenticate with the enrolled passkey. Offering it is all this
+    /// does; the ceremony happens later, when the server asks for a
+    /// signature and `drive` routes the request to `passkey-store`.
+    async fn authenticate_passkey(&self) -> Result<(), String> {
+        let key = Self::passkey_offer().await?.ok_or_else(|| {
+            "no passkey is enrolled on this device -- enrol one, or adopt the line \
+             from a device that already has it"
+                .to_string()
+        })?;
+        let res = self
+            .state
+            .inner
+            .borrow()
+            .core
+            .authenticate_publickey(&[key]);
         drive(&self.state).await;
         res
     }
@@ -1198,18 +1278,24 @@ impl GuestSession for Session {
         res
     }
 
-    /// Let the server steer method selection, stock-ssh style. The
-    /// browser's key is offered when the store has one; a store that
-    /// cannot produce it is reported rather than silently downgrading
-    /// the offer.
+    /// Let the server steer method selection, stock-ssh style.
+    ///
+    /// Both keys are offered when both exist, passkey first: the core
+    /// offers each unsigned before signing for any, so a server that
+    /// will not take webauthn (too old, or configured against it)
+    /// declines the passkey and the browser key answers instead --
+    /// inside the same connection, with no ceremony spent. A store
+    /// that cannot produce the browser key is reported rather than
+    /// silently downgrading the offer; a passkey-store that fails is
+    /// treated the same way, since an enrolled passkey the user cannot
+    /// use is worth saying out loud.
     async fn authenticate_auto(&self) -> Result<(), String> {
-        let public = Self::identity_public_key().await?;
-        let res = self
-            .state
-            .inner
-            .borrow()
-            .core
-            .authenticate_auto(Some(&public));
+        let mut keys = Vec::with_capacity(2);
+        if let Some(key) = Self::passkey_offer().await? {
+            keys.push(key);
+        }
+        keys.push(Self::browser_offer().await?);
+        let res = self.state.inner.borrow().core.authenticate_auto(&keys);
         drive(&self.state).await;
         res
     }

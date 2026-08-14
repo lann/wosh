@@ -91,3 +91,72 @@ type PromptBatch struct {
 	Instruction string
 	Prompts     []Prompt
 }
+
+// A public key offered for publickey authentication, in the two
+// parts SSH actually puts on the wire.
+//
+// This core is deliberately ignorant of key ALGEBRA: it never
+// parses `blob`, never holds a private half, and cannot check a
+// signature it relays. It only needs the two strings RFC 4252 s7
+// asks of it -- so a new algorithm is an embedder change, not a
+// change here.
+//
+// The two fields are usually the same name, which is why it is
+// worth spelling out that they are not the same THING. `algorithm`
+// names the SIGNATURE and rides the userauth request (and the blob
+// that gets signed); `blob` encodes the KEY and carries its own
+// name inside. OpenSSH's browser-webauthn algorithm is the case
+// that separates them: a plain `sk-ecdsa-sha2-nistp256@openssh.com`
+// key blob -- exactly what sits in `authorized_keys` -- is offered
+// under the algorithm `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`,
+// because the bytes the browser signs are shaped by WebAuthn rather
+// than by SSH. Getting that pairing backwards is rejected by sshd
+// (it resolves the algorithm name and compares it against the name
+// inside the signature), so the split is load-bearing, not cosmetic.
+type PublicKey struct {
+	// The public key algorithm name for the userauth request: the
+	// name the SIGNATURE will carry.
+	Algorithm string
+	// The public key blob (RFC 4253 s6.6): length-prefixed name
+	// followed by algorithm-specific fields. Opaque here.
+	Blob []uint8
+}
+
+// A finished signature, in the three parts an SSH signature blob is
+// built from -- `string format`, `string blob`, then whatever the
+// algorithm appends.
+//
+// `trailer` exists for the security-key algorithms, which hang
+// extra fields off the end of the standard two (authenticator
+// flags, the signature counter, and for webauthn the origin and
+// clientData the browser signed). It is appended verbatim, already
+// SSH-encoded by whoever produced the signature; for every ordinary
+// algorithm it is empty.
+type Signature struct {
+	// The signature algorithm name, which must be the `algorithm` of
+	// the key this signature answers for.
+	Format string
+	// The algorithm's own signature encoding (for Ed25519 the raw 64
+	// bytes; for ECDSA an `mpint r, mpint s` pair).
+	Blob []uint8
+	// Extra algorithm-specific fields, SSH-encoded, appended after
+	// `blob`. Empty for everything but the security-key algorithms.
+	Trailer []uint8
+}
+
+// A parked signature request: the bytes to sign, and the key they
+// are to be signed for.
+//
+// The key rides along because an embedder may offer more than one
+// (a browser key and a passkey, say), and only it knows which
+// keeper holds which private half. Matching on `key` is exact:
+// it is one of the records handed to `authenticate-publickey` or
+// `authenticate-auto`, echoed back.
+type SignRequest struct {
+	// Which offered key the server accepted and now wants proof of.
+	Key PublicKey
+	// The SSH publickey-auth signature blob (session id, user,
+	// service, algorithm, public key) to sign, verbatim. Not a hash:
+	// hashing, if the algorithm wants any, belongs to the signer.
+	Data []uint8
+}
