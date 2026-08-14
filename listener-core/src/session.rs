@@ -43,7 +43,8 @@ use std::task::{Poll, Waker};
 
 use wit_bindgen::StreamResult;
 use wosh_tunnel::{
-    encode_ack, encode_data, encode_reply, Decoder, Frame, Hello, HelloReply, Replay, Resume,
+    encode_ack, encode_data, encode_pong, encode_reply, Decoder, Frame, Hello, HelloReply, Replay,
+    Resume,
     ACK_EVERY_BYTES,
 };
 
@@ -274,6 +275,16 @@ fn park(sess: &Rc<Session>, reg: &Rc<Registry>, id: [u8; 16], grace: u64, peer: 
         if let Some(c) = st.conn.take() {
             c.close(0, "attachment ended");
         }
+        // Release the dead attachment's write half NOW, not at the next
+        // attach. The stream is unusable the moment its connection dies,
+        // and a resource held across that death is a live hazard: its
+        // eventual drop fires a reset by CONNECTION HANDLE, and handles
+        // are slab slots the endpoint reuses -- held long enough (until
+        // a resume attaches, exactly this path), the reset lands on the
+        // REUSED slot, i.e. on the fresh connection it just attached.
+        // Dropped here, the slot still belongs to the dead connection
+        // and the reset is a no-op.
+        st.send.take();
         st.attached = false;
         st.generation += 1;
         st.park_epoch += 1;
@@ -410,6 +421,7 @@ async fn pump_client_reader(
     generation: u64,
     grace: u64,
     peer: String,
+    pings: bool,
 ) -> Result<String, String> {
     let mut to_sshd = 0u64;
     loop {
@@ -425,7 +437,7 @@ async fn pump_client_reader(
             };
             let violation = {
                 let mut st = sess.state.borrow_mut();
-                frame.apply(&mut st, &mut to_sshd)
+                frame.apply(&mut st, &mut to_sshd, pings)
             };
             if let Some(e) = violation {
                 park(&sess, &reg, id, grace, &peer);
@@ -460,11 +472,11 @@ async fn pump_client_reader(
 /// Applying one decoded frame to the session state. Returns `Some`
 /// with a human reason when the frame is a protocol violation.
 trait ApplyFrame {
-    fn apply(self, st: &mut SessionState, to_sshd: &mut u64) -> Option<String>;
+    fn apply(self, st: &mut SessionState, to_sshd: &mut u64, pings: bool) -> Option<String>;
 }
 
 impl ApplyFrame for Frame {
-    fn apply(self, st: &mut SessionState, to_sshd: &mut u64) -> Option<String> {
+    fn apply(self, st: &mut SessionState, to_sshd: &mut u64, pings: bool) -> Option<String> {
         match self {
             Frame::Data(payload) => {
                 st.received += payload.len() as u64;
@@ -489,6 +501,30 @@ impl ApplyFrame for Frame {
             // ever sends): the peer is not speaking this protocol.
             Frame::Hello(_) => Some("a second HELLO mid-session".into()),
             Frame::Reply(_) => Some("a REPLY from the client".into()),
+            // Liveness (wosh/3 only, see tunnel/src/lib.rs "Liveness
+            // rules"): a PONG answers a PING this listener never
+            // sends, so it is only ever a stray reply and is safe to
+            // drop. A PING is answered right back with a PONG of the
+            // same payload; that PONG rides outq and pump [B] exactly
+            // like an ACK does -- it never touches `received` /
+            // `acked_out` and is never recorded in `st.replay`, since
+            // liveness frames don't occupy the DATA byte stream.
+            Frame::Ping(p) => {
+                if pings {
+                    st.outq.push_back(encode_pong(p));
+                    st.wake();
+                    None
+                } else {
+                    Some("a PING on a wosh/2 connection".into())
+                }
+            }
+            Frame::Pong(_) => {
+                if pings {
+                    None
+                } else {
+                    Some("a PONG on a wosh/2 connection".into())
+                }
+            }
         }
     }
 }
@@ -552,6 +588,11 @@ pub async fn serve_v2(
     grace: u64,
 ) -> Result<String, String> {
     let peer = encode_hex(&conn.peer());
+    // CONTRACT: tunnel/src/lib.rs "Version 3" / "Liveness rules" --
+    // wosh/3 is v2 plus PING/PONG; ALPN is the only thing that tells
+    // us which state machine to run, so it's read once here and
+    // threaded down to frame application.
+    let pings = conn.alpn() == wosh_tunnel::ALPN_V3;
     let (send, recv) = conn.accept_bi().await.map_err(|e| format!("accept-bi: {e:?}"))?;
 
     let mut dec = Decoder::new();
@@ -578,8 +619,8 @@ pub async fn serve_v2(
     }
 
     match hello.resume {
-        None => start_session(conn, reg, target, send, recv, dec, grace, peer).await,
-        Some(r) => resume_session(conn, reg, send, recv, dec, r, grace, peer).await,
+        None => start_session(conn, reg, target, send, recv, dec, grace, peer, pings).await,
+        Some(r) => resume_session(conn, reg, send, recv, dec, r, grace, peer, pings).await,
     }
 }
 
@@ -625,6 +666,7 @@ async fn start_session(
     dec: Decoder,
     grace: u64,
     peer: String,
+    pings: bool,
 ) -> Result<String, String> {
     let mut id = [0u8; 16];
     // The session id is a capability: the ONLY thing besides the
@@ -669,7 +711,7 @@ async fn start_session(
     let generation = attach(&sess, send, conn, Vec::new());
     spawn_session_tasks(&sess, &reg, id, leg, grace, &peer);
     eprintln!("[{peer}] session {} opened (target {target})", id8(&id));
-    let out = pump_client_reader(sess, reg, id, recv, dec, generation, grace, peer).await;
+    let out = pump_client_reader(sess, reg, id, recv, dec, generation, grace, peer, pings).await;
     drop(hold);
     out
 }
@@ -684,6 +726,7 @@ async fn resume_session(
     r: Resume,
     grace: u64,
     peer: String,
+    pings: bool,
 ) -> Result<String, String> {
     let id = r.session_id;
     let sess = reg.live.borrow().get(&id).cloned();
@@ -727,7 +770,7 @@ async fn resume_session(
     let hold = conn.clone(); // see start_session
     let generation = attach(&sess, send, conn, tail);
     eprintln!("[{peer}] resumed session {} (replayed {replayed} bytes)", id8(&id));
-    let out = pump_client_reader(sess, reg, id, recv, dec, generation, grace, peer).await;
+    let out = pump_client_reader(sess, reg, id, recv, dec, generation, grace, peer, pings).await;
     drop(hold);
     out
 }

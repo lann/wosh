@@ -29,6 +29,34 @@
 //! listener the sshd TCP leg stays open while the session is parked
 //! awaiting its client (bounded by the listener's grace timer).
 //!
+//! Version 3 (ALPN `wosh/3`) is v2 plus **liveness frames**: PING and
+//! PONG. Everything else -- the handshake, offsets, replay, resume --
+//! is byte-for-byte v2. Why they exist: the QUIC layer under this
+//! tunnel detects a silently-dead path only at its idle timeout (30s,
+//! and not configurable from up here), so without them a black-holed
+//! wire means half a minute of keystrokes into a void before the
+//! resume machine even starts. A PING answered is proof the whole
+//! tunnel path is alive NOW; a PING unanswered is a verdict the
+//! client can act on in seconds.
+//!
+//! Liveness rules:
+//!
+//! * PING/PONG are legal on `wosh/3` connections only, in either
+//!   direction, any time after that side's handshake frame (the
+//!   client's first frame is still its HELLO; the listener's is still
+//!   its REPLY). On `wosh/2` they remain unknown frame types -- a
+//!   protocol violation -- which is exactly why v3 is a new ALPN.
+//! * A peer MUST answer every PING with a PONG echoing its payload,
+//!   promptly. The payload is opaque (a counter, a timestamp --
+//!   sender's business).
+//! * ANY frame received is evidence of liveness, not just PONG: a
+//!   receiver mid-bulk-transfer never needs to answer faster than it
+//!   is already sending.
+//! * PING and PONG are control frames: they do not enter the replay
+//!   buffer, do not advance the cumulative DATA offsets, and are not
+//!   retransmitted by a resume. Liveness is a property of the current
+//!   connection; it does not survive one.
+//!
 //! Session identity and authority: `session_id` is 16 random bytes
 //! minted by the listener. A resume is honored only when it arrives
 //! from the SAME iroh endpoint id that created the session (the dial
@@ -46,7 +74,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// ALPN for this protocol version.
+/// ALPN for protocol v3: v2 plus liveness (PING/PONG) frames.
+pub const ALPN_V3: &[u8] = b"wosh/3";
+/// ALPN for protocol v2: framed, resumable, no liveness frames.
 pub const ALPN_V2: &[u8] = b"wosh/2";
 /// ALPN for the legacy raw pipe (still accepted by the listener).
 pub const ALPN_V1: &[u8] = b"wosh/1";
@@ -64,6 +94,9 @@ pub const FT_DATA: u8 = 0;
 pub const FT_ACK: u8 = 1;
 pub const FT_HELLO: u8 = 2;
 pub const FT_REPLY: u8 = 3;
+/// v3 only (see the module docs' liveness rules).
+pub const FT_PING: u8 = 4;
+pub const FT_PONG: u8 = 5;
 
 /// Frame header size: type byte + u32 LE length.
 pub const HEADER_LEN: usize = 5;
@@ -116,6 +149,11 @@ pub enum Frame {
     Ack(u64),
     Hello(Hello),
     Reply(HelloReply),
+    /// v3 liveness probe. The payload is opaque to the receiver; a
+    /// PONG echoing it must be sent promptly.
+    Ping(u64),
+    /// The answer to a PING, payload echoed verbatim.
+    Pong(u64),
 }
 
 /// Encode a frame header + payload into `out`.
@@ -134,6 +172,18 @@ pub fn encode_data(payload: &[u8]) -> Vec<u8> {
 pub fn encode_ack(received: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + 8);
     put_frame(&mut out, FT_ACK, &received.to_le_bytes());
+    out
+}
+
+pub fn encode_ping(payload: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN + 8);
+    put_frame(&mut out, FT_PING, &payload.to_le_bytes());
+    out
+}
+
+pub fn encode_pong(payload: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN + 8);
+    put_frame(&mut out, FT_PONG, &payload.to_le_bytes());
     out
 }
 
@@ -189,13 +239,19 @@ impl Decoder {
         }
         let payload = self.buf[HEADER_LEN..HEADER_LEN + len].to_vec();
         self.buf.drain(..HEADER_LEN + len);
+        // ACK, PING and PONG all carry exactly one u64 LE.
+        let word = |name: &str| -> Result<u64, String> {
+            let bytes: [u8; 8] = payload
+                .as_slice()
+                .try_into()
+                .map_err(|_| format!("{name} payload not 8 bytes"))?;
+            Ok(u64::from_le_bytes(bytes))
+        };
         let frame = match ty {
             FT_DATA => Frame::Data(payload),
-            FT_ACK => {
-                let bytes: [u8; 8] =
-                    payload.as_slice().try_into().map_err(|_| "ACK payload not 8 bytes")?;
-                Frame::Ack(u64::from_le_bytes(bytes))
-            }
+            FT_ACK => Frame::Ack(word("ACK")?),
+            FT_PING => Frame::Ping(word("PING")?),
+            FT_PONG => Frame::Pong(word("PONG")?),
             FT_HELLO => Frame::Hello(
                 postcard::from_bytes(&payload).map_err(|e| format!("hello: {e}"))?,
             ),
@@ -285,6 +341,8 @@ mod tests {
         let mut wire = encode_hello(&hello);
         wire.extend_from_slice(&encode_data(b"abc"));
         wire.extend_from_slice(&encode_ack(42));
+        wire.extend_from_slice(&encode_ping(7));
+        wire.extend_from_slice(&encode_pong(7));
         wire.extend_from_slice(&encode_reply(&HelloReply::Resumed { received: 9 }));
 
         // Feed one byte at a time: reassembly must not care.
@@ -302,6 +360,8 @@ mod tests {
                 Frame::Hello(hello),
                 Frame::Data(b"abc".to_vec()),
                 Frame::Ack(42),
+                Frame::Ping(7),
+                Frame::Pong(7),
                 Frame::Reply(HelloReply::Resumed { received: 9 }),
             ]
         );
@@ -313,6 +373,8 @@ mod tests {
     fn golden_bytes() {
         assert_eq!(encode_data(b"hi"), vec![0, 2, 0, 0, 0, b'h', b'i']);
         assert_eq!(encode_ack(1), vec![1, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(encode_ping(2), vec![4, 8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(encode_pong(2), vec![5, 8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
         // Hello{pairing: [9,9], resume: Some{id=[1;16], received=5}}:
         // postcard = len-prefixed proof, option tag, 16 raw id bytes,
         // varint received.
@@ -378,6 +440,10 @@ mod tests {
 
         let mut dec = Decoder::new();
         dec.feed(&[FT_ACK, 3, 0, 0, 0, 1, 2, 3]); // ACK payload not 8 bytes
+        assert!(dec.next_frame().is_err());
+
+        let mut dec = Decoder::new();
+        dec.feed(&[FT_PING, 3, 0, 0, 0, 1, 2, 3]); // PING payload not 8 bytes
         assert!(dec.next_frame().is_err());
     }
 }

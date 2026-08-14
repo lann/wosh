@@ -486,6 +486,77 @@ browser-idle-e2e: site hosts
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
         node host-test/browser-idle-e2e.mjs
 
+# The mobile-background story: a FROZEN page (SIGSTOP on the renderer,
+# the same not-scheduled-at-all a backgrounded phone performs) runs
+# nothing for 45s, so its transport dies of silence and the listener
+# parks the session. The thaw must recover it without a human:
+# wake-probe (a tunnel PING instead of waiting out QUIC's idle
+# timeout), resume, replay.
+#
+# This drill flushed out THREE upstream bugs. Two are fixed in the
+# pinned chain, which is what lets this gate run in `check`:
+#  - polymorph-iroh: a resource outliving its connection acted on the
+#    slot's next occupant (handle reuse) -- its drop-implied reset(0)
+#    killed every freshly resumed connection at birth. Fixed by the
+#    epoch guard the PIROH_PIN carries (polymorph-iroh#78/#79).
+#  - polymorph-webrtc-datachannels: the wasmtime host ran webrtc's
+#    per-connection driver tasks on the embedder's own runtime, so one
+#    wedged driver froze the whole component (deaf endpoint, zombie
+#    sessions never idle-timing-out) AND starved the teardown that
+#    would have ended the wedge. Fixed by driver reactor isolation,
+#    carried by the datachannels rev pin (#158/#159): the wedge costs
+#    a pool thread, then self-heals.
+#  - The wedge's root -- rtc-ice pins a failed agent's wake-up
+#    deadline in the past, and the webrtc driver loop spins on it at
+#    full speed -- is fixed upstream in lann/rtc#2 (plus a
+#    forward-progress floor handed to lann/webrtc); not needed for
+#    this gate once the isolation is in, but worth landing.
+browser-freeze: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop browser-freeze' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-freeze target/release/wosh-listener --ephemeral-identity \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
+    sleep 7
+    cs=$(scripts/gate-proc.sh field browser-freeze connstring)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_LISTENER_LOG="$(scripts/gate-proc.sh log browser-freeze)" \
+        node host-test/browser-freeze.mjs
+
+# The fall-through: a session no resume can bridge (the LISTENER
+# restarts; its registry is memory) must end as `lost` and the page
+# must open a fresh session by itself -- pinned host key answering the
+# TOFU gate, pairing enrollment outliving the token rotation, the
+# browser key signing silently, and a dim [wosh] divider marking the
+# seam in the scrollback. The listener keeps its identity across the
+# restart (its own dir), because that is what keeps the pin and the
+# enrollment meaningful.
+browser-fallthrough: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop browser-fallthrough' EXIT
+    trap 'exit 130' INT TERM
+    rm -rf .deps/test-fallthrough && mkdir -p .deps/test-fallthrough
+    start="scripts/gate-proc.sh start browser-fallthrough target/release/wosh-listener \
+        --identity-dir .deps/test-fallthrough \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr"
+    $start
+    sleep 7
+    cs=$(scripts/gate-proc.sh field browser-fallthrough connstring)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_STOP_CMD="scripts/gate-proc.sh stop browser-fallthrough" \
+    WOSH_START_CMD="$start" \
+        node host-test/browser-fallthrough.mjs
+
 # Resume, end to end in a real browser: a live session must survive a
 # relay restart -- client endpoint rebind + resume machine, listener
 # accept-loop rebind + re-registration, offset-exchange replay. This
@@ -513,7 +584,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

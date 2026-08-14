@@ -34,6 +34,8 @@ use wosh_connstring::ConnString;
 const ALPN: &[u8] = wosh_tunnel::ALPN_V1;
 /// v2: framed, resumable sessions (see `tunnel/src/lib.rs`).
 const ALPN_V2: &[u8] = wosh_tunnel::ALPN_V2;
+/// v3: v2 plus PING/PONG liveness frames (see `tunnel/src/lib.rs`).
+const ALPN_V3: &[u8] = wosh_tunnel::ALPN_V3;
 
 /// n0's public NA-East relay, first of the defaults baked into iroh
 /// itself (`iroh::defaults::prod`; the others are usw1-1, euc1-1,
@@ -169,6 +171,7 @@ async fn bind_endpoint(
     // ALPN and `conn.alpn()` tells us which state machine to run.
     options.add_alpn(ALPN);
     options.add_alpn(ALPN_V2);
+    options.add_alpn(ALPN_V3);
     options.relay_url(&cli.relay);
     // Direct UDP is a real option for this side (unlike the browser
     // client): helps same-LAN peers and gives iroh a lower-latency
@@ -267,7 +270,7 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
                 let sessions = sessions.clone();
                 wit_bindgen::spawn_local(async move {
                     let peer = encode_hex(&conn.peer());
-                    if conn.alpn() == ALPN_V2 {
+                    if conn.alpn() == ALPN_V2 || conn.alpn() == ALPN_V3 {
                         // v2: the connection resource must outlive
                         // this pump's own frames on the wire, so it
                         // is shared (Rc) with the session's writer

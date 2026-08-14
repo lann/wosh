@@ -17,7 +17,16 @@ cd "$(dirname "$0")/.."
 # left running would be adopted by every later gate as if it were the
 # usual one.
 DIR="$(pwd)/.deps/test-sshd${WOSH_SSHD_NAME:+-$WOSH_SSHD_NAME}"
-PORT="${WOSH_SSHD_PORT:-2222}"
+# The DEFAULT port is derived from the worktree path: a fixed 2222 was
+# the one piece of these gates that still collided across worktrees
+# (two worktrees' sshds fighting over one port surfaces as "session
+# ended" the moment the banner reaches whichever sshd won -- the wrong
+# host key, the wrong authorized_keys). Deterministic per worktree, so
+# every `port` call agrees; WOSH_SSHD_PORT still overrides. The range
+# 2300-2899 stays clear of the explicitly-pinned instances (2223
+# kbdint, 2225 unprepared).
+default_port() { echo $((2300 + $(pwd | cksum | cut -d' ' -f1) % 600)); }
+PORT="${WOSH_SSHD_PORT:-$(default_port)}"
 
 # WOSH_SSHD_UNPREPARED=1 stands up the sshd almost everyone actually
 # runs today, rather than the one the passkey gates want: password auth

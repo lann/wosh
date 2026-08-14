@@ -78,7 +78,12 @@ async function translate(wasmUrl: string, translatorUrl: string) {
 export async function loadClient(wasmUrl: string, translatorUrl: string): Promise<any> {
   const artifacts = await translate(wasmUrl, translatorUrl);
   const imports = {
-    ...wasiShims({ cli: { args: ["wosh-client"], env: {} } }),
+    // passthrough: the component's stderr is its only diagnostic
+    // channel (the resume machine narrates transport deaths and
+    // rebinds there), and a buffered stderr nobody reads is a black
+    // box exactly when the network is misbehaving. Routed to the
+    // console, it costs nothing until something prints.
+    ...wasiShims({ cli: { args: ["wosh-client"], env: {}, passthrough: true } }),
     ...webcryptoImports(),
     ...websocketImports(),
     ...webrtcImports(),

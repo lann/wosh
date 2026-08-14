@@ -247,6 +247,10 @@ struct Args {
     /// Persist the pairing identity blob here across invocations
     /// (default: in-memory, a fresh client per run).
     pairing_store: Option<PathBuf>,
+    /// Linger this long with the shell open (after the round trip,
+    /// before detaching). A window for an external orchestrator to act
+    /// on the live session -- freeze this process, cut its network.
+    hold_ms: u64,
 }
 
 fn parse_args() -> Result<Args> {
@@ -260,6 +264,7 @@ fn parse_args() -> Result<Args> {
         kbd_answers: Vec::new(),
         expect_auth_fail: false,
         pairing_store: None,
+        hold_ms: 0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -276,6 +281,7 @@ fn parse_args() -> Result<Args> {
             }
             "--expect-auth-fail" => a.expect_auth_fail = true,
             "--pairing-store" => a.pairing_store = Some(PathBuf::from(v()?)),
+            "--hold-ms" => a.hold_ms = v()?.parse().map_err(|e| anyhow!("--hold-ms: {e}"))?,
             other => bail!("unknown flag {other}"),
         }
     }
@@ -783,6 +789,14 @@ async fn main() -> Result<()> {
 
             session.call_resize(acc, s, 100, 40).await?;
             println!("[6] resize accepted");
+
+            if args.hold_ms > 0 {
+                // Linger with the session open: gives an external
+                // orchestrator a window to act on THIS process (stop
+                // it, cut its network) while the session is live.
+                println!("[hold] session held open for {}ms", args.hold_ms);
+                tokio::time::sleep(Duration::from_millis(args.hold_ms)).await;
+            }
 
             session.call_detach(acc, s).await?;
             println!("[7] detached cleanly");

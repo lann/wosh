@@ -3916,7 +3916,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-webrtc-datachannels"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?rev=aa9460c674e9f9a5d3227291333a60ecd5bcd988#aa9460c674e9f9a5d3227291333a60ecd5bcd988"
+source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?rev=f703a158b7a9736e9e2c85c2701d601221b60216#f703a158b7a9736e9e2c85c2701d601221b60216"
 dependencies = [
  "anyhow",
  "async-trait",

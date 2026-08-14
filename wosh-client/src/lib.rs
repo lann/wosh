@@ -33,18 +33,29 @@
 //!   hazard is real here: polymorph-iroh's own endpoint has a
 //!   documented guest-side panic of exactly this shape. Every await
 //!   site below copies what it needs out of the cell first.
-//! * **No timers anywhere.** The core's ssh path is timer-free and
-//!   every state change is caused by a call this component makes, so
-//!   liveness needs no clock -- and the exported interface carries no
-//!   keepalive: wit-bindgen tracks the tasks spawned below.
+//! * **No timers on the ssh path.** The core's ssh path is timer-free
+//!   and every state change is caused by a call this component makes,
+//!   so the protocol itself needs no clock -- and the exported
+//!   interface carries no keepalive: wit-bindgen tracks the tasks
+//!   spawned below. The one deliberate exception is the liveness
+//!   prober ([`keepalive_task`], v3 connections only), which is
+//!   clock-driven because the thing it detects has no other cause to
+//!   hang an event off: a silently black-holed path produces no read
+//!   error, no write error, and no frame. The only other detector is
+//!   QUIC's idle timeout underneath us -- fixed at 30s, not
+//!   configurable from here, and invisible until it fires.
 //!
 //! Transport versions (see `wosh-tunnel`'s module docs -- that crate is
 //! THE protocol):
 //!
-//! * **v2** (`ALPN_V2`) is the normal path: a framed, resumable tunnel.
-//!   A transport death no longer kills the session; the resume machine
-//!   ([`resume_loop`]) redials, replays the unacknowledged tail, and
-//!   the SSH core is never told anything happened.
+//! * **v3** (`ALPN_V3`) is v2 plus liveness frames: this client probes
+//!   with PING when the link has gone quiet and treats an unanswered
+//!   probe as a verdict, turning up to 30s of typing into a void into
+//!   a few seconds followed by a resume.
+//! * **v2** (`ALPN_V2`) is a framed, resumable tunnel with no liveness
+//!   frames: a transport death no longer kills the session; the resume
+//!   machine ([`resume_loop`]) redials, replays the unacknowledged
+//!   tail, and the SSH core is never told anything happened.
 //! * **v1** (`ALPN_V1`) is the legacy raw pipe, kept as a one-shot dial
 //!   fallback so a freshly-deployed page still reaches a listener that
 //!   has not been updated. In legacy mode this component behaves
@@ -84,7 +95,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use bindings::exports::wosh::terminal::terminal::{
-    Guest, GuestSession, Prompt, PromptBatch, Status,
+    CloseKind as WitCloseKind, Guest, GuestSession, LinkState, Prompt, PromptBatch, Status,
 };
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions, RecvStream, SendStream};
 use bindings::polymorph::iroh::identity::Identity;
@@ -97,7 +108,7 @@ use bindings::wosh::terminal::identity_store;
 
 use wosh_connstring::ConnString;
 use wosh_tunnel::{
-    Decoder, Frame, Hello, HelloReply, Replay, Resume, ACK_EVERY_BYTES, ALPN_V1, ALPN_V2,
+    Decoder, Frame, Hello, HelloReply, Replay, Resume, ACK_EVERY_BYTES, ALPN_V1, ALPN_V2, ALPN_V3,
 };
 
 /// Read size for the reader task. Sized to comfortably hold a
@@ -105,28 +116,102 @@ use wosh_tunnel::{
 const READ_CHUNK: u32 = 16 * 1024;
 
 /// Backoff for the resume machine: 500ms doubling to a 15s cap, giving
-/// up once 90s of TRYING have been spent. Long enough to ride out a
-/// relay restart plus both sides re-registering; short enough that a
-/// listener that is actually gone is not mistaken for a slow one
-/// forever. Sleeping is real (`wasi:clocks/monotonic-clock`, imported
+/// up once 600s of TRYING have been spent. Long enough to ride out a
+/// relay restart plus both sides re-registering -- and, at this size,
+/// long enough to ride out the kind of outage a phone in a lift or a
+/// laptop between networks actually has.
+/// Sleeping is real (`wasi:clocks/monotonic-clock`, imported
 /// for exactly this): between attempts every other task in the
 /// component keeps running.
+///
+/// Why so long. The budget matches the listener's default
+/// `--resume-grace` (600s) -- by convention, not by negotiation:
+/// nothing on the wire tells us the peer's grace, so the two numbers
+/// are kept equal on purpose and a listener configured shorter simply
+/// refuses the resume, which we hear about immediately. And that is
+/// the point: every DEFINITIVE answer still fails fast. A refusal, a
+/// replay gap and a replay overflow all end the session the moment
+/// they are known, because they are answers. The long window is spent
+/// only on UNREACHABILITY -- nobody home, no route -- where giving up
+/// early buys nothing at all: a fresh dial would be just as
+/// unreachable, and the listener is holding the session parked the
+/// whole time. Ending early there just throws away a live session that
+/// was about to come back.
 ///
 /// Trying, not elapsing. A backgrounded phone suspends this component
 /// mid-loop, and a hidden tab has its timers throttled to a fraction
 /// of what they asked for; wall-clock time would then be spent without
 /// a single attempt being made, and the budget would be gone before
-/// the page came back -- for a session the listener still holds parked
-/// (its grace is 600s by default, more than six times this). So each
-/// pass adds what it MEANT to take: the sleep it asked for, plus the
-/// attempt itself capped, because an attempt that appears to have
-/// taken minutes was suspended, not slow.
+/// the page came back -- for a session the listener still holds
+/// parked. So each pass adds what it MEANT to take: the sleep it asked
+/// for, plus the attempt itself capped, because an attempt that
+/// appears to have taken minutes was suspended, not slow.
 const RESUME_BACKOFF_START_MS: u64 = 500;
 const RESUME_BACKOFF_CAP_MS: u64 = 15_000;
-const RESUME_WINDOW_MS: u64 = 90_000;
+const RESUME_WINDOW_MS: u64 = 600_000;
 /// The most a single attempt can charge the budget. A dial that runs
 /// past this was not dialing, it was suspended.
 const RESUME_ATTEMPT_CAP_MS: u64 = 20_000;
+
+/// Probe the peer after this much inbound silence. Any frame counts as
+/// inbound (wosh-tunnel liveness rules), so a busy link never probes.
+const PING_AFTER_IDLE_MS: u64 = 10_000;
+/// An outstanding ping older than this is a verdict: the link is dead.
+/// A live peer answers a PING as fast as it can write one frame.
+const PING_VERDICT_MS: u64 = 5_000;
+/// How often the prober wakes to check those two numbers.
+const KEEPALIVE_TICK_MS: u64 = 1_000;
+/// A DATA write while the link has been silent this long piggybacks a
+/// ping. Typing is the moment the user is watching: a keystroke into a
+/// black hole should earn a verdict in five-to-seven seconds, not the
+/// thirty QUIC's idle timeout would take.
+const INTERACTIVE_PROBE_MS: u64 = 2_000;
+
+/// The tunnel dialect this session settled on at connect. Fixed for
+/// the session's lifetime -- a resume redials the SAME ALPN -- which
+/// is why it lives on `State` rather than in the mutable `Inner`.
+#[derive(Clone, Copy, PartialEq)]
+enum Proto {
+    /// Framed, resumable, with PING/PONG liveness.
+    V3,
+    /// Framed and resumable, no liveness frames.
+    V2,
+    /// The legacy raw pipe: no framing, no resume.
+    V1,
+}
+
+impl Proto {
+    /// Tunnel frames rather than raw ssh bytes.
+    fn framed(self) -> bool {
+        self != Proto::V1
+    }
+
+    /// The ALPN this session dials and redials with.
+    fn alpn(self) -> &'static [u8] {
+        match self {
+            Proto::V3 => ALPN_V3,
+            Proto::V2 => ALPN_V2,
+            Proto::V1 => ALPN_V1,
+        }
+    }
+}
+
+/// Why a session ended. Component-internal mirror of terminal.wit's
+/// `close-kind`; see that file for what each one means to a page.
+///
+/// `Ended` is never stored here: it is the one kind nothing latches,
+/// because it is not a wire event -- it is read off the core's own
+/// `closed` status by the export. The variant is kept so this stays a
+/// full mirror of the WIT type rather than a subset that would have to
+/// grow one later.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum CloseKind {
+    Ended,
+    Failed,
+    Lost,
+}
+
 
 async fn sleep_ms(ms: u64) {
     bindings::wasi::clocks::monotonic_clock::wait_for(ms * 1_000_000).await;
@@ -191,9 +276,6 @@ struct Inner {
     detached: bool,
 
     // --- tunnel v2 bookkeeping (all inert in legacy mode) ----------
-    /// True when the dial fell back to `ALPN_V1`: no framing, no
-    /// resume, transport death is `wire-broken` as it always was.
-    legacy: bool,
     /// The resume capability the listener minted (`HelloReply::New`).
     /// A capability: never logged in full, hex prefix at most.
     session_id: [u8; 16],
@@ -220,6 +302,29 @@ struct Inner {
     /// it). The session is neither attached nor dead: it waits for
     /// `wake`, which is the only thing that starts it moving again.
     stalled: bool,
+
+    // --- tunnel v3 liveness (all inert below v3) -------------------
+    /// When the last frame of ANY kind arrived. The liveness rules
+    /// make every frame evidence, not just PONG.
+    last_inbound_ms: u64,
+    /// When the writer actually PUT a ping on the wire -- not when one
+    /// was requested; the verdict clock must not start before the
+    /// probe exists. Cleared by any inbound frame.
+    ping_outstanding: Option<u64>,
+    /// Someone asked for a ping. Like `ack_due`: only the writer task
+    /// ever touches `send`.
+    ping_due: bool,
+    /// Ping payloads awaiting their echo. The protocol says answer
+    /// EVERY ping, so this is a queue rather than a flag.
+    pong_due: VecDeque<u64>,
+    /// Payload source for the pings we send. Opaque to the peer.
+    ping_counter: u64,
+    /// The session reached `ready` at least once. The difference
+    /// between a session that FAILED and one that was LOST.
+    was_ready: bool,
+    /// Set by `declare_dead`; the machine-readable half of the closed
+    /// status (terminal.wit's `close-kind`).
+    close_kind: Option<CloseKind>,
 }
 
 impl Inner {
@@ -246,6 +351,9 @@ impl Inner {
 /// Everything the spawned tasks and the exported methods share.
 struct State {
     inner: RefCell<Inner>,
+    /// The dialect settled at connect. Immutable for the session: a
+    /// resume redials the same ALPN, so nothing here can change it.
+    proto: Proto,
     /// Owned for the session's lifetime, NOT because anything here
     /// calls them again -- except that with resume, the endpoint IS
     /// called again, to redial. Dropping a polymorph-iroh resource
@@ -324,7 +432,14 @@ async fn drive(state: &Rc<State>) {
             if queued {
                 state.writer_signal.notify();
             }
-            match inner.core.status() {
+            let status = inner.core.status();
+            // Latch the high-water mark: `ready` once reached is what
+            // separates a session that was LOST from one that never
+            // worked (terminal.wit's `close-kind`).
+            if matches!(status, CoreStatus::Ready) {
+                inner.was_ready = true;
+            }
+            match status {
                 CoreStatus::Signing if !inner.signing => {
                     let request = inner.core.pending_signature();
                     if request.is_some() {
@@ -406,7 +521,8 @@ async fn sign_for(request: &CoreSignRequest) -> Result<CoreSignature, String> {
 /// In legacy (v1) mode the bytes are the ssh stream verbatim and the
 /// end of the connection is the end of the session. In v2 they are
 /// tunnel frames, and the end of the connection is a resume trigger.
-async fn reader_task(state: Rc<State>, recv: RecvStream, generation: u64, framed: bool) {
+async fn reader_task(state: Rc<State>, recv: RecvStream, generation: u64) {
+    let framed = state.proto.framed();
     let mut decoder = Decoder::new();
     loop {
         let read = recv.read(READ_CHUNK).await;
@@ -467,9 +583,17 @@ async fn reader_task(state: Rc<State>, recv: RecvStream, generation: u64, framed
 fn consume_frames(state: &Rc<State>, decoder: &mut Decoder) -> Result<bool, String> {
     let mut fed = false;
     let mut ack_now = false;
+    let mut wake_writer = false;
     {
         let mut inner = state.inner.borrow_mut();
         while let Some(frame) = decoder.next_frame()? {
+            // ANY frame is evidence of liveness, not just PONG
+            // (wosh-tunnel liveness rules): a peer mid-bulk-transfer
+            // never has to answer faster than it is already sending.
+            // `now_ms` is a sync host call -- no await, so the borrow
+            // above is untouched.
+            inner.last_inbound_ms = now_ms();
+            inner.ping_outstanding = None;
             match frame {
                 Frame::Data(payload) => {
                     if payload.is_empty() {
@@ -483,6 +607,23 @@ fn consume_frames(state: &Rc<State>, decoder: &mut Decoder) -> Result<bool, Stri
                     fed = true;
                 }
                 Frame::Ack(n) => inner.replay.ack(n),
+                // The protocol says answer EVERY ping, promptly --
+                // hence a queue, and hence the writer (sole owner of
+                // `send`) doing the writing.
+                Frame::Ping(payload) => {
+                    if state.proto != Proto::V3 {
+                        return Err("ping frame on a connection without liveness".into());
+                    }
+                    inner.pong_due.push_back(payload);
+                    wake_writer = true;
+                }
+                // Nothing to do beyond the liveness bookkeeping above:
+                // the PONG's whole content is that it arrived.
+                Frame::Pong(_) => {
+                    if state.proto != Proto::V3 {
+                        return Err("pong frame on a connection without liveness".into());
+                    }
+                }
                 // The handshake is over; a second reply is a protocol
                 // violation, not something to resynchronise from.
                 Frame::Reply(_) => return Err("unexpected reply frame mid-session".into()),
@@ -496,10 +637,80 @@ fn consume_frames(state: &Rc<State>, decoder: &mut Decoder) -> Result<bool, Stri
             ack_now = true;
         }
     }
-    if ack_now {
+    if ack_now || wake_writer {
         state.writer_signal.notify();
     }
     Ok(fed)
+}
+
+/// The liveness prober: the one deliberately clock-driven task here
+/// (module header), spawned per connection on v3 only.
+///
+/// It exists for exactly one failure: a path that has gone silently
+/// dead. Loud deaths already surface instantly as read/write errors;
+/// a black hole after a NAT rebind, a network roam or a freeze-thaw
+/// produces nothing at all, and the only other detector is QUIC's
+/// 30s idle timeout underneath us.
+///
+/// It touches `send` never -- it sets `ping_due` and wakes the writer,
+/// like every other producer of outbound bytes -- and it holds no
+/// borrow across an await: each tick decides under one borrow and acts
+/// after dropping it.
+async fn keepalive_task(state: Rc<State>, generation: u64) {
+    enum Tick {
+        Retire,
+        Idle,
+        Probe,
+        Dead,
+    }
+    loop {
+        sleep_ms(KEEPALIVE_TICK_MS).await;
+        let tick = {
+            let mut inner = state.inner.borrow_mut();
+            if inner.stale(generation) || inner.detached || inner.link_down {
+                Tick::Retire
+            } else if inner.suspended || inner.resuming {
+                // No probing while the page is away (its network is
+                // being taken from it) or while a resume owns the
+                // connection -- the question is already being asked.
+                Tick::Idle
+            } else {
+                let now = now_ms();
+                if let Some(sent) = inner.ping_outstanding {
+                    if now.saturating_sub(sent) >= PING_VERDICT_MS {
+                        Tick::Dead
+                    } else {
+                        Tick::Idle
+                    }
+                } else if !inner.ping_due
+                    && now.saturating_sub(inner.last_inbound_ms) >= PING_AFTER_IDLE_MS
+                {
+                    inner.ping_due = true;
+                    Tick::Probe
+                } else {
+                    Tick::Idle
+                }
+            }
+        };
+        match tick {
+            Tick::Retire => return,
+            Tick::Idle => {}
+            Tick::Probe => state.writer_signal.notify(),
+            Tick::Dead => {
+                // A verdict, handed to the same path a read error
+                // takes: `link_lost` dedups via `resuming`, honours a
+                // suspended page, and the resume loop closes the dead
+                // connection itself.
+                link_lost(
+                    &state,
+                    generation,
+                    &format!("peer silent: liveness probe unanswered for {PING_VERDICT_MS}ms"),
+                )
+                .await;
+                return;
+            }
+        }
+    }
 }
 
 /// The writer task: the sole owner of `send` for ONE connection. It
@@ -514,9 +725,9 @@ async fn writer_task(
     state: Rc<State>,
     send: SendStream,
     generation: u64,
-    framed: bool,
     tail: Vec<u8>,
 ) {
+    let framed = state.proto.framed();
     if !tail.is_empty() {
         let frame = if framed { wosh_tunnel::encode_data(&tail) } else { tail };
         if send.write(frame).await.is_err() {
@@ -530,8 +741,9 @@ async fn writer_task(
             return;
         }
         loop {
-            // Acks first: they unblock the peer's replay buffer, and a
-            // large outbox must not delay them.
+            // Control frames first: acks unblock the peer's replay
+            // buffer, and pongs are the peer's proof we are alive --
+            // a large outbox must not delay either.
             let ack = {
                 let mut inner = state.inner.borrow_mut();
                 if framed && inner.ack_due {
@@ -545,6 +757,51 @@ async fn writer_task(
             if let Some(frame) = ack {
                 if send.write(frame).await.is_err() {
                     link_lost(&state, generation, "connection closed: ack write failed").await;
+                    return;
+                }
+                if state.inner.borrow().stale(generation) {
+                    return;
+                }
+            }
+
+            // Every queued ping gets its echo, in arrival order: the
+            // payload is the peer's business and it may be matching
+            // them up.
+            loop {
+                let pong = state.inner.borrow_mut().pong_due.pop_front();
+                let Some(payload) = pong else { break };
+                if send.write(wosh_tunnel::encode_pong(payload)).await.is_err() {
+                    link_lost(&state, generation, "connection closed: pong write failed").await;
+                    return;
+                }
+                if state.inner.borrow().stale(generation) {
+                    return;
+                }
+            }
+
+            // Our own probe. `ping_outstanding` is stamped HERE, where
+            // the frame reaches the wire -- not where the ping was
+            // requested -- so the verdict clock measures the peer's
+            // silence and not our own scheduling.
+            let ping = {
+                let mut inner = state.inner.borrow_mut();
+                if state.proto == Proto::V3 && inner.ping_due && inner.ping_outstanding.is_none() {
+                    inner.ping_due = false;
+                    inner.ping_counter += 1;
+                    let payload = inner.ping_counter;
+                    inner.ping_outstanding = Some(now_ms());
+                    Some(wosh_tunnel::encode_ping(payload))
+                } else {
+                    // A request that arrives while a probe is already
+                    // in flight is simply kept: the outstanding probe
+                    // is already asking the only question it had, and
+                    // the next inbound frame clears the way.
+                    None
+                }
+            };
+            if let Some(frame) = ping {
+                if send.write(frame).await.is_err() {
+                    link_lost(&state, generation, "connection closed: ping write failed").await;
                     return;
                 }
                 if state.inner.borrow().stale(generation) {
@@ -573,6 +830,21 @@ async fn writer_task(
             }
             if state.inner.borrow().stale(generation) {
                 return;
+            }
+            // Interactive probe: we just spoke into a link that has
+            // been quiet a while, which is the shape of a user typing
+            // into a black hole. Ask for a ping now rather than at the
+            // prober's leisure -- the control block at the top of this
+            // inner loop sends it on the very next turn, so the
+            // verdict lands in ~5-7s instead of the 30 QUIC would take.
+            if state.proto == Proto::V3 {
+                let mut inner = state.inner.borrow_mut();
+                if inner.ping_outstanding.is_none()
+                    && !inner.ping_due
+                    && now_ms().saturating_sub(inner.last_inbound_ms) >= INTERACTIVE_PROBE_MS
+                {
+                    inner.ping_due = true;
+                }
             }
         }
         if state.inner.borrow().detached {
@@ -603,7 +875,7 @@ async fn link_lost(state: &Rc<State>, generation: u64, reason: &str) {
             // Superseded, or the page already tore the session down:
             // the new connection (or `detach`) owns the outcome.
             Next::Retire
-        } else if inner.legacy {
+        } else if state.proto == Proto::V1 {
             Next::Die
         } else if inner.resuming {
             // Both tasks of this generation noticed the same death.
@@ -623,7 +895,12 @@ async fn link_lost(state: &Rc<State>, generation: u64, reason: &str) {
     match next {
         Next::Retire => {}
         Next::Die => declare_dead(state, reason).await,
-        Next::Resume => resume_loop(state, generation).await,
+        Next::Resume => {
+            // The one diagnostic channel this component has is stderr;
+            // a transport death is exactly when it earns its keep.
+            eprintln!("resume: transport lost ({reason}); redialing");
+            resume_loop(state, generation).await;
+        }
     }
 }
 
@@ -636,6 +913,15 @@ async fn declare_dead(state: &Rc<State>, reason: &str) {
         }
         inner.resuming = false;
         inner.link_down = true;
+        // The machine-readable half, decided by whether this session
+        // ever got off the ground: a transport death after `ready` is
+        // a session LOST (a fresh one on the same parameters is a
+        // sensible reaction), before it a session that FAILED.
+        inner.close_kind = Some(if inner.was_ready {
+            CloseKind::Lost
+        } else {
+            CloseKind::Failed
+        });
         inner.core.wire_broken(reason);
     }
     drive(state).await;
@@ -730,26 +1016,32 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
             return;
         }
 
-        // ALPN_V2 only: a listener that answers only v1 cannot resume
-        // anything, so there is no fallback to fall back to. The Rc is
-        // cloned out so no RefCell borrow spans the await.
+        // The session's OWN dialect, no ladder: a listener that
+        // answers only v1 cannot resume anything, so there is no
+        // fallback to fall back to, and a v3 session redialing v2
+        // would silently lose the liveness frames it depends on. The
+        // Rc is cloned out so no RefCell borrow spans the await.
         let ep = state.endpoint.borrow().clone();
-        let dialed = ep.connect(addr.clone(), ALPN_V2.to_vec()).await;
+        let dialed = ep.connect(addr.clone(), state.proto.alpn().to_vec()).await;
         drop(ep);
-        let Ok(conn) = dialed else {
-            if abandoned(state, generation) {
-                return;
+        let conn = match dialed {
+            Ok(conn) => conn,
+            Err(e) => {
+                if abandoned(state, generation) {
+                    return;
+                }
+                // The likeliest cause of a dead dial is a dead ENDPOINT:
+                // it shares fate with its relay websocket, so a relay
+                // restart strands it (every later connect fails Closed).
+                // Rebind from the same pairing identity -- same client
+                // endpoint id, which the resume authorization keys on --
+                // and let the next attempt use the fresh one. Mirrors the
+                // listener's own accept-loop rebind.
+                eprintln!("resume: dial failed ({e:?}); rebinding the endpoint");
+                rebind_endpoint(state).await;
+                backoff_sleep!();
+                continue;
             }
-            // The likeliest cause of a dead dial is a dead ENDPOINT:
-            // it shares fate with its relay websocket, so a relay
-            // restart strands it (every later connect fails Closed).
-            // Rebind from the same pairing identity -- same client
-            // endpoint id, which the resume authorization keys on --
-            // and let the next attempt use the fresh one. Mirrors the
-            // listener's own accept-loop rebind.
-            rebind_endpoint(state).await;
-            backoff_sleep!();
-            continue;
         };
         if abandoned(state, generation) {
             conn.close(0, "detached");
@@ -781,9 +1073,10 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
         }
         let (reply, deferred) = match outcome {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
                 // A handshake that dies mid-flight is just another dead
                 // attempt; the window covers it.
+                eprintln!("resume: handshake failed ({e}); retrying");
                 next_attempt!(conn.close(0, "resume handshake failed"));
             }
         };
@@ -811,6 +1104,7 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
                     .await;
                     return;
                 };
+                eprintln!("resume: session resumed (retransmitting {} bytes)", tail.len());
                 install_connection(state, conn, send, recv, decoder, deferred, tail).await;
                 return;
             }
@@ -829,7 +1123,14 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
         }
     }
 
-    declare_dead(state, "connection lost and could not be resumed within 90s").await;
+    declare_dead(
+        state,
+        &format!(
+            "connection lost and could not be resumed within {}s",
+            RESUME_WINDOW_MS / 1000
+        ),
+    )
+    .await;
 }
 
 /// The page suspended mid-resume: leave the session stalled -- neither
@@ -860,6 +1161,7 @@ fn abandoned(state: &Rc<State>, generation: u64) -> bool {
 /// retries the whole attempt.
 async fn rebind_endpoint(state: &Rc<State>) {
     let options = EndpointOptions::new(&state.identity);
+    options.add_alpn(ALPN_V3);
     options.add_alpn(ALPN_V2);
     options.add_alpn(ALPN_V1);
     options.relay_url(&state.relay_url);
@@ -891,6 +1193,14 @@ async fn install_connection(
         inner.conn = conn;
         inner.resuming = false;
         inner.ack_due = false;
+        // Liveness is a property of THIS connection and does not
+        // survive one (wosh-tunnel liveness rules): the new link is
+        // demonstrably alive as of right now, and a probe or an echo
+        // owed on the dead one is meaningless.
+        inner.last_inbound_ms = now_ms();
+        inner.ping_due = false;
+        inner.ping_outstanding = None;
+        inner.pong_due.clear();
         inner.generation += 1;
         for payload in &deferred {
             inner.core.feed(payload);
@@ -902,7 +1212,10 @@ async fn install_connection(
     // The reader task starts from the decoder the handshake left, so
     // frames that arrived in the same packet as the reply are not lost.
     wit_bindgen::spawn_local(reader_task_with(state.clone(), recv, generation, decoder));
-    wit_bindgen::spawn_local(writer_task(state.clone(), send, generation, true, tail));
+    wit_bindgen::spawn_local(writer_task(state.clone(), send, generation, tail));
+    if state.proto == Proto::V3 {
+        wit_bindgen::spawn_local(keepalive_task(state.clone(), generation));
+    }
 
     // Anything the core produced while we were disconnected is waiting
     // in the outbox; wake the new writer for it.
@@ -932,7 +1245,7 @@ async fn reader_task_with(
     if state.inner.borrow().stale(generation) {
         return;
     }
-    reader_task(state, recv, generation, true).await;
+    reader_task(state, recv, generation).await;
 }
 
 /// Write a `Hello` and read frames until the listener's reply.
@@ -952,7 +1265,7 @@ async fn handshake(
 ) -> Result<(HelloReply, Vec<Vec<u8>>), String> {
     send.write(wosh_tunnel::encode_hello(hello))
         .await
-        .map_err(err("tunnel hello"))?;
+        .map_err(err("tunnel hello write"))?;
     let mut deferred = Vec::new();
     loop {
         loop {
@@ -961,13 +1274,19 @@ async fn handshake(
                 Some(Frame::Data(payload)) => deferred.push(payload),
                 Some(Frame::Ack(_)) => {}
                 Some(Frame::Hello(_)) => return Err("listener sent a hello".into()),
+                // The listener's FIRST frame is its reply
+                // (wosh-tunnel `HelloReply` docs); liveness frames
+                // before it are not a protocol this client speaks.
+                Some(Frame::Ping(_)) | Some(Frame::Pong(_)) => {
+                    return Err("listener sent a liveness frame before replying".into())
+                }
                 None => break,
             }
         }
         match recv.read(READ_CHUNK).await {
             Ok(Some(bytes)) => decoder.feed(&bytes),
             Ok(None) => return Err("listener closed before replying".into()),
-            Err(e) => return Err(format!("tunnel hello: {e:?}")),
+            Err(e) => return Err(format!("tunnel hello read: {e:?}")),
         }
     }
 }
@@ -1087,8 +1406,9 @@ impl GuestSession for Session {
         // the SSH identity behind `identity-store`.
         let identity = pairing::load_or_create().await.map_err(err("iroh identity"))?;
         let options = EndpointOptions::new(&identity);
-        // Both ALPNs are offered so the v1 fallback below needs no
+        // Every ALPN is offered so the fallback ladder below needs no
         // second endpoint. The dial picks which one is used.
+        options.add_alpn(ALPN_V3);
         options.add_alpn(ALPN_V2);
         options.add_alpn(ALPN_V1);
         options.relay_url(&parsed.relay_url);
@@ -1132,20 +1452,24 @@ impl GuestSession for Session {
         // The connection is authenticated against the connstring's
         // public key: a peer holding a different key never connects.
         //
-        // v2 first, then ONE retry on v1. The fallback is not
+        // v3, then v2, then v1: one rung per dial. The ladder is not
         // decoration: the page is deployed independently of the
         // listeners people already run, so a browser that has just
-        // picked up the resumable client must still reach a listener
-        // that only speaks the old raw pipe. An ALPN mismatch surfaces
-        // as a failed `connect`, which is why the retry hangs off the
-        // dial rather than off anything later.
-        let (conn, legacy) = match endpoint.connect(addr.clone(), ALPN_V2.to_vec()).await {
-            Ok(conn) => (conn, false),
-            Err(v2_err) => match endpoint.connect(addr.clone(), ALPN_V1.to_vec()).await {
-                Ok(conn) => (conn, true),
-                // Report the v2 failure: it is the one that describes
-                // the listener people are actually expected to run.
-                Err(_) => return Err(err("iroh connect")(v2_err)),
+        // picked up liveness frames must still reach a listener that
+        // only speaks resumable v2 -- or the old raw pipe. An ALPN
+        // mismatch surfaces as a failed `connect`, which is why the
+        // retries hang off the dial rather than off anything later.
+        let (conn, proto) = match endpoint.connect(addr.clone(), ALPN_V3.to_vec()).await {
+            Ok(conn) => (conn, Proto::V3),
+            Err(v3_err) => match endpoint.connect(addr.clone(), ALPN_V2.to_vec()).await {
+                Ok(conn) => (conn, Proto::V2),
+                Err(_) => match endpoint.connect(addr.clone(), ALPN_V1.to_vec()).await {
+                    Ok(conn) => (conn, Proto::V1),
+                    // Report the v3 failure: it is the one that
+                    // describes the listener people are actually
+                    // expected to run.
+                    Err(_) => return Err(err("iroh connect")(v3_err)),
+                },
             },
         };
         let conn = Rc::new(conn);
@@ -1156,7 +1480,7 @@ impl GuestSession for Session {
         let mut decoder = Decoder::new();
         let mut deferred: Vec<Vec<u8>> = Vec::new();
         let mut session_id = [0u8; 16];
-        if legacy {
+        if proto == Proto::V1 {
             // v1's pairing frame: [len:u8][token], written before any
             // ssh byte and before the writer task exists, so it is
             // trivially ordered ahead of everything the core produces.
@@ -1172,7 +1496,7 @@ impl GuestSession for Session {
             hello.extend_from_slice(&proof);
             send.write(hello).await.map_err(err("pairing"))?;
         } else {
-            let hello = Hello { pairing: prove(ALPN_V2), resume: None };
+            let hello = Hello { pairing: prove(proto.alpn()), resume: None };
             let (reply, pre) = handshake(&send, &recv, &mut decoder, &hello)
                 .await
                 .map_err(|e| format!("tunnel handshake: {e}"))?;
@@ -1206,7 +1530,6 @@ impl GuestSession for Session {
                 link_down: false,
                 signing: false,
                 detached: false,
-                legacy,
                 session_id,
                 replay: Replay::new(),
                 received: 0,
@@ -1215,13 +1538,25 @@ impl GuestSession for Session {
                 resuming: false,
                 suspended: false,
                 stalled: false,
+                // The connection is up as of now; that IS the last
+                // inbound evidence we have.
+                last_inbound_ms: now_ms(),
+                ping_outstanding: None,
+                ping_due: false,
+                pong_due: VecDeque::new(),
+                ping_counter: 0,
+                was_ready: false,
+                close_kind: None,
             }),
+            proto,
             endpoint: RefCell::new(Rc::new(endpoint)),
             identity,
             relay_url: parsed.relay_url.clone(),
             addr,
-            // Resume is v2-only, so the proof it replays is the v2 one.
-            pairing: prove(ALPN_V2),
+            // A resume redials the session's own dialect
+            // (`State.proto`), and the proof binds the ALPN, so the
+            // one stored here is the one every resume replays.
+            pairing: prove(proto.alpn()),
             writer_signal: Signal::default(),
             status_signal: Signal::default(),
         });
@@ -1242,13 +1577,17 @@ impl GuestSession for Session {
         drive(&state).await;
 
         // --- reader task: never cancelled -------------------------
-        if legacy {
-            wit_bindgen::spawn_local(reader_task(state.clone(), recv, 0, false));
+        if proto == Proto::V1 {
+            wit_bindgen::spawn_local(reader_task(state.clone(), recv, 0));
         } else {
             wit_bindgen::spawn_local(reader_task_with(state.clone(), recv, 0, decoder));
         }
         // --- writer task: the only writer of `send` ---------------
-        wit_bindgen::spawn_local(writer_task(state.clone(), send, 0, !legacy, Vec::new()));
+        wit_bindgen::spawn_local(writer_task(state.clone(), send, 0, Vec::new()));
+        // --- liveness prober: the one clock-driven task -----------
+        if proto == Proto::V3 {
+            wit_bindgen::spawn_local(keepalive_task(state.clone(), 0));
+        }
 
         Ok(
             bindings::exports::wosh::terminal::terminal::Session::new(Session {
@@ -1300,6 +1639,53 @@ impl GuestSession for Session {
             CoreStatus::Ready => Status::Ready,
             CoreStatus::Closed(reason) => Status::Closed(reason),
         }
+    }
+
+    /// Where the TRANSPORT stands, which `status` deliberately will
+    /// not tell (see terminal.wit): a resume in flight keeps reporting
+    /// whatever the core reports, because the SSH session really is
+    /// alive and merely stalled. This is the orthogonal answer.
+    async fn link_state(&self) -> LinkState {
+        let inner = self.state.inner.borrow();
+        if inner.resuming {
+            LinkState::Reconnecting
+        } else if inner.stalled {
+            LinkState::Stalled
+        } else {
+            LinkState::Attached
+        }
+    }
+
+    /// Why the session ended, machine-readably; `none` while it lives.
+    /// The point is that a page can decide about reconnecting without
+    /// reading the human-readable reason string.
+    async fn close_kind(&self) -> Option<WitCloseKind> {
+        let inner = self.state.inner.borrow();
+        if let Some(kind) = inner.close_kind {
+            return Some(match kind {
+                CloseKind::Ended => WitCloseKind::Ended,
+                CloseKind::Failed => WitCloseKind::Failed,
+                CloseKind::Lost => WitCloseKind::Lost,
+            });
+        }
+        if matches!(inner.core.status(), CoreStatus::Closed(_)) {
+            // The core ended it, not the wire: a session that had
+            // reached `ready` concluded at the protocol level (shell
+            // exit, server disconnect, detach); one that never did
+            // failed on the way up.
+            return Some(if inner.was_ready {
+                WitCloseKind::Ended
+            } else {
+                WitCloseKind::Failed
+            });
+        }
+        if inner.link_down {
+            // Defensive: `declare_dead` is the only setter of
+            // `link_down` and it always records a kind, so this arm
+            // should be unreachable.
+            return Some(WitCloseKind::Lost);
+        }
+        None
     }
 
     async fn host_key_fingerprint(&self) -> Option<String> {
@@ -1463,7 +1849,7 @@ impl GuestSession for Session {
     /// session stalled rather than dead.
     async fn suspend(&self) {
         let mut inner = self.state.inner.borrow_mut();
-        if inner.detached || inner.link_down || inner.legacy {
+        if inner.detached || inner.link_down || self.state.proto == Proto::V1 {
             return; // nothing to stand down, or nothing that could resume
         }
         inner.suspended = true;
@@ -1479,7 +1865,35 @@ impl GuestSession for Session {
             let mut inner = self.state.inner.borrow_mut();
             inner.suspended = false;
             if inner.detached || inner.link_down || !inner.stalled || inner.resuming {
-                return; // still connected, already resuming, or genuinely over
+                // Still connected, already resuming, or genuinely
+                // over. The first of those is not automatically good
+                // news: a page returning from hidden or frozen may be
+                // holding a ZOMBIE connection -- one whose path died
+                // while we were away and which will not fault until
+                // QUIC's 30s idle timeout. Probe it immediately: a
+                // genuinely live link answers with one cheap PONG, and
+                // a dead one gets its verdict in seconds instead of
+                // half a minute of typing into a void.
+                let attached = !inner.detached
+                    && !inner.link_down
+                    && !inner.stalled
+                    && !inner.resuming
+                    && self.state.proto == Proto::V3;
+                if attached {
+                    // Clearing the outstanding probe FIRST is the
+                    // point: one left over from before the freeze
+                    // would otherwise look ancient against the clock
+                    // that jumped forward, and the prober would call
+                    // a live link dead on its next tick.
+                    inner.ping_outstanding = None;
+                    inner.last_inbound_ms = now_ms().saturating_sub(PING_AFTER_IDLE_MS);
+                    inner.ping_due = true;
+                }
+                drop(inner);
+                if attached {
+                    self.state.writer_signal.notify();
+                }
+                return;
             }
             inner.stalled = false;
             inner.resuming = true;

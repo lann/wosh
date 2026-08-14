@@ -24,7 +24,9 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # Full SHAs: these are the revisions this project was developed and
 # verified against.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-PIROH_PIN=a9f422300a9be129cce21f591d74e848eae38926
+# The head of polymorph-iroh PR #79 (stale-resource epoch guard, found
+# by the freeze drill here); re-pin to the merge commit once it lands.
+PIROH_PIN=793f12724987c84ebd78964a54495286a593d564
 
 # deltic is the JS component host that runs the browser client in-page.
 # The pin matches what polymorph-iroh's deltic host modules are written
