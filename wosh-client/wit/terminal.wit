@@ -275,6 +275,49 @@ interface terminal {
     closed(string),
   }
 
+  /// Where the TRANSPORT stands, which is a different question from
+  /// `status` and deliberately orthogonal to it.
+  ///
+  /// A resume in flight leaves `status` at whatever the core reports
+  /// -- usually `ready` -- because the SSH session IS alive: it is
+  /// mid-session and merely not receiving bytes, and claiming `closed`
+  /// for a session about to continue would be a lie the page could not
+  /// take back. This variant is where the page learns the transport's
+  /// truth, so it can say "reconnecting" over a session it must not
+  /// declare dead.
+  enum link-state {
+    /// A connection is installed and believed live.
+    attached,
+    /// The transport died and the resume machine is dialing right now.
+    reconnecting,
+    /// The transport died while the page was suspended. Nothing will
+    /// be attempted until `wake`.
+    stalled,
+  }
+
+  /// Why a session ended -- the machine-readable half of `closed`.
+  ///
+  /// This classification exists precisely so a page can decide about
+  /// automatic reconnection WITHOUT parsing the human-readable reason
+  /// string that `status` carries.
+  enum close-kind {
+    /// The SSH session concluded at the protocol level: the shell
+    /// exited, the server disconnected, or the page detached.
+    /// Reconnecting would start a genuinely new session.
+    ended,
+    /// The session never reached `ready`: the dial, the tunnel
+    /// handshake, the host-key gate or authentication failed. Retrying
+    /// without changing something is unlikely to differ.
+    failed,
+    /// An established session was lost mid-flight and could not be
+    /// resumed -- resume refused, replay gap or overflow, resume
+    /// budget exhausted, or a transport death on the legacy v1 pipe
+    /// that has no resume at all. The one kind where automatically
+    /// opening a fresh session on the same parameters is a reasonable
+    /// reaction.
+    lost,
+  }
+
   /// One keyboard-interactive prompt: the text to display, and whether
   /// the user's answer should be echoed as typed (`false` means mask
   /// it, password-style).
@@ -364,6 +407,15 @@ interface terminal {
     connect: static async func(connstring: string, user: string, cols: u16, rows: u16) -> result<session, string>;
 
     status: async func() -> status;
+
+    /// Where the transport stands, independently of `status`: whether
+    /// a connection is installed, a resume is dialing, or the session
+    /// is parked waiting for `wake`.
+    link-state: async func() -> link-state;
+
+    /// Why the session ended, machine-readably; `none` while it is
+    /// still alive.
+    close-kind: async func() -> option<close-kind>;
 
     /// The server's host key fingerprint, in the form `ssh-keygen -lf`
     /// prints (`SHA256:...`), so it can be compared by eye against
