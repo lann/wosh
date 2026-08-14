@@ -140,6 +140,17 @@ The public half is not a secret, so both cures are mundane:
   already installed on the target keeps working untouched; both gates
   assert that byte for byte.
 
+The client also remembers **where** the credential lives. WebAuthn
+reports that once, at registration (`getTransports()`), and expects it
+back in later `get()` calls; a client that drops it leaves the browser
+unable to tell a platform passkey from one on a phone or a security
+key, so it must ask which provider to use — on every connection. That
+value is stored with the identity and replayed, so the ceremony goes
+straight to the authenticator that holds the key. An identity that
+arrived by `adopt` or `recover` has no such record (only registration
+reports it), so the first ceremony re-learns it from the attachment the
+browser reports.
+
 Offering both is the default under server-steered `auto`: the passkey
 is offered first, each key is offered *unsigned* before any is signed
 for, so an sshd that will not take webauthn declines the passkey and
