@@ -493,17 +493,19 @@ browser-idle-e2e: site hosts
 # wake-probe (a tunnel PING instead of waiting out QUIC's idle
 # timeout), resume, replay.
 #
-# CURRENTLY FAILS, on an upstream bug this gate exposed: a peer that
-# goes silent for ~45s mid-session leaves the polymorph-iroh endpoint
-# on the OTHER side unable to accept any new connection, permanently
-# (the zombie session itself never times out either, so it is never
-# parked). Reproduced natively with no browser involved -- listener +
-# `wosh-smoke-test --hold-ms`, SIGSTOP the client 45s, then any fresh
-# dial to that listener hangs -- and reproduced against the pre-v3
-# listener, so it predates the liveness work. Not in `check` until the
-# pinned polymorph-iroh carries the fix; everything client-side that
-# this gate drives (suspend, wake-probe, verdict, resume) is exercised
-# up to the wedge.
+# This drill flushed out two upstream bugs, both fixed:
+#  - polymorph-iroh: a resource outliving its connection acted on the
+#    slot's next occupant (handle reuse) -- its drop-implied reset(0)
+#    killed every freshly resumed connection at birth. Fixed by the
+#    epoch guard the PIROH_PIN now carries (polymorph-iroh#78/#79).
+#  - lann/webrtc: the peer-connection driver hot-spun at 100% CPU on a
+#    timeout its core would not advance (a vanished peer), starving the
+#    whole host -- the listener endpoint went deaf and its zombie
+#    session never idle-timed-out. Fix is a forward-progress guard in
+#    the driver's event loop; NOT YET in the pinned chain (the fork is
+#    outside this project's pins), so this gate stays out of `check`
+#    until wasmtime-webrtc-datachannels pins a webrtc rev that carries
+#    it. Verified green end to end with that guard applied locally.
 browser-freeze: site hosts
     #!/usr/bin/env bash
     set -euo pipefail

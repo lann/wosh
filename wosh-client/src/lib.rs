@@ -1070,9 +1070,10 @@ async fn resume_loop(state: &Rc<State>, generation: u64) {
         }
         let (reply, deferred) = match outcome {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
                 // A handshake that dies mid-flight is just another dead
                 // attempt; the window covers it.
+                eprintln!("resume: handshake failed ({e}); retrying");
                 next_attempt!(conn.close(0, "resume handshake failed"));
             }
         };
@@ -1261,7 +1262,7 @@ async fn handshake(
 ) -> Result<(HelloReply, Vec<Vec<u8>>), String> {
     send.write(wosh_tunnel::encode_hello(hello))
         .await
-        .map_err(err("tunnel hello"))?;
+        .map_err(err("tunnel hello write"))?;
     let mut deferred = Vec::new();
     loop {
         loop {
@@ -1282,7 +1283,7 @@ async fn handshake(
         match recv.read(READ_CHUNK).await {
             Ok(Some(bytes)) => decoder.feed(&bytes),
             Ok(None) => return Err("listener closed before replying".into()),
-            Err(e) => return Err(format!("tunnel hello: {e:?}")),
+            Err(e) => return Err(format!("tunnel hello read: {e:?}")),
         }
     }
 }

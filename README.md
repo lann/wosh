@@ -492,14 +492,17 @@ Verified working:
 - The **freeze drill** (`just browser-freeze`, not yet in `check`):
   SIGSTOP the page's renderer 45s — a faithful phone-in-pocket — then
   thaw and demand the wake-probe/resume ladder recover the parked
-  session. This gate currently FAILS on an upstream bug it exposed,
-  which predates the liveness work (reproduced against the pre-v3
-  listener, and natively with no browser: `wosh-smoke-test --hold-ms`
-  + SIGSTOP): a peer silent for ~45s mid-session leaves the
-  polymorph-iroh endpoint on the other side permanently unable to
-  accept new connections, and the zombie session never idle-times-out
-  either — so the listener neither parks the old session nor answers
-  the redial. The gate stays, red, until the pin carries the fix.
+  session, which it does in under a second. The drill flushed out two
+  upstream bugs, since fixed: a polymorph-iroh resource that outlived
+  its connection acted on the slot's NEXT occupant (handle reuse), so
+  the dead attachment's dying send stream reset every freshly resumed
+  connection at birth (polymorph-iroh#78; the pinned revision carries
+  the epoch guard); and the webrtc peer-connection driver hot-spun at
+  100% CPU on a timeout its core would not advance once the peer
+  vanished, starving the whole host — the listener endpoint went deaf
+  and its zombie session never idle-timed-out. The gate joins `check`
+  once the pinned chain carries the webrtc driver guard; it runs green
+  with that guard applied locally.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs

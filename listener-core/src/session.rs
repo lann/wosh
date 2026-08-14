@@ -275,6 +275,16 @@ fn park(sess: &Rc<Session>, reg: &Rc<Registry>, id: [u8; 16], grace: u64, peer: 
         if let Some(c) = st.conn.take() {
             c.close(0, "attachment ended");
         }
+        // Release the dead attachment's write half NOW, not at the next
+        // attach. The stream is unusable the moment its connection dies,
+        // and a resource held across that death is a live hazard: its
+        // eventual drop fires a reset by CONNECTION HANDLE, and handles
+        // are slab slots the endpoint reuses -- held long enough (until
+        // a resume attaches, exactly this path), the reset lands on the
+        // REUSED slot, i.e. on the fresh connection it just attached.
+        // Dropped here, the slot still belongs to the dead connection
+        // and the reset is a no-op.
+        st.send.take();
         st.attached = false;
         st.generation += 1;
         st.park_epoch += 1;
