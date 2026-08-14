@@ -15,7 +15,7 @@
 // single async loop with ONE drainer -- two concurrent drains could
 // interleave screen bytes out of order.
 
-import { initMobile, transformInput } from "./mobile.mjs";
+import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
@@ -49,7 +49,7 @@ const overlay = new OverlayAddon();
 term.loadAddon(overlay);
 term.open(document.getElementById("term"));
 fit.fit(); // synchronous: connect reads term.cols/rows immediately
-term.focus();
+autofocusTerminal(term); // not on a phone: see mobile.mjs (focus != keyboard)
 // Test hook: the browser e2e gate reads the screen through the buffer
 // API, because the canvas renderer leaves nothing scrapeable in the DOM.
 window.__wosh.term = term;
@@ -376,7 +376,7 @@ export async function connect({ connstring, user, ui }) {
   }
 
   status(`connected as ${user}`);
-  term.focus();
+  autofocusTerminal(term); // ditto: a phone gets the keyboard by tapping
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
   // The single output drainer for this session.

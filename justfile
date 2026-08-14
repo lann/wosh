@@ -236,11 +236,12 @@ e2e-pairing: compose
     grep -q 'refused: bad pairing token (and not a paired device)' /tmp/wosh-pairing-2.log
     echo "E2E-PAIRING PASS: enrollment survives token rotation; new devices still need a live token"
 
-# Extra-keys bar gesture gate: a key fires on a tap and never on a drag
-# (the strip scrolls under the same thumb). Drives site/mobile.mjs and
-# the page's own stylesheet with synthesized touch in headless Chromium
-# -- no component, no relay -- so it needs no `just site`, only
-# `just web-deps` once.
+# Mobile keyboard layer: a key fires on a tap and never on a drag (the
+# strip scrolls under the same thumb), and a freshly opened page leaves
+# the soft keyboard reachable -- nothing may hold a focus that cannot
+# summon it. Drives site/mobile.mjs and the page's own stylesheet with
+# synthesized touch in headless Chromium -- no component, no relay -- so
+# it needs no `just site`, only `just web-deps` once.
 browser-keys:
     node host-test/browser-keys.mjs
 

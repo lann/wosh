@@ -351,15 +351,19 @@ Verified working:
   prompt on the next connect, and a pinned listener presenting a
   DIFFERENT host key gets the loud changed-key warning showing both
   fingerprints.
-- **The extra-keys bar's gestures** (`just browser-keys`): synthesized
-  touch in headless Chromium drives the mobile key strip against the
-  page's real stylesheet -- a tap types (without taking focus off the
+- **The mobile keyboard layer** (`just browser-keys`): synthesized
+  touch in headless Chromium drives the key strip against the page's
+  real stylesheet -- a tap types (without taking focus off the
   terminal, which would drop the soft keyboard), a finger that drags
   off a key types nothing, and a sideways flick scrolls the strip
   instead of emitting the key it started on. The bar sits under the
-  thumb and its strip scrolls, so press-vs-drag is a live conflict; no
-  other gate can see it, since the e2e legs type through xterm and
-  none of them synthesize a finger that moves.
+  thumb and its strip scrolls, so press-vs-drag is a live conflict.
+  Plus the rule that keeps the keyboard reachable: on a touch device a
+  freshly opened page leaves nothing focused, because a focus the page
+  took for itself cannot summon a keyboard -- it can only make the
+  taps that would look like no-ops. No other gate can see any of this;
+  the e2e legs type through xterm, and none of them synthesize a finger
+  that moves.
 - Listener identity persistence: the endpoint id (and so the browser's
   pins) survives listener restarts; `--ephemeral-identity` restores the
   old per-run behavior.
