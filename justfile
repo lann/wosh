@@ -183,6 +183,59 @@ e2e: compose
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
 
+# The legibility gate for a passkey a server will not take.
+#
+# The sshd here is the one almost everyone actually runs -- password
+# auth on, and the browser-webauthn algorithm left at its pre-10.3
+# default of NOT enabled -- which is the combination behind the only
+# bug this feature has had in the field. The key is refused, the server
+# then offers password, and this client declines it; x/crypto reports
+# the LAST error any method produced, so a careless decline ("password
+# auth not selected") became the entire explanation of a failure that
+# had nothing to do with passwords, and sent its reader looking in the
+# wrong place.
+#
+# So this gate asserts the failure TEXT, not merely the failure. It
+# runs its own sshd beside the shared one rather than reconfiguring it:
+# `test-sshd.sh start` is idempotent, and a differently-configured sshd
+# left running would be adopted by every later gate as the usual one.
+e2e-passkey-unprepared: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    export WOSH_SSHD_NAME=unprepared WOSH_SSHD_UNPREPARED=1 WOSH_SSHD_PORT=2225
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop e2e-passkey-unprepared; scripts/test-sshd.sh stop' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start e2e-passkey-unprepared target/release/wosh-listener --ephemeral-identity \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
+    sleep 7
+    cs=$(scripts/gate-proc.sh field e2e-passkey-unprepared connstring)
+    out=.deps/run/e2e-passkey-unprepared.out
+    set +e
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" --auth passkey \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)" > "$out" 2>&1
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+        echo "UNEXPECTED: the passkey authenticated against an sshd that never enabled the algorithm" >&2
+        cat "$out" >&2; exit 1
+    fi
+    # It must blame the KEY and name the algorithm: that name is the
+    # whole actionable content, since the cure is one sshd_config line.
+    grep -q 'did not accept the offered key' "$out"
+    grep -q 'webauthn-sk-ecdsa-sha2-nistp256@openssh.com' "$out"
+    # ...and must not blame the password method, which was never part
+    # of this.
+    ! grep -q 'password auth not selected' "$out"
+    echo
+    echo "E2E-PASSKEY-UNPREPARED PASS: a server that has not enabled the algorithm fails legibly -- the error names the refused key, not the password method it also offered"
+
 # Keyboard-interactive, end to end: the same composed client, over the
 # same real iroh path, against the scripted x/crypto stand-in server
 # (real sshd cannot do kbd-interactive as a user process -- its only
@@ -457,7 +510,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
