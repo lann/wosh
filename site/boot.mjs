@@ -18,7 +18,17 @@
 // key escrow and its own IndexedDB identity -- none of which applies
 // here: authentication is SSH's own.
 
-import { identity, detach, capabilities } from "./app.mjs";
+import {
+  identity,
+  detach,
+  capabilities,
+  passkeyIdentity,
+  enrollPasskey,
+  adoptPasskey,
+  recoverPasskey,
+  forgetPasskey,
+  installPasskeyCeremonyGate,
+} from "./app.mjs";
 import { scanQr } from "./qr.mjs";
 
 const el = (tag, props = {}, ...children) => {
@@ -304,6 +314,7 @@ export async function initBoot(panel, { onConnect }) {
   method.append(
     el("option", { value: "auto", textContent: "automatic (server chooses)" }),
     el("option", { value: "publickey", textContent: "publickey (this browser's key)" }),
+    el("option", { value: "passkey", textContent: "passkey" }),
     el("option", { value: "password", textContent: "password" }),
     el("option", { value: "keyboard-interactive", textContent: "keyboard-interactive (OTP/2FA)" }),
   );
@@ -311,6 +322,28 @@ export async function initBoot(panel, { onConnect }) {
   const connectBtn = el("button", { textContent: "connect" });
   const showKeyBtn = el("button", { textContent: "show this browser's public key" });
   const closeBtn = el("button", { textContent: "×", title: "close" });
+
+  // --- passkey section: enrol / adopt / forget ---------------------------
+  //
+  // Offered only once capabilities() confirms both the component build
+  // and the platform support it (see below). What is shown is always
+  // an ordinary `authorized_keys` line -- the same kind already
+  // displayed above for the browser's own WebCrypto key -- because
+  // that is the whole truth here: nothing is installed on the target
+  // beyond that line. OpenSSH has verified these since 8.4, though
+  // only 10.3 and later accept the algorithm without an sshd_config
+  // line -- which is why the enrolled view says so rather than
+  // promising it always just works.
+  const passkeySection = el("div", { className: "passkey" });
+  const passkeyStatus = el("div", { className: "sub" });
+  const enrollBtn = el("button", { textContent: "enrol a passkey" });
+  const forgetBtn = el("button", { textContent: "forget" });
+  const adoptInput = el("input", {
+    size: 40,
+    placeholder: "paste the authorized_keys line from another device",
+  });
+  const adoptBtn = el("button", { textContent: "adopt" });
+  const recoverBtn = el("button", { textContent: "recover from this passkey" });
 
   // Connection history: tap to reconnect. Rendered only when there is
   // something to show; the whole section disappears otherwise.
@@ -346,6 +379,7 @@ export async function initBoot(panel, { onConnect }) {
         textContent: "(the pairing token is never saved)",
       })),
     keyRow,
+    passkeySection,
     notice,
   );
 
@@ -495,6 +529,12 @@ export async function initBoot(panel, { onConnect }) {
           "auth yet; password and keyboard-interactive still work";
       }
       if (!caps.keyboardInteractive) drop("keyboard-interactive");
+      if (!caps.passkey) {
+        drop("passkey");
+      } else {
+        passkeySection.hidden = false;
+        renderPasskey();
+      }
     } catch (e) {
       notice.textContent = `could not load the client component: ${e.message ?? e}`;
     }
@@ -516,6 +556,152 @@ export async function initBoot(panel, { onConnect }) {
       keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
     }
   });
+
+  // The passkey section: hidden until capabilities() confirms support
+  // (see above), then kept in sync with whatever is currently
+  // enrolled. Truthful copy throughout: this is an ordinary
+  // authorized_keys line, nothing more is installed on the target.
+  passkeySection.hidden = true;
+  const renderPasskey = async () => {
+    passkeySection.replaceChildren();
+    let line = null;
+    try {
+      line = await passkeyIdentity();
+    } catch (e) {
+      passkeyStatus.textContent = `could not read the passkey identity: ${e.message ?? e}`;
+    }
+    passkeySection.append(
+      el("div", { className: "field" }, el("span", { textContent: "passkey" })),
+    );
+    if (line) {
+      passkeySection.append(
+        el("div", {
+          textContent:
+            "enrolled -- add this line to ~/.ssh/authorized_keys on the target host:",
+        }),
+        el("code", { textContent: line }),
+        el("div", {
+          className: "sub",
+          textContent:
+            "Nothing else is installed on the target. OpenSSH 10.3 and later accept " +
+            "this as-is; on 8.4 through 10.2 the server also needs " +
+            "PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com " +
+            "in sshd_config, or it refuses the key before ever checking a signature.",
+        }),
+        el("div", { className: "row" }, forgetBtn),
+      );
+    } else {
+      passkeySection.append(
+        el("div", {
+          className: "sub",
+          textContent:
+            "no passkey enrolled -- enrolling asks your platform authenticator to create one, " +
+            "then prints an ordinary authorized_keys line to install on the target",
+        }),
+        el("div", { className: "row" }, enrollBtn),
+        el("div", { className: "row" }, adoptInput, adoptBtn),
+        el("div", {
+          className: "sub",
+          textContent: "adopting brings in a passkey already enrolled on another device, from the line it printed there",
+        }),
+        el("div", { className: "row" }, recoverBtn),
+        el("div", {
+          className: "sub",
+          textContent:
+            "recovering needs nothing else -- not the authorized_keys line, not the target, not " +
+            "another device -- but asks for TWO touches of the SAME passkey to work its public " +
+            "key back out. Prefer adopt when the line is to hand: one touch, and no chance of " +
+            "picking the wrong passkey partway through.",
+        }),
+      );
+    }
+    passkeySection.append(passkeyStatus);
+  };
+
+  enrollBtn.addEventListener("click", async () => {
+    passkeyStatus.textContent = "touch your passkey to create it…";
+    try {
+      await enrollPasskey();
+      passkeyStatus.textContent = "";
+      await renderPasskey();
+    } catch (e) {
+      passkeyStatus.textContent = `enrol failed: ${e.message ?? e}`;
+    }
+  });
+
+  adoptBtn.addEventListener("click", async () => {
+    const line = adoptInput.value.trim();
+    if (!line) {
+      passkeyStatus.textContent = "paste an authorized_keys line first";
+      return;
+    }
+    passkeyStatus.textContent = "touch the passkey to confirm…";
+    try {
+      await adoptPasskey(line);
+      passkeyStatus.textContent = "";
+      await renderPasskey();
+    } catch (e) {
+      passkeyStatus.textContent = `adopt failed: ${e.message ?? e}`;
+    }
+  });
+
+  // recover-passkey runs from a real button press, so it already has
+  // user activation of its own -- it does NOT go through the
+  // installPasskeyCeremonyGate below, which exists for
+  // authenticate-passkey's server-triggered ceremony instead.
+  recoverBtn.addEventListener("click", async () => {
+    passkeyStatus.textContent = "touch the passkey twice to recover it…";
+    try {
+      await recoverPasskey();
+      passkeyStatus.textContent = "";
+      await renderPasskey();
+    } catch (e) {
+      passkeyStatus.textContent = `recover failed: ${e.message ?? e}`;
+    }
+  });
+
+  // Two-step, same idiom as the history rows' forget button: the
+  // credential survives in the authenticator either way, but this
+  // client will stop offering it, so a confirming tap guards against
+  // an accidental click locking someone out mid-session.
+  armTwoStep(forgetBtn, "forget?", async () => {
+    try {
+      await forgetPasskey();
+      await renderPasskey();
+    } catch (e) {
+      passkeyStatus.textContent = `forget failed: ${e.message ?? e}`;
+    }
+  });
+
+  // The ceremony gate: authenticate-passkey needs a live user gesture
+  // to run its WebAuthn assertion, but the server's demand for a
+  // signature arrives while this page is polling status in the
+  // background, with none in scope. This small in-panel prompt is
+  // that gesture -- installed once, used by every passkey attempt.
+  //
+  // At most one prompt exists at a time, and a superseded one is
+  // withdrawn rather than left on screen: the attempt that asked for it
+  // is already gone, so a stale "the server is asking" row would be
+  // inviting a tap that resolves nothing.
+  let pendingCeremony = null;
+  const withdrawCeremony = () => {
+    pendingCeremony?.remove();
+    pendingCeremony = null;
+  };
+  installPasskeyCeremonyGate(() =>
+    new Promise((resolve) => {
+      withdrawCeremony();
+      const row = el("div", { className: "confirm" });
+      const btn = el("button", { textContent: "touch your passkey to sign in" });
+      row.append(el("div", { textContent: "the server is asking for your passkey:" }), btn);
+      panel.append(row);
+      pendingCeremony = row;
+      btn.addEventListener("click", () => {
+        withdrawCeremony();
+        resolve();
+      });
+    })
+  ).catch((e) => console.warn("wosh: could not install the passkey ceremony gate", e));
 
   // The human decisions, rendered inline in the panel.
   const ui = {
@@ -604,6 +790,9 @@ export async function initBoot(panel, { onConnect }) {
       if (method.value === "keyboard-interactive") {
         return { kind: "keyboard-interactive" };
       }
+      if (method.value === "passkey") {
+        return { kind: "passkey" };
+      }
       return { kind: "publickey" };
     },
     // One keyboard-interactive batch: instruction text, then an input
@@ -683,6 +872,9 @@ export async function initBoot(panel, { onConnect }) {
       notice.textContent = `${e.message ?? e}`;
     } finally {
       connectBtn.disabled = false;
+      // An attempt that died mid-ceremony leaves nothing to tap: the
+      // signature it was asking for belongs to a session that is gone.
+      withdrawCeremony();
     }
   };
 

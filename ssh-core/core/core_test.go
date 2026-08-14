@@ -348,7 +348,11 @@ func (e *authError) Error() string { return e.s }
 
 // --- 4. publickey: the parked signer ---------------------------------
 
-func TestPublickeyAuthParksForSignature(t *testing.T) {
+// ed25519Offer builds the offer record for a freshly generated
+// Ed25519 identity, the way an embedder would: the algorithm name and
+// the key blob come from x/crypto itself, not from hand-rolled bytes.
+func ed25519Offer(t *testing.T) (PublicKey, ed25519.PrivateKey, ssh.PublicKey) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate identity: %v", err)
@@ -356,6 +360,129 @@ func TestPublickeyAuthParksForSignature(t *testing.T) {
 	sshPub, err := ssh.NewPublicKey(pub)
 	if err != nil {
 		t.Fatalf("wrap identity: %v", err)
+	}
+	return PublicKey{Algorithm: sshPub.Type(), Blob: sshPub.Marshal()}, priv, sshPub
+}
+
+// ed25519Signature is what an embedder's key store hands back: the
+// signature record for the offered key. The private half never enters
+// the component.
+func ed25519Signature(priv ed25519.PrivateKey, data []byte) Signature {
+	return Signature{Format: ssh.KeyAlgoED25519, Blob: ed25519.Sign(priv, data)}
+}
+
+func TestPublickeyAuthParksForSignature(t *testing.T) {
+	offer, priv, sshPub := ed25519Offer(t)
+
+	r := start(t, &ssh.ServerConfig{
+		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if !bytes.Equal(key.Marshal(), sshPub.Marshal()) {
+				return nil, &authError{"unknown key"}
+			}
+			return &ssh.Permissions{}, nil
+		},
+	}, echoShell(0))
+
+	r.waitState(t, StateHostKeyCheck)
+	r.eng.ConfirmHostKey(true)
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer}); err != nil {
+		t.Fatalf("AuthenticatePublickey: %v", err)
+	}
+
+	r.waitState(t, StateSigning)
+	req := r.eng.PendingSignature()
+	if req == nil || len(req.Data) == 0 {
+		t.Fatal("status is signing but no signature request is pending")
+	}
+	// The request echoes the offered key byte for byte: that is how
+	// an embedder holding several keepers knows which one to ask.
+	if req.Key.Algorithm != offer.Algorithm || !bytes.Equal(req.Key.Blob, offer.Blob) {
+		t.Fatalf("pending key = %q/%x, want %q/%x",
+			req.Key.Algorithm, req.Key.Blob, offer.Algorithm, offer.Blob)
+	}
+	// A wrong-length Ed25519 signature is refused without disturbing
+	// the park.
+	if err := r.eng.ProvideSignature(Signature{
+		Format: ssh.KeyAlgoED25519, Blob: []byte{0x00, 0x01, 0x02},
+	}); err == nil {
+		t.Fatal("ProvideSignature accepted a 3-byte Ed25519 signature")
+	}
+	if st, _ := r.eng.Status(); st != StateSigning {
+		t.Fatalf("a rejected signature disturbed the park: %s", stateName(st))
+	}
+
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err != nil {
+		t.Fatalf("ProvideSignature: %v", err)
+	}
+	r.waitState(t, StateReady)
+
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err == nil {
+		t.Fatal("ProvideSignature succeeded with nothing pending")
+	}
+}
+
+// TestProvideSignatureRefusesAForeignFormat defends the legibility
+// guard: sshd compares the offered algorithm name against the name
+// inside the signature and answers a mismatch with an opaque failure
+// several round trips later, so the core refuses it up front -- and,
+// like every other malformed answer, leaves the request pending for
+// the embedder to retry correctly.
+func TestProvideSignatureRefusesAForeignFormat(t *testing.T) {
+	offer, priv, _ := ed25519Offer(t)
+
+	r := start(t, &ssh.ServerConfig{
+		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
+			return &ssh.Permissions{}, nil
+		},
+	}, echoShell(0))
+
+	r.waitState(t, StateHostKeyCheck)
+	r.eng.ConfirmHostKey(true)
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer}); err != nil {
+		t.Fatalf("AuthenticatePublickey: %v", err)
+	}
+	r.waitState(t, StateSigning)
+	req := r.eng.PendingSignature()
+	if req == nil {
+		t.Fatal("no signature request pending")
+	}
+
+	wrong := ed25519Signature(priv, req.Data)
+	wrong.Format = "webauthn-sk-ecdsa-sha2-nistp256@openssh.com"
+	err := r.eng.ProvideSignature(wrong)
+	if err == nil {
+		t.Fatal("ProvideSignature accepted a format that is not the pending key's algorithm")
+	}
+	if !strings.Contains(err.Error(), wrong.Format) || !strings.Contains(err.Error(), offer.Algorithm) {
+		t.Fatalf("error %q should quote both the given format and the expected algorithm", err)
+	}
+	if st, _ := r.eng.Status(); st != StateSigning {
+		t.Fatalf("a rejected format disturbed the park: %s", stateName(st))
+	}
+	if again := r.eng.PendingSignature(); again == nil || !bytes.Equal(again.Data, req.Data) {
+		t.Fatal("the request should still be pending, unchanged")
+	}
+
+	// The retry with the right format still works.
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err != nil {
+		t.Fatalf("ProvideSignature after the refused one: %v", err)
+	}
+	r.waitState(t, StateReady)
+}
+
+// TestPublickeyFallsThroughToTheSecondKey defends the
+// graceful-degradation path a passkey depends on: when the server will
+// not take the first key's algorithm, the offer moves on to the next
+// key WITHIN THE SAME CONNECTION, and only the key the server actually
+// accepted is ever signed for. (In production the skipped key is a
+// webauthn offer to a pre-8.4 sshd; here it is a made-up algorithm
+// name over the same blob, which the server refuses on the same
+// "algorithm not accepted" path.)
+func TestPublickeyFallsThroughToTheSecondKey(t *testing.T) {
+	offer, priv, sshPub := ed25519Offer(t)
+	unsupported := PublicKey{
+		Algorithm: "synthetic-unsupported-alg@wosh.test",
+		Blob:      offer.Blob,
 	}
 
 	r := start(t, &ssh.ServerConfig{
@@ -369,40 +496,32 @@ func TestPublickeyAuthParksForSignature(t *testing.T) {
 
 	r.waitState(t, StateHostKeyCheck)
 	r.eng.ConfirmHostKey(true)
-	if err := r.eng.AuthenticatePublickey(pub); err != nil {
+	if err := r.eng.AuthenticatePublickey([]PublicKey{unsupported, offer}); err != nil {
 		t.Fatalf("AuthenticatePublickey: %v", err)
 	}
 
 	r.waitState(t, StateSigning)
-	blob := r.eng.PendingSignature()
-	if len(blob) == 0 {
-		t.Fatal("status is signing but no signature blob is pending")
+	req := r.eng.PendingSignature()
+	if req == nil {
+		t.Fatal("no signature request pending")
 	}
-	// A wrong-length signature is refused without disturbing the park.
-	if err := r.eng.ProvideSignature([]byte{0x00, 0x01, 0x02}); err == nil {
-		t.Fatal("ProvideSignature accepted a 3-byte signature")
+	// The park is for the SECOND key: the first was skipped without
+	// ever asking the embedder for a signature.
+	if req.Key.Algorithm != offer.Algorithm {
+		t.Fatalf("parked for algorithm %q, want the second key's %q",
+			req.Key.Algorithm, offer.Algorithm)
 	}
-	if st, _ := r.eng.Status(); st != StateSigning {
-		t.Fatalf("a rejected signature disturbed the park: %s", stateName(st))
+	if !bytes.Equal(req.Key.Blob, offer.Blob) {
+		t.Fatal("parked request does not echo the second key's blob")
 	}
-
-	// The private half never enters the component: the test signs on
-	// its own, exactly as the embedder's key store would.
-	if err := r.eng.ProvideSignature(ed25519.Sign(priv, blob)); err != nil {
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err != nil {
 		t.Fatalf("ProvideSignature: %v", err)
 	}
 	r.waitState(t, StateReady)
-
-	if err := r.eng.ProvideSignature(make([]byte, ed25519.SignatureSize)); err == nil {
-		t.Fatal("ProvideSignature succeeded with nothing pending")
-	}
 }
 
 func TestFailedSignatureClosesLegibly(t *testing.T) {
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate identity: %v", err)
-	}
+	offer, _, _ := ed25519Offer(t)
 	r := start(t, &ssh.ServerConfig{
 		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
@@ -411,7 +530,7 @@ func TestFailedSignatureClosesLegibly(t *testing.T) {
 
 	r.waitState(t, StateHostKeyCheck)
 	r.eng.ConfirmHostKey(true)
-	if err := r.eng.AuthenticatePublickey(pub); err != nil {
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer}); err != nil {
 		t.Fatalf("AuthenticatePublickey: %v", err)
 	}
 	r.waitState(t, StateSigning)
@@ -423,7 +542,13 @@ func TestFailedSignatureClosesLegibly(t *testing.T) {
 	}
 }
 
-func TestPublickeyRejectsMalformedKey(t *testing.T) {
+// TestPublickeyRejectsMalformedOffers pins the synchronous refusals.
+// The core parses no key blob, so "malformed" here means only what it
+// can judge: a missing algorithm name, a missing blob, or an offer of
+// nothing at all. Each must be refused BEFORE anything is latched --
+// proven by a legitimate authenticate call still succeeding after.
+func TestPublickeyRejectsMalformedOffers(t *testing.T) {
+	offer, priv, _ := ed25519Offer(t)
 	r := start(t, &ssh.ServerConfig{
 		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
@@ -431,9 +556,33 @@ func TestPublickeyRejectsMalformedKey(t *testing.T) {
 	}, echoShell(0))
 	r.waitState(t, StateHostKeyCheck)
 	r.eng.ConfirmHostKey(true)
-	if err := r.eng.AuthenticatePublickey([]byte{0x00, 0x01, 0x02}); err == nil {
-		t.Fatal("AuthenticatePublickey accepted a 3-byte public key")
+
+	if err := r.eng.AuthenticatePublickey(nil); err == nil {
+		t.Fatal("AuthenticatePublickey accepted an empty offer")
 	}
+	if err := r.eng.AuthenticatePublickey([]PublicKey{{Blob: offer.Blob}}); err == nil {
+		t.Fatal("AuthenticatePublickey accepted a key with no algorithm name")
+	}
+	if err := r.eng.AuthenticatePublickey([]PublicKey{{Algorithm: offer.Algorithm}}); err == nil {
+		t.Fatal("AuthenticatePublickey accepted a key with no blob")
+	}
+	// A bad key anywhere in the list rejects the whole offer.
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer, {Algorithm: "x"}}); err == nil {
+		t.Fatal("AuthenticatePublickey accepted a list with a malformed second key")
+	}
+	// Nothing was latched: the real offer still authenticates.
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer}); err != nil {
+		t.Fatalf("AuthenticatePublickey after refused offers: %v", err)
+	}
+	r.waitState(t, StateSigning)
+	req := r.eng.PendingSignature()
+	if req == nil {
+		t.Fatal("no signature request pending")
+	}
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err != nil {
+		t.Fatalf("ProvideSignature: %v", err)
+	}
+	r.waitState(t, StateReady)
 }
 
 // --- 5. keyboard-interactive -----------------------------------------
@@ -570,25 +719,21 @@ func autoServerConfig(t *testing.T, accept ssh.PublicKey, password string) *ssh.
 }
 
 func TestAutoPrefersPublickeyWhenAKeyIsSupplied(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate identity: %v", err)
-	}
-	sshPub, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		t.Fatalf("wrap identity: %v", err)
-	}
+	offer, priv, sshPub := ed25519Offer(t)
 	r := start(t, autoServerConfig(t, sshPub, "synthetic-fixture-password"), echoShell(0))
 
 	r.waitState(t, StateHostKeyCheck)
 	r.eng.ConfirmHostKey(true)
-	if err := r.eng.AuthenticateAuto(pub); err != nil {
+	if err := r.eng.AuthenticateAuto([]PublicKey{offer}); err != nil {
 		t.Fatalf("AuthenticateAuto: %v", err)
 	}
 
 	r.waitState(t, StateSigning)
-	blob := r.eng.PendingSignature()
-	if err := r.eng.ProvideSignature(ed25519.Sign(priv, blob)); err != nil {
+	req := r.eng.PendingSignature()
+	if req == nil {
+		t.Fatal("no signature request pending")
+	}
+	if err := r.eng.ProvideSignature(ed25519Signature(priv, req.Data)); err != nil {
 		t.Fatalf("ProvideSignature: %v", err)
 	}
 	r.waitState(t, StateReady)
@@ -606,6 +751,7 @@ func TestAutoFallsBackToAOneWayMaskedPasswordPrompt(t *testing.T) {
 
 	r.waitState(t, StateHostKeyCheck)
 	r.eng.ConfirmHostKey(true)
+	// An empty offer is legal here and simply declines publickey.
 	if err := r.eng.AuthenticateAuto(nil); err != nil {
 		t.Fatalf("AuthenticateAuto: %v", err)
 	}

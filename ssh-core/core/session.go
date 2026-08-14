@@ -20,7 +20,6 @@
 package core
 
 import (
-	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net"
@@ -56,6 +55,75 @@ type PromptBatch struct {
 	Prompts     []Prompt
 }
 
+// PublicKey mirrors the WIT `public-key` record: a key offered for
+// publickey authentication, in the two parts SSH actually puts on the
+// wire.
+//
+// This engine is deliberately ignorant of key ALGEBRA: it never parses
+// Blob, never holds a private half, and cannot check a signature it
+// relays. It only needs the two strings RFC 4252 s7 asks of it, which
+// is why a new algorithm is an embedder change and not a change here.
+//
+// The two fields usually carry the same name, which is exactly why it
+// is worth spelling out that they are not the same THING. Algorithm
+// names the SIGNATURE and rides the userauth request (and the blob
+// that gets signed); Blob encodes the KEY and carries its own name
+// inside. OpenSSH's browser-webauthn algorithm is the case that
+// separates them: a plain `sk-ecdsa-sha2-nistp256@openssh.com` key
+// blob -- exactly what sits in authorized_keys -- is offered under the
+// algorithm `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`, because the
+// bytes the browser signs are shaped by WebAuthn rather than by SSH.
+// sshd resolves the algorithm name and compares it against the name
+// inside the signature, so getting the pairing backwards is rejected:
+// the split is load-bearing, not cosmetic.
+type PublicKey struct {
+	// The public key algorithm name for the userauth request: the
+	// name the SIGNATURE will carry.
+	Algorithm string
+	// The public key blob (RFC 4253 s6.6): length-prefixed name
+	// followed by algorithm-specific fields. Opaque here.
+	Blob []byte
+}
+
+// Signature mirrors the WIT `signature` record: a finished signature
+// in the three parts an SSH signature blob is built from -- `string
+// format`, `string blob`, then whatever the algorithm appends.
+//
+// Trailer exists for the security-key algorithms, which hang extra
+// fields off the end of the standard two (authenticator flags, the
+// signature counter, and for webauthn the origin and clientData the
+// browser signed). It is appended verbatim, already SSH-encoded by
+// whoever produced the signature; for every ordinary algorithm it is
+// empty. x/crypto/ssh's ssh.Signature.Rest field is `ssh:"rest"`-
+// tagged and exists for precisely this, so no fork is needed.
+type Signature struct {
+	// The signature algorithm name, which must be the Algorithm of
+	// the key this signature answers for.
+	Format string
+	// The algorithm's own signature encoding (for Ed25519 the raw 64
+	// bytes; for ECDSA an `mpint r, mpint s` pair).
+	Blob []byte
+	// Extra algorithm-specific fields, SSH-encoded, appended after
+	// Blob. Empty for everything but the security-key algorithms.
+	Trailer []byte
+}
+
+// SignRequest mirrors the WIT `sign-request` record: the bytes to
+// sign, and the key they are to be signed for.
+//
+// The key rides along because an embedder may offer more than one (a
+// browser key and a passkey, say), and only it knows which keeper
+// holds which private half. Key is one of the records handed to
+// AuthenticatePublickey or AuthenticateAuto, echoed back verbatim.
+type SignRequest struct {
+	// Which offered key the server accepted and now wants proof of.
+	Key PublicKey
+	// The SSH publickey-auth signature blob (session id, user,
+	// service, algorithm, public key) to sign, verbatim. Not a hash:
+	// hashing, if the algorithm wants any, belongs to the signer.
+	Data []byte
+}
+
 // hostKeyNotConfirmed is the exact message every authenticate-* entry
 // point returns before the host-key gate resolves. It is part of the
 // observable contract (the embedder surfaces it verbatim), so it lives
@@ -67,7 +135,9 @@ const hostKeyNotConfirmed = "the host key fingerprint has not been confirmed yet
 type credential struct {
 	kind     string // "password" | "publickey" | "keyboard-interactive" | "auto"
 	password string
-	signer   ssh.Signer // publickey / auto: the parked external signer, nil if no key was offered
+	// publickey / auto: the parked external signers, one per offered
+	// key, in offer order. Empty when no key was offered.
+	signers []ssh.Signer
 }
 
 // offers reports whether this credential lets `method` proceed: the
@@ -133,7 +203,7 @@ type Engine struct {
 
 	// The external signer's park-and-poll surface: the bytes awaiting
 	// a signature, and the reply channel the embedder resolves.
-	sigRequest []byte // guarded by mu; non-nil exactly while parked
+	sigRequest *SignRequest // guarded by mu; non-nil exactly while parked
 	sigReply   chan sigReply
 	sigClosed  bool // guarded by mu
 	sigOnce    sync.Once
@@ -341,12 +411,17 @@ func (s *Engine) publicKeysCallback() ([]ssh.Signer, error) {
 	if !c.offers("publickey") {
 		return nil, fmt.Errorf("publickey auth not selected")
 	}
-	if c.signer == nil {
+	if len(c.signers) == 0 {
 		// Reached under "auto" when no key was supplied: decline so
 		// x/crypto moves on to password / keyboard-interactive.
 		return nil, fmt.Errorf("no public key was offered")
 	}
-	return []ssh.Signer{c.signer}, nil
+	// Every offered key, in order. x/crypto probes them one at a time
+	// and only parks this engine's signer for one the server says it
+	// will accept, so offering several costs at most one ceremony --
+	// which is what lets a passkey fall back to an ordinary key
+	// inside a single connection.
+	return append([]ssh.Signer(nil), c.signers...), nil
 }
 
 // keyboardInteractiveCallback answers RFC 4256 challenges. x/crypto/ssh
@@ -435,15 +510,20 @@ func (s *Engine) AuthenticatePassword(password string) error {
 	return s.supplyCreds(credential{kind: "password", password: strings.Clone(password)})
 }
 
-// AuthenticatePublickey backs `authenticate-publickey`. `pub` is a raw
-// 32-byte Ed25519 public key; the private half deliberately lives
-// outside this component (see signer.go).
-func (s *Engine) AuthenticatePublickey(pub []byte) error {
-	signer, err := s.newSigner(pub)
+// AuthenticatePublickey backs `authenticate-publickey`: offer `keys`,
+// in order. The private halves deliberately live outside this
+// component (see signer.go). An empty offer is a caller mistake, not
+// an authentication attempt, so it fails synchronously -- before
+// anything is latched.
+func (s *Engine) AuthenticatePublickey(keys []PublicKey) error {
+	signers, err := s.offerSigners(keys)
 	if err != nil {
 		return err
 	}
-	return s.supplyCreds(credential{kind: "publickey", signer: signer})
+	if len(signers) == 0 {
+		return fmt.Errorf("no public key was offered: publickey auth needs at least one key")
+	}
+	return s.supplyCreds(credential{kind: "publickey", signers: signers})
 }
 
 // AuthenticateInteractive backs `authenticate-interactive`.
@@ -452,18 +532,39 @@ func (s *Engine) AuthenticateInteractive() error {
 }
 
 // AuthenticateAuto backs `authenticate-auto`: offer every method and
-// let the server steer. `pub` may be nil, meaning no key is available
-// and the publickey method declines itself.
-func (s *Engine) AuthenticateAuto(pub []byte) error {
-	c := credential{kind: "auto"}
-	if pub != nil {
-		signer, err := s.newSigner(pub)
-		if err != nil {
-			return err
-		}
-		c.signer = signer
+// let the server steer. `keys` may be empty, which simply declines to
+// offer publickey -- the publickey method then declines itself and the
+// server steers to password / keyboard-interactive.
+func (s *Engine) AuthenticateAuto(keys []PublicKey) error {
+	signers, err := s.offerSigners(keys)
+	if err != nil {
+		return err
 	}
-	return s.supplyCreds(c)
+	return s.supplyCreds(credential{kind: "auto", signers: signers})
+}
+
+// offerSigners validates and clones the offered key records, then
+// wraps each as a parked external signer. It validates EVERY key
+// before latching anything: a rejected offer must leave the session
+// exactly as it found it, free to be authenticated properly later.
+func (s *Engine) offerSigners(keys []PublicKey) ([]ssh.Signer, error) {
+	signers := make([]ssh.Signer, 0, len(keys))
+	for i, k := range keys {
+		if k.Algorithm == "" {
+			return nil, fmt.Errorf("public key %d has an empty algorithm name", i)
+		}
+		if len(k.Blob) == 0 {
+			return nil, fmt.Errorf("public key %d (%s) has an empty key blob", i, k.Algorithm)
+		}
+		// Clone: the bindings hand over zero-copy views of transferred
+		// cabi memory that is recycled once the export returns, and
+		// the auth goroutine reads these strictly after that.
+		signers = append(signers, s.newSigner(PublicKey{
+			Algorithm: strings.Clone(k.Algorithm),
+			Blob:      append([]byte(nil), k.Blob...),
+		}))
+	}
+	return signers, nil
 }
 
 // PendingPrompts backs `pending-prompts`.
@@ -693,14 +794,4 @@ func (s *Engine) Close() {
 	_ = s.conn.Close()
 	gosched(16)
 	s.closeWith("session closed")
-}
-
-// ed25519PublicKey wraps a raw 32-byte Ed25519 public key as an
-// ssh.PublicKey.
-func ed25519PublicKey(raw []byte) (ssh.PublicKey, error) {
-	if len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("public key is %d bytes, expected %d",
-			len(raw), ed25519.PublicKeySize)
-	}
-	return ssh.NewPublicKey(ed25519.PublicKey(append([]byte(nil), raw...)))
 }

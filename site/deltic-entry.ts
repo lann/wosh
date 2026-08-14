@@ -18,7 +18,10 @@
 // The client's own `wosh:terminal/identity-store` import is served by
 // ./identity-store.ts: the browser's persistent SSH identity -- a
 // non-extractable WebCrypto pair kept in IndexedDB, exposed to the
-// component as public bytes and signatures only.
+// component as public bytes and signatures only. Its passkey sibling,
+// `wosh:terminal/passkey-store` (./passkey-store.ts), runs WebAuthn
+// ceremonies instead of holding key material at all -- the private
+// half never leaves the platform authenticator.
 //
 // MODULE IDENTITY: the bundle must carry exactly one copy of
 // @deltic/runtime/embedder, or `isComponentException` stops holding
@@ -38,8 +41,9 @@ import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "@polymorph/iroh-sockets-stubs";
 import { identityStoreImports } from "./identity-store.ts";
 import { pairingStoreImports } from "./pairing-store.ts";
+import { passkeyStoreImports, setCeremonyGate } from "./passkey-store.ts";
 
-export { ComponentException, isComponentException };
+export { ComponentException, isComponentException, setCeremonyGate };
 
 /** The interface the client component exports; see wit/terminal.wit. */
 export const TERMINAL_INTERFACE = "wosh:terminal/terminal";
@@ -81,6 +85,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     ...socketsImports(),
     ...identityStoreImports(),
     ...pairingStoreImports(),
+    ...passkeyStoreImports(),
   };
   const instance = await instantiate(artifacts, imports);
   const api = instance.exports[TERMINAL_INTERFACE];

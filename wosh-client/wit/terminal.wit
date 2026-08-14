@@ -61,6 +61,178 @@ interface identity-store {
   sign: async func(data: list<u8>) -> result<list<u8>, string>;
 }
 
+/// Host-side keeper of this client's PASSKEY SSH identity: a WebAuthn
+/// credential used directly as an SSH key.
+///
+/// OpenSSH has taken browser-made WebAuthn assertions as publickey
+/// credentials since 8.4, under the signature algorithm
+/// `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`. What the target
+/// needs is an ordinary `authorized_keys` line and nothing else --
+/// no agent, no helper, no software installed. There is one server
+/// CONFIGURATION caveat, and it is the first thing to check when this
+/// fails: only OpenSSH 10.3 and later put that algorithm in the
+/// default `PubkeyAcceptedAlgorithms` (upstream enabled it in
+/// February 2026). Every release from 8.4 onward can verify the
+/// signatures, but 8.4 through 10.2 refuse the offer before looking at
+/// one, logging "signature algorithm ... not in
+/// PubkeyAcceptedAlgorithms"; the cure is one line of sshd_config:
+/// `PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com`.
+/// Nothing in the listener participates either way; it stays a dumb
+/// pipe.
+///
+/// What this buys over `identity-store`, which is not a small list:
+/// the private half lives in the platform authenticator (Secure
+/// Enclave, TPM, StrongBox) rather than in browser storage; every
+/// signature costs a deliberate human act, so a live tab is not a
+/// standing SSH login; and sshd enforces that -- it rejects a
+/// signature whose user-presence flag is clear, and can be told to
+/// demand user verification with `verify-required`.
+///
+/// What it does NOT buy, and the reason `adopt` and `assert-unknown`
+/// exist: an assertion does not return the credential's public key, and
+/// WebAuthn fixes the user handle at registration -- before the key
+/// exists -- so there is nowhere to stash it inside the credential. A
+/// passkey that syncs to a second device, or that outlives an eviction
+/// of this browser's storage, therefore arrives without the one thing
+/// SSH must put on the wire.
+///
+/// The public half is not a secret, so there are two mundane cures.
+/// Carry the `authorized_keys` line (the same string already installed
+/// on the target) to the other device and `adopt` it. Or, when that
+/// line is not to hand -- storage evicted, and the target unreachable
+/// without it -- RECOVER it from the credential itself: two assertions
+/// determine the key that made them, at the cost of two touches and
+/// nothing else.
+///
+/// This interface is WebAuthn-shaped rather than SSH-shaped on
+/// purpose. The host runs ceremonies and hands back exactly what the
+/// browser gave it; the client component owns every byte of SSH
+/// encoding. A host that lies about the public key produces
+/// signatures the server refuses -- the same failure mode as
+/// `identity-store`, resolved by the server, not by trust here.
+interface passkey-store {
+  /// A passkey enrolled as an SSH identity.
+  record passkey-identity {
+    /// The credential's public key: an uncompressed NIST P-256 point,
+    /// 65 bytes, `0x04 || X || Y`. ECDSA/P-256 is not a preference --
+    /// it is the only curve OpenSSH's webauthn algorithm defines.
+    public-key: list<u8>,
+    /// The WebAuthn Relying Party ID the credential is scoped to (for
+    /// a browser, the site's domain).
+    ///
+    /// This is not bookkeeping: it goes verbatim into the offered key
+    /// blob's `application` field, because the authenticator signs
+    /// over `sha256(rp-id)` and sshd reconstructs that hash from the
+    /// `application` in `authorized_keys`. The identity is therefore
+    /// stamped with the origin that minted it -- a clone of this site
+    /// on another domain cannot use the same line, and moving the site
+    /// to a new domain means a new identity.
+    relying-party: string,
+  }
+
+  /// An assertion plus the credential that produced it, for a ceremony
+  /// run against a credential this client cannot yet name.
+  record recovery-assertion {
+    /// The credential's id, as the authenticator reported it. Two
+    /// recovery ceremonies must agree on this or they are describing
+    /// two different passkeys.
+    credential-id: list<u8>,
+    /// The Relying Party ID the ceremony ran against -- the piece of
+    /// the identity that never needed recovering, since it is just this
+    /// site's domain. It rides along so the recovered identity is
+    /// complete without the client having to know its own origin, and
+    /// it is checkable: the authenticator signed over its hash.
+    relying-party: string,
+    assertion: assertion,
+  }
+
+  /// One WebAuthn assertion, verbatim as the ceremony produced it.
+  record assertion {
+    /// `authenticatorData`: the RP ID hash, the flags byte, the
+    /// signature counter, and any authenticator extension outputs.
+    authenticator-data: list<u8>,
+    /// `clientDataJSON`, byte for byte. Do not re-serialize it: sshd
+    /// checks it against a reconstructed prefix and hashes what is
+    /// sent, so a single reordered or reformatted byte fails
+    /// authentication.
+    client-data-json: list<u8>,
+    /// The credential's ECDSA signature over
+    /// `authenticator-data || sha256(client-data-json)`, in the ASN.1
+    /// DER form WebAuthn returns.
+    signature: list<u8>,
+  }
+
+  /// The enrolled passkey identity, or `none` where the user has not
+  /// enrolled one (which is the default state -- enrolment is a
+  /// deliberate act, and this client authenticates perfectly well
+  /// without it).
+  identity: async func() -> result<option<passkey-identity>, string>;
+
+  /// Run a WebAuthn registration ceremony and keep the result as this
+  /// client's passkey identity, replacing any previous one. The user
+  /// interacts with their authenticator; a refusal or a timeout is an
+  /// ordinary `err`, not a fault.
+  enroll: async func() -> result<passkey-identity, string>;
+
+  /// Adopt an identity enrolled elsewhere -- the second-device path.
+  /// The credential itself is expected to be reachable from this
+  /// device already (a synced passkey); what is missing, and what this
+  /// supplies, is the public half. Hosts should confirm the claim
+  /// before storing it, by asserting once and checking the signature
+  /// against `public-key`, so that adopting the wrong passkey fails
+  /// here rather than as an opaque server-side rejection later.
+  adopt: async func(identity: passkey-identity) -> result<_, string>;
+
+  /// Store an identity whose public half has already been PROVED, along
+  /// with the credential it belongs to.
+  ///
+  /// This is `adopt` without the confirming ceremony, and exists for
+  /// the recovery path, where the proof is the two assertions recovery
+  /// already spent the user's patience on -- asking for a third touch
+  /// to re-establish what is known would be theatre.
+  ///
+  /// The store is trusted here in the same narrow way it is trusted
+  /// everywhere else in this design: nothing it keeps is a secret, and
+  /// a wrong public key costs one failed authentication and a re-run,
+  /// because the server checks the signature against the key that was
+  /// offered.
+  remember: async func(identity: passkey-identity, credential-id: list<u8>) -> result<_, string>;
+
+  /// Forget the enrolled identity. The credential survives in the
+  /// authenticator (only its owner can delete it there); this client
+  /// simply stops offering it.
+  forget: async func() -> result<_, string>;
+
+  /// Run a WebAuthn assertion ceremony over `challenge`.
+  ///
+  /// `challenge` is the SSH signature blob VERBATIM, not a hash of it:
+  /// sshd rebuilds the expected `clientDataJSON` prefix around the
+  /// base64url of these exact bytes. The browser does that encoding
+  /// itself, so pass them through untouched.
+  ///
+  /// Request no authenticator extensions here. Any extension output
+  /// sets a flag that changes the shape of what was signed, and the
+  /// simplest way to keep the wire format predictable is to ask for
+  /// nothing.
+  assert: async func(challenge: list<u8>) -> result<assertion, string>;
+
+  /// Run an assertion ceremony without knowing which credential will
+  /// answer, and report which one did.
+  ///
+  /// This is the ceremony `recover-passkey` runs, and the only one that
+  /// works when nothing is enrolled: `assert` needs a stored record to
+  /// name the credential and to check the result against, and recovery
+  /// is precisely the situation where no such record survives. The user
+  /// chooses from whatever passkeys this site has -- which is why
+  /// `credential-id` comes back, so the caller can insist that two
+  /// ceremonies answered from the SAME credential rather than
+  /// intersecting assertions that were never going to agree.
+  ///
+  /// Same rules as `assert`: no extensions, and the challenge is passed
+  /// through untouched.
+  assert-unknown: async func(challenge: list<u8>) -> result<recovery-assertion, string>;
+}
+
 /// The browser-facing SSH terminal surface: what the static site drives
 /// (through deltic) to run an interactive shell over the iroh tunnel.
 ///
@@ -134,6 +306,54 @@ interface terminal {
   /// instance and cached.
   identity-openssh: async func() -> result<string, string>;
 
+  /// This client's PASSKEY identity as an OpenSSH `authorized_keys`
+  /// line (`sk-ecdsa-sha2-nistp256@openssh.com AAAA... wosh-passkey`),
+  /// or `none` when no passkey is enrolled.
+  ///
+  /// The line is an ordinary security-key entry -- the same kind a
+  /// hardware token gets -- and installing it is the whole procedure
+  /// on the target. (Servers older than OpenSSH 10.3 must also enable
+  /// the algorithm; see `passkey-store`.) Its `application` field is
+  /// the site's
+  /// domain rather than the customary `ssh:`, because that is what the
+  /// authenticator actually signs over -- see `passkey-store`.
+  ///
+  /// It is also the portable form of the identity: pasting this line
+  /// into another device that can reach the same passkey re-creates
+  /// the identity there (`adopt-passkey`).
+  passkey-openssh: async func() -> result<option<string>, string>;
+
+  /// Enrol a passkey as an SSH identity, replacing any previous one,
+  /// and return its `authorized_keys` line. Runs a registration
+  /// ceremony: the user will be asked to approve it.
+  enroll-passkey: async func() -> result<string, string>;
+
+  /// Recover this client's passkey identity from the credential itself,
+  /// and return its `authorized_keys` line.
+  ///
+  /// For when the passkey outlived the browser storage that described
+  /// it -- evicted, cleared, or a different browser profile. It needs
+  /// nothing external: not the line, not the target, not another
+  /// device. It asks the authenticator to sign twice (two touches, and
+  /// the SAME passkey must be chosen both times), and works the public
+  /// half out of the two signatures.
+  ///
+  /// Prefer `adopt-passkey` where the line IS to hand: one touch
+  /// instead of two, and no chance of picking the wrong credential
+  /// halfway through.
+  recover-passkey: async func() -> result<string, string>;
+
+  /// Adopt a passkey identity enrolled on another device from its
+  /// `authorized_keys` line (as `passkey-openssh` printed it there),
+  /// and return the line as this client parsed it back. The passkey
+  /// itself must be reachable from this device; only its public half
+  /// travels in the line.
+  adopt-passkey: async func(line: string) -> result<string, string>;
+
+  /// Stop offering the enrolled passkey. The credential itself is
+  /// untouched -- it lives in the authenticator, not here.
+  forget-passkey: async func() -> result<_, string>;
+
   resource session {
     /// Parse `connstring` (as printed and QR-encoded by the listener),
     /// dial that peer over iroh, open the tunnel stream, present the
@@ -173,6 +393,20 @@ interface terminal {
     /// `authenticate-password`.
     authenticate-publickey: async func() -> result<_, string>;
 
+    /// Authenticate with the enrolled passkey (see `passkey-openssh`,
+    /// whose line must be installed in the target account's
+    /// `authorized_keys`). Fails immediately if no passkey is
+    /// enrolled.
+    ///
+    /// Unlike every other method here, this one needs the human DURING
+    /// authentication, not before it: the server's demand for a
+    /// signature is what triggers the authenticator ceremony, and that
+    /// cannot be known until the session id exists. Callers driving a
+    /// browser should expect the ceremony to want a user gesture and
+    /// should not treat the pause as a stall. Same host-key gating and
+    /// the same resolve-immediately-then-poll contract as the others.
+    authenticate-passkey: async func() -> result<_, string>;
+
     /// Start keyboard-interactive authentication (RFC 4256): the
     /// server drives the exchange through prompt batches, which is how
     /// PAM OTP/2FA setups -- and sshds with plain password auth
@@ -186,13 +420,24 @@ interface terminal {
 
     /// Let the server steer method selection, the way a stock ssh
     /// client does. Every supported method is on offer -- publickey
-    /// (this browser's identity) first, then password, then
-    /// keyboard-interactive -- and the client walks that order
-    /// constrained to the methods the server says can continue.
-    /// Publickey needs no human input, so when the browser's key is
-    /// installed the session reaches `ready` without a single prompt.
-    /// Whatever does need input -- the password if the server steers
-    /// there, an OTP round -- surfaces through the same machinery as
+    /// first (the enrolled passkey, then this browser's key; both when
+    /// both exist), then password, then keyboard-interactive -- and
+    /// the client walks that order constrained to the methods the
+    /// server says can continue.
+    ///
+    /// Offering both keys is cheap and is how a passkey degrades
+    /// gracefully: each key is offered unsigned first, so an sshd too
+    /// old for webauthn, or configured not to accept it, simply
+    /// declines the passkey and the browser key answers instead --
+    /// within the same connection, with no ceremony spent. A key the
+    /// server accepts is the only one ever signed for, so at most one
+    /// authenticator ceremony happens.
+    ///
+    /// The browser key needs no human input, so when it is installed
+    /// the session reaches `ready` without a single prompt; a passkey
+    /// the server accepts will ask for the human. Whatever needs input
+    /// -- the password if the server steers there, an OTP round --
+    /// surfaces through the same machinery as
     /// `authenticate-interactive`: `status` reports `auth-prompts`,
     /// read `pending-prompts`, `answer-prompts`, repeat until the
     /// server decides. (A password request is a one-prompt masked

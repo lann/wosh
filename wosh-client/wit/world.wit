@@ -3,11 +3,12 @@ package wosh:terminal;
 /// What the wosh-client Rust component builds against. The
 /// `wosh:ssh-core` import is satisfied by `wac plug`-ing the sans-I/O
 /// Go SSH core in; `polymorph:iroh` by plugging the endpoint
-/// component; `identity-store` and `pairing-store` are served by the
-/// host (deltic in a browser, the native e2e host under wasmtime).
-/// The webcrypto import exists ONLY for the pairing identity below --
-/// the SSH identity stays behind sign-only `identity-store`, and the
-/// SSH core holds no keys at all.
+/// component; `identity-store`, `passkey-store` and `pairing-store`
+/// are served by the host (deltic in a browser, the native e2e host
+/// under wasmtime). The webcrypto import exists ONLY for the pairing
+/// identity below -- the SSH identities stay behind the sign-only
+/// `identity-store` and the ceremony-only `passkey-store`, and the SSH
+/// core holds no keys at all.
 world wosh-client {
   import polymorph:iroh/identity-generate@0.1.0;
   import polymorph:iroh/identity-from-keys@0.1.0;
@@ -21,6 +22,7 @@ world wosh-client {
   import polymorph:webcrypto/ed25519-verify@0.1.0;
   import wosh:ssh-core/core;
   import identity-store;
+  import passkey-store;
   import pairing-store;
   // Solely for the resume machine's backoff between redial attempts;
   // the composed artifact already imports this interface (the iroh

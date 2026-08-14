@@ -7,9 +7,12 @@ description = "End-to-end gate: the composed browser SSH client under wasmtime, 
 
 [dependencies]
 anyhow = "1"
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 futures = "0.3"
+p256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
 wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
 wasmtime-wasi = { version = "47", features = ["p3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

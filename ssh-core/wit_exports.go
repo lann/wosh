@@ -15,7 +15,7 @@ import (
 )
 
 var staticPinner = runtime.Pinner{}
-var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, (5 * 4), 4))
+var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, (7 * 4), 4))
 var syncExportPinner = runtime.Pinner{}
 
 //go:wasmexport wosh:ssh-core/core#[static]session.connect
@@ -196,17 +196,25 @@ func wasm_export_post_return_wosh_ssh_core_core_method_session_authenticate_pass
 func wasm_export_wosh_ssh_core_core_method_session_authenticate_publickey(arg0 uintptr, arg1 uintptr, arg2 uint32) uintptr {
 
 	pinner := &syncExportPinner
-	value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
-	witRuntime.Unpin()
-	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePublickey(value)
+	result := make([]wosh_ssh_core_core.PublicKey, 0, arg2)
+	for index := 0; index < int(arg2); index++ {
+		base := unsafe.Add(unsafe.Pointer(arg1), index*(4*4))
+		value := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(base), 0))))), *(*uint32)(unsafe.Add(unsafe.Pointer(base), 4)))
+		value0 := unsafe.Slice((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(base), (2 * 4)))))), *(*uint32)(unsafe.Add(unsafe.Pointer(base), (3 * 4))))
 
-	switch result.Tag() {
+		result = append(result, wosh_ssh_core_core.PublicKey{value, value0})
+	}
+
+	witRuntime.Unpin()
+	result1 := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticatePublickey(result)
+
+	switch result1.Tag() {
 	case witTypes.ResultOk:
 
 		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
 
 	case witTypes.ResultErr:
-		payload := result.Err()
+		payload := result1.Err()
 		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
 		utf8 := unsafe.Pointer(unsafe.StringData(payload))
 		pinner.Pin(utf8)
@@ -257,31 +265,28 @@ func wasm_export_post_return_wosh_ssh_core_core_method_session_authenticate_inte
 }
 
 //go:wasmexport wosh:ssh-core/core#[method]session.authenticate-auto
-func wasm_export_wosh_ssh_core_core_method_session_authenticate_auto(arg0 uintptr, arg1 int32, arg2 uintptr, arg3 uint32) uintptr {
+func wasm_export_wosh_ssh_core_core_method_session_authenticate_auto(arg0 uintptr, arg1 uintptr, arg2 uint32) uintptr {
 
 	pinner := &syncExportPinner
-	var option witTypes.Option[[]uint8]
-	switch arg1 {
-	case 0:
+	result := make([]wosh_ssh_core_core.PublicKey, 0, arg2)
+	for index := 0; index < int(arg2); index++ {
+		base := unsafe.Add(unsafe.Pointer(arg1), index*(4*4))
+		value := unsafe.String((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(base), 0))))), *(*uint32)(unsafe.Add(unsafe.Pointer(base), 4)))
+		value0 := unsafe.Slice((*uint8)(unsafe.Pointer(uintptr(*(*uint32)(unsafe.Add(unsafe.Pointer(base), (2 * 4)))))), *(*uint32)(unsafe.Add(unsafe.Pointer(base), (3 * 4))))
 
-		option = witTypes.None[[]uint8]()
-	case 1:
-		value := unsafe.Slice((*uint8)(unsafe.Pointer(arg2)), arg3)
-
-		option = witTypes.Some[[]uint8](value)
-	default:
-		panic("unreachable")
+		result = append(result, wosh_ssh_core_core.PublicKey{value, value0})
 	}
-	witRuntime.Unpin()
-	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticateAuto(option)
 
-	switch result.Tag() {
+	witRuntime.Unpin()
+	result1 := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).AuthenticateAuto(result)
+
+	switch result1.Tag() {
 	case witTypes.ResultOk:
 
 		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
 
 	case witTypes.ResultErr:
-		payload := result.Err()
+		payload := result1.Err()
 		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
 		utf8 := unsafe.Pointer(unsafe.StringData(payload))
 		pinner.Pin(utf8)
@@ -313,10 +318,18 @@ func wasm_export_wosh_ssh_core_core_method_session_pending_signature(arg0 uintpt
 	case witTypes.OptionSome:
 		payload := result.Some()
 		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
-		data := unsafe.Pointer(unsafe.SliceData(payload))
+		utf8 := unsafe.Pointer(unsafe.StringData(((payload).Key).Algorithm))
+		pinner.Pin(utf8)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(((payload).Key).Algorithm)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(utf8)))
+		data := unsafe.Pointer(unsafe.SliceData(((payload).Key).Blob))
 		pinner.Pin(data)
-		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
-		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(data)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (4 * 4))) = uint32(uint32(len(((payload).Key).Blob)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (3 * 4))) = uint32(uintptr(uintptr(data)))
+		data0 := unsafe.Pointer(unsafe.SliceData((payload).Data))
+		pinner.Pin(data0)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (6 * 4))) = uint32(uint32(len((payload).Data)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (5 * 4))) = uint32(uintptr(uintptr(data0)))
 
 	default:
 		panic("unreachable")
@@ -331,12 +344,14 @@ func wasm_export_post_return_wosh_ssh_core_core_method_session_pending_signature
 }
 
 //go:wasmexport wosh:ssh-core/core#[method]session.provide-signature
-func wasm_export_wosh_ssh_core_core_method_session_provide_signature(arg0 uintptr, arg1 uintptr, arg2 uint32) uintptr {
+func wasm_export_wosh_ssh_core_core_method_session_provide_signature(arg0 uintptr, arg1 uintptr, arg2 uint32, arg3 uintptr, arg4 uint32, arg5 uintptr, arg6 uint32) uintptr {
 
 	pinner := &syncExportPinner
-	value := unsafe.Slice((*uint8)(unsafe.Pointer(arg1)), arg2)
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
+	value0 := unsafe.Slice((*uint8)(unsafe.Pointer(arg3)), arg4)
+	value1 := unsafe.Slice((*uint8)(unsafe.Pointer(arg5)), arg6)
 	witRuntime.Unpin()
-	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).ProvideSignature(value)
+	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).ProvideSignature(wosh_ssh_core_core.Signature{value, value0, value1})
 
 	switch result.Tag() {
 	case witTypes.ResultOk:

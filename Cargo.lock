@@ -4390,6 +4390,7 @@ dependencies = [
  "wit-bindgen 0.59.0",
  "wosh-connstring",
  "wosh-tunnel",
+ "wosh-webauthn-ssh",
 ]
 
 [[package]]
@@ -4432,10 +4433,13 @@ name = "wosh-smoke-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "ed25519-dalek",
  "futures",
+ "p256",
  "polymorph-webcrypto-wasmtime",
  "rand_core 0.6.4",
+ "sha2",
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
@@ -4460,6 +4464,16 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "wosh-webauthn-ssh"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ecdsa",
+ "p256",
+ "sha2",
 ]
 
 [[package]]

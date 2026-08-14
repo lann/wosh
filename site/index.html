@@ -94,6 +94,17 @@
       word-break: break-all;
     }
     #panel .key code { user-select: all; }
+    /* the passkey section: same visual register as .key (a public
+       authorized_keys line), plus its own enrol/adopt/forget controls */
+    #panel .passkey { margin-top: 8px; }
+    #panel .passkey code {
+      display: block; font: 11px monospace; color: #8c8;
+      word-break: break-all; user-select: all; margin: 4px 0;
+    }
+    #panel .passkey .row { margin-top: 6px; }
+    #panel .passkey input {
+      width: 100%; box-sizing: border-box;
+    }
     #term { flex: 1; min-height: 0; padding: 2px; }
     /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
        keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. */
