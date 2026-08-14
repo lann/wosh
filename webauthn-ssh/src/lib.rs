@@ -136,6 +136,16 @@ pub enum Error {
     MalformedSignature(&'static str),
     /// An `authorized_keys` line could not be read back.
     MalformedLine(&'static str),
+    /// Recovery was given fewer than two assertions to intersect.
+    RecoveryNeedsTwo { got: usize },
+    /// The assertions have no key in common. Either they came from
+    /// DIFFERENT credentials -- the ordinary cause, and the one a user
+    /// can act on -- or one of them does not sign the data it carries.
+    RecoveryFoundNothing,
+    /// The assertions did not agree on a single key. Either they came
+    /// from different credentials, or -- vanishingly unlikely -- they
+    /// were made over the same message and so carry the same ambiguity.
+    RecoveryAmbiguous { candidates: usize },
 }
 
 impl core::fmt::Display for Error {
@@ -170,6 +180,19 @@ impl core::fmt::Display for Error {
             Error::ClientDataNotUtf8 => f.write_str("clientDataJSON is not valid UTF-8"),
             Error::MalformedSignature(why) => write!(f, "malformed ECDSA signature: {why}"),
             Error::MalformedLine(why) => write!(f, "malformed authorized_keys line: {why}"),
+            Error::RecoveryNeedsTwo { got } => write!(
+                f,
+                "recovering a public key takes at least two assertions, got {got}"
+            ),
+            Error::RecoveryFoundNothing => f.write_str(
+                "no one key fits all these assertions -- they are from different passkeys, \
+                 or one of them does not sign what it carries",
+            ),
+            Error::RecoveryAmbiguous { candidates } => write!(
+                f,
+                "the assertions do not agree on one key ({candidates} fit them all) -- \
+                 they are most likely from different passkeys"
+            ),
         }
     }
 }
@@ -478,6 +501,160 @@ fn check_der_integer(value: &[u8], which: &'static str) -> Result<(), Error> {
         }
         Some(_) => Ok(()),
     }
+}
+
+// --- recovering the public key --------------------------------------
+//
+// The problem this solves is narrow and specific. A WebAuthn assertion
+// does not carry the credential's public key, and there is nowhere in
+// the credential to keep one (the user handle is fixed at
+// registration, before the key exists). So a client that loses its
+// browser storage -- eviction, cleared site data, a private window --
+// still HAS the passkey and can still sign with it, but has lost the
+// one thing SSH must put on the wire.
+//
+// It is recoverable from the signatures themselves. ECDSA verification
+// reconstructs a point from `r`; running that backwards yields the
+// small set of public keys under which a given signature is valid --
+// at most two in practice, since `r` fixes the x coordinate and only
+// the sign of y is unknown. Two assertions from the same credential
+// have exactly one key in common: its own.
+//
+// Nothing secret is involved. The inputs are signatures the server
+// would have seen anyway, the output is a public key, and there is no
+// value to be timing-safe about -- which is also why this leans on
+// `p256` rather than open-coding the point arithmetic: the code is
+// easy to get subtly wrong on rare inputs and there is no reason to.
+
+/// Recover the credential's public key from assertions it produced,
+/// as an uncompressed P-256 point (65 bytes).
+///
+/// Give it at least two assertions **from the same credential**, over
+/// DIFFERENT messages. Different matters: an authenticator may sign
+/// deterministically and may report a zero counter, so two ceremonies
+/// over the same challenge can produce byte-identical signatures --
+/// and identical signatures carry identical ambiguity, which no amount
+/// of intersecting resolves. That case is refused, not guessed at.
+///
+/// Assertions from different credentials are refused the same way: the
+/// intersection is empty, or (astronomically unlikely) larger than
+/// one. Either way this returns an error rather than a key, so a user
+/// who picks two different passkeys is told so instead of being handed
+/// an identity that fails at the server.
+pub fn recover_public_key(assertions: &[Assertion<'_>]) -> Result<Vec<u8>, Error> {
+    if assertions.len() < 2 {
+        return Err(Error::RecoveryNeedsTwo {
+            got: assertions.len(),
+        });
+    }
+
+    let mut common: Option<Vec<Vec<u8>>> = None;
+    for assertion in assertions {
+        let candidates = recover_candidates(*assertion)?;
+        common = Some(match common {
+            None => candidates,
+            Some(prev) => prev
+                .into_iter()
+                .filter(|key| candidates.contains(key))
+                .collect(),
+        });
+    }
+
+    let mut common = common.unwrap_or_default();
+    match common.len() {
+        1 => Ok(common.remove(0)),
+        0 => Err(Error::RecoveryFoundNothing),
+        n => Err(Error::RecoveryAmbiguous { candidates: n }),
+    }
+}
+
+/// Every public key under which one assertion verifies.
+///
+/// The recovery id is not transmitted by WebAuthn, so all four are
+/// tried and each result is checked back against the signature. That
+/// check is what makes the set trustworthy: a candidate is kept only
+/// if the assertion genuinely verifies under it.
+fn recover_candidates(assertion: Assertion<'_>) -> Result<Vec<Vec<u8>>, Error> {
+    use ecdsa::RecoveryId;
+    use p256::ecdsa::signature::hazmat::PrehashVerifier;
+    use p256::ecdsa::{Signature, VerifyingKey};
+
+    // What ECDSA signed: the authenticator data followed by the hash of
+    // the client data, hashed again. Rebuilt here from the assertion's
+    // own bytes, so a candidate can only survive if the signature
+    // really covers the material we were handed.
+    let prehash = webauthn_prehash(&assertion);
+
+    // The DER parse is the strict one used for the wire format, so a
+    // signature that could not be relayed cannot be recovered from
+    // either -- one notion of well-formed, not two.
+    let (r, s) = ecdsa_der_parts(assertion.signature)?;
+    let signature = Signature::from_scalars(
+        pad32(r).ok_or(Error::MalformedSignature("r is wider than the curve"))?,
+        pad32(s).ok_or(Error::MalformedSignature("s is wider than the curve"))?,
+    )
+    .map_err(|_| Error::MalformedSignature("r or s is not a valid scalar"))?;
+
+    // All four, because WebAuthn does not transmit the recovery id.
+    // Two of them describe an x coordinate past the curve order, which
+    // essentially never occurs and simply fails to decompress; the
+    // verify-back below is what makes the surviving set trustworthy
+    // rather than merely plausible.
+    let mut found: Vec<Vec<u8>> = Vec::new();
+    for (is_x_reduced, is_y_odd) in [(false, false), (false, true), (true, false), (true, true)] {
+        let recovery_id = RecoveryId::new(is_y_odd, is_x_reduced);
+        let Ok(key) = VerifyingKey::recover_from_prehash(&prehash, &signature, recovery_id) else {
+            continue;
+        };
+        if key.verify_prehash(&prehash, &signature).is_err() {
+            continue;
+        }
+        let point = key.to_encoded_point(false).as_bytes().to_vec();
+        if !found.contains(&point) {
+            found.push(point);
+        }
+    }
+    Ok(found)
+}
+
+/// Whether an assertion was really made for `rp_id`.
+///
+/// The authenticator opens its signed data with `sha256(rp-id)`, and
+/// that same string becomes the `application` field of the
+/// `authorized_keys` line -- so a wrong one produces a line that can
+/// never verify, days after anyone would connect it to this moment.
+/// Comparing the hash costs nothing and catches it here.
+pub fn asserted_for_rp(assertion: Assertion<'_>, rp_id: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    assertion.authenticator_data.len() >= 32
+        && assertion.authenticator_data[..32] == Sha256::digest(rp_id.as_bytes())[..]
+}
+
+/// `sha256(authenticator-data || sha256(client-data-json))` -- the
+/// digest an ES256 WebAuthn signature is made over.
+fn webauthn_prehash(assertion: &Assertion<'_>) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let client_data_hash = Sha256::digest(assertion.client_data_json);
+    let mut outer = Sha256::new();
+    outer.update(assertion.authenticator_data);
+    outer.update(client_data_hash);
+    outer.finalize().into()
+}
+
+/// Left-pad a canonical (leading-zero-trimmed) scalar to the curve's
+/// fixed 32-byte width.
+fn pad32(value: &[u8]) -> Option<p256::FieldBytes> {
+    let value = match value {
+        // The one leading zero DER adds to keep a high value positive.
+        [0x00, rest @ ..] => rest,
+        other => other,
+    };
+    if value.len() > 32 {
+        return None;
+    }
+    let mut out = p256::FieldBytes::default();
+    out[32 - value.len()..].copy_from_slice(value);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -835,6 +1012,144 @@ mod tests {
         let mut trailing = der(&[1], &[2]);
         trailing.push(0x00);
         assert!(matches!(attempt(trailing), Err(Error::MalformedSignature(_))));
+    }
+
+    // --- recovery ---------------------------------------------------
+    //
+    // These sign with a real P-256 key so the assertions are genuine:
+    // recovery has to reproduce the key that made them, not a key that
+    // merely satisfies the shape.
+
+    /// A soft authenticator's assertion over `challenge`, signed by
+    /// `key` -- the same bytes a browser hands back.
+    fn signed_assertion(
+        key: &p256::ecdsa::SigningKey,
+        challenge: &[u8],
+        counter: u32,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        use sha2::{Digest, Sha256};
+
+        let cd = client_data(challenge, "https://wosh.example");
+        let ad = auth_data(FLAG_USER_PRESENT, counter, &[]);
+        let mut outer = Sha256::new();
+        outer.update(&ad);
+        outer.update(Sha256::digest(&cd));
+        let prehash: [u8; 32] = outer.finalize().into();
+        let (sig, _): (p256::ecdsa::Signature, _) = key.sign_prehash(&prehash).unwrap();
+        (ad, cd, sig.to_der().as_bytes().to_vec())
+    }
+
+    fn assertion_of(parts: &(Vec<u8>, Vec<u8>, Vec<u8>)) -> Assertion<'_> {
+        Assertion {
+            authenticator_data: &parts.0,
+            client_data_json: &parts.1,
+            signature: &parts.2,
+        }
+    }
+
+    #[test]
+    fn two_assertions_recover_the_key_that_made_them() {
+        // The property the whole recovery path rests on: a client that
+        // still holds the passkey but has lost its browser storage can
+        // work the public half back out, byte for byte.
+        let key = p256::ecdsa::SigningKey::from_slice(&[
+            0x4c, 0x0b, 0x1f, 0x2a, 0x93, 0x77, 0x18, 0x05, 0xd1, 0x66, 0x3e, 0x41, 0x8a, 0x2c,
+            0x55, 0x90, 0x6b, 0x38, 0xe7, 0x12, 0x44, 0xa9, 0x0c, 0x5f, 0x73, 0x1d, 0x62, 0xb8,
+            0x0e, 0x94, 0x37, 0x21,
+        ])
+        .unwrap();
+        let expected = key
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec();
+
+        let a = signed_assertion(&key, b"wosh-passkey-recovery-1", 1);
+        let b = signed_assertion(&key, b"wosh-passkey-recovery-2", 2);
+        let recovered =
+            recover_public_key(&[assertion_of(&a), assertion_of(&b)]).unwrap();
+
+        assert_eq!(recovered, expected);
+        assert_eq!(recovered.len(), P256_POINT_LEN);
+        // And it is directly usable: the line it produces is the line
+        // enrolment would have produced.
+        assert_eq!(
+            sk_ecdsa_key_blob(&recovered, "wosh.example").unwrap(),
+            sk_ecdsa_key_blob(&expected, "wosh.example").unwrap()
+        );
+    }
+
+    #[test]
+    fn one_assertion_is_not_enough_to_be_sure() {
+        // One signature narrows the key to a couple of candidates but
+        // does not pick between them, so the API refuses to guess.
+        let key = p256::ecdsa::SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let a = signed_assertion(&key, b"only-one", 1);
+        assert_eq!(
+            recover_public_key(&[assertion_of(&a)]),
+            Err(Error::RecoveryNeedsTwo { got: 1 })
+        );
+        // ...and the ambiguity is real: a single assertion genuinely
+        // fits more than one key.
+        assert!(recover_candidates(assertion_of(&a)).unwrap().len() > 1);
+    }
+
+    #[test]
+    fn assertions_from_different_passkeys_do_not_agree() {
+        // What a user sees when they pick the wrong credential at the
+        // second prompt: a refusal, not an identity that fails later
+        // at the server.
+        let one = p256::ecdsa::SigningKey::from_slice(&[5u8; 32]).unwrap();
+        let two = p256::ecdsa::SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let a = signed_assertion(&one, b"wosh-passkey-recovery-1", 1);
+        let b = signed_assertion(&two, b"wosh-passkey-recovery-2", 1);
+        assert_eq!(
+            recover_public_key(&[assertion_of(&a), assertion_of(&b)]),
+            Err(Error::RecoveryFoundNothing)
+        );
+    }
+
+    #[test]
+    fn repeating_one_assertion_resolves_nothing() {
+        // The reason the two ceremonies must use different challenges:
+        // an authenticator that signs deterministically and reports a
+        // zero counter would otherwise return the same bytes twice,
+        // and the same bytes carry the same ambiguity. Refused rather
+        // than resolved by coin toss.
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let a = signed_assertion(&key, b"same", 0);
+        assert!(matches!(
+            recover_public_key(&[assertion_of(&a), assertion_of(&a)]),
+            Err(Error::RecoveryAmbiguous { .. })
+        ));
+    }
+
+    #[test]
+    fn a_tampered_assertion_recovers_nothing_in_common() {
+        // Recovery rebuilds what was signed from the assertion's own
+        // bytes, so material that does not match its signature cannot
+        // smuggle a key through.
+        let key = p256::ecdsa::SigningKey::from_slice(&[11u8; 32]).unwrap();
+        let a = signed_assertion(&key, b"wosh-passkey-recovery-1", 1);
+        let mut b = signed_assertion(&key, b"wosh-passkey-recovery-2", 2);
+        b.1.push(b' '); // one byte of clientData, after signing
+        assert_eq!(
+            recover_public_key(&[assertion_of(&a), assertion_of(&b)]),
+            Err(Error::RecoveryFoundNothing)
+        );
+    }
+
+    #[test]
+    fn recovery_refuses_the_same_malformed_signatures_the_wire_does() {
+        let key = p256::ecdsa::SigningKey::from_slice(&[13u8; 32]).unwrap();
+        let mut a = signed_assertion(&key, b"wosh-passkey-recovery-1", 1);
+        a.2 = vec![0x30, 0x00]; // an empty SEQUENCE
+        let b = signed_assertion(&key, b"wosh-passkey-recovery-2", 2);
+        assert!(matches!(
+            recover_public_key(&[assertion_of(&a), assertion_of(&b)]),
+            Err(Error::MalformedSignature(_))
+        ));
     }
 
     #[test]

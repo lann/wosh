@@ -218,6 +218,37 @@ e2e-passkey: compose
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
 
+# Recovery, end to end: a client that lost its stored passkey identity
+# (browser storage evicted -- simulated here by `forget-passkey`) but
+# still has the passkey ITSELF reconstructs the exact same SSH identity
+# from two WebAuthn assertions alone, and authenticates with it against
+# a real, unmodified sshd -- without ever touching the
+# `authorized_keys` line already installed on the target. That last
+# part is the whole property under test: recovery is only useful if it
+# lands on the SAME key the target already trusts, not merely a
+# working one. See `wosh-webauthn-ssh::recover_public_key` for the
+# maths and `wosh-client/src/passkey.rs::recover()` for the client
+# flow; this leg proves both end to end with no browser involved (see
+# smoke-test/src/passkey.rs's `assert_unknown`/`remember`).
+e2e-passkey-recover: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    pkill -f 'wosh-listene[r]' 2>/dev/null || true
+    sleep 1
+    target/release/wosh-listener --identity-dir .deps/test-listener-data \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr > /tmp/wosh-e2e-passkey-recover-listener.log 2>&1 &
+    sleep 7
+    cs=$(grep '^connstring: ' /tmp/wosh-e2e-passkey-recover-listener.log | cut -d" " -f2)
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" --auth passkey-recover \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
+
 # Pairing, end to end: a client that once presented a valid token is
 # REMEMBERED (its iroh id is enrolled), so a printed QR keeps working
 # for that device across listener restarts and token rotation -- while
@@ -387,7 +418,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
+check: test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-kbdint e2e-pairing browser-keys browser browser-e2e browser-passkey browser-idle-e2e browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

@@ -148,4 +148,50 @@ impl SoftAuthenticator {
 
         Assertion { authenticator_data, client_data_json, signature }
     }
+
+    /// A stable synthetic credential id for this authenticator's one
+    /// key, standing in for the real WebAuthn credential handle a
+    /// platform authenticator would report. The only job it has here
+    /// is letting a caller check that two `assert-unknown` ceremonies
+    /// answered from the SAME credential -- `sha256(public key)` is a
+    /// convenient, deterministic way to produce something with that
+    /// shape without inventing state.
+    fn credential_id(&self) -> Vec<u8> {
+        Sha256::digest(self.public_key_bytes()).to_vec()
+    }
+
+    /// `assert_unknown(challenge)`: run the assertion ceremony WITHOUT
+    /// consulting `enrolled` -- this is the entire point. Recovery
+    /// exists for exactly the case where the stored record (and thus
+    /// `enrolled`) is gone; a real authenticator does not require a
+    /// prior "enrol" bit either; it just holds credentials and answers
+    /// challenges. So this produces the identical assertion `assert`
+    /// would, plus the credential id, regardless of `self.enrolled`.
+    pub fn assert_unknown(&mut self, challenge: &[u8]) -> (Vec<u8>, String, Assertion) {
+        let assertion = self.assert(challenge);
+        (self.credential_id(), RP_ID.to_string(), assertion)
+    }
+
+    /// `remember(identity, credential_id)`: store an identity whose
+    /// public half has already been PROVED (by two intersecting
+    /// `assert-unknown` ceremonies), without asking for a confirming
+    /// touch -- this is `adopt` minus the ceremony, per the WIT doc
+    /// comment on `passkey-store.remember`. For this soft
+    /// authenticator, which only ever holds one key, "already proved"
+    /// is checked the same way `adopt` checks a claim: the public key
+    /// must name the key this authenticator actually holds.
+    pub fn remember(&mut self, public_key: &[u8], relying_party: &str) -> Result<()> {
+        if relying_party != RP_ID {
+            return Err(anyhow!(
+                "remember: relying party {relying_party:?} does not match this authenticator's {RP_ID:?}"
+            ));
+        }
+        if public_key != self.public_key_bytes() {
+            return Err(anyhow!(
+                "remember: claimed public key does not match this authenticator's credential"
+            ));
+        }
+        self.enrolled = true;
+        Ok(())
+    }
 }

@@ -439,7 +439,78 @@ async function assert(challenge: Uint8Array): Promise<{
   }
 }
 
+async function assertUnknown(challenge: Uint8Array): Promise<{
+  credentialId: Uint8Array;
+  relyingParty: string;
+  assertion: {
+    authenticatorData: Uint8Array;
+    clientDataJson: Uint8Array;
+    signature: Uint8Array;
+  };
+}> {
+  try {
+    // This is the ceremony that must work with NO stored record --
+    // that is precisely the situation recovery exists for (an evicted
+    // IndexedDB has forgotten everything `assert` relies on). So,
+    // unlike `assert`: no `loadRecord()`, an EMPTY allowCredentials
+    // (the platform picker offers every resident credential for this
+    // rpId rather than one this client can already name), and no
+    // verification against a stored public key -- there is nothing to
+    // verify against yet; that is what the caller (recovery) works out
+    // from two of these.
+    const rpId = location.hostname;
+    const cred = await navigator.credentials.get({
+      publicKey: {
+        // Passed through untouched, same rule as `assert`. Here it is
+        // a recovery challenge rather than an SSH signature blob --
+        // nothing verifies it, and what recovery reads is the
+        // signature, not the message. The caller picks two DIFFERENT
+        // ones on purpose; see terminal.wit's `assert-unknown`.
+        challenge: challenge as BufferSource,
+        rpId,
+        userVerification: "preferred",
+        allowCredentials: [],
+        // No extensions requested, same reasoning as `assert`.
+      },
+    }) as PublicKeyCredential | null;
+    if (!cred) throw new Error("no assertion returned");
+
+    const response = cred.response as AuthenticatorAssertionResponse;
+    const authenticatorData = new Uint8Array(response.authenticatorData);
+    // Never re-serialize clientDataJSON -- same reasoning as `assert`.
+    const clientDataJson = new Uint8Array(response.clientDataJSON);
+    const signature = new Uint8Array(response.signature);
+
+    return {
+      credentialId: new Uint8Array(cred.rawId),
+      relyingParty: rpId,
+      assertion: { authenticatorData, clientDataJson, signature },
+    };
+  } catch (e) {
+    throw errArm("passkey assert-unknown", e);
+  }
+}
+
+async function remember(identity: PasskeyIdentity, credentialId: Uint8Array): Promise<void> {
+  try {
+    // This is `adopt` WITHOUT the confirming ceremony: the caller
+    // (recovery) already proved the public key belongs to this
+    // credential -- that is what two intersecting assertions bought
+    // it -- so asking for a third touch here to re-establish what is
+    // already known would be theatre, not safety.
+    await saveRecord({
+      credentialId,
+      publicKey: identity.publicKey,
+      rpId: identity.relyingParty,
+    });
+  } catch (e) {
+    throw errArm("passkey remember", e);
+  }
+}
+
 /** The imports-record fragment for deltic's `instantiate`. */
 export function passkeyStoreImports(): Record<string, unknown> {
-  return { "wosh:terminal/passkey-store": { identity, enroll, adopt, forget, assert } };
+  return {
+    "wosh:terminal/passkey-store": { identity, enroll, adopt, forget, assert, assertUnknown, remember },
+  };
 }

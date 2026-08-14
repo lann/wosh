@@ -7,3 +7,11 @@ description = "The WebAuthn-to-SSH wire mapping: turns a browser assertion into 
 
 [dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+# Public-key recovery only: no private key is ever handled here, and the
+# inputs are signatures the world has already seen. The point arithmetic
+# is the reason this is a dependency rather than hand-written -- see
+# `recover_public_key`.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+# For `RecoveryId`, which p256's own `ecdsa` module does not re-export.
+ecdsa = { version = "0.16", default-features = false, features = ["verifying", "hazmat"] }
+sha2 = { version = "0.10", default-features = false }

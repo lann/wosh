@@ -258,14 +258,123 @@ try {
   console.log("[6] shell round-trip through the tunnel painted in xterm");
   await page.click("#bar button:has-text('detach')");
 
+  // --- recovery: the credential survives an evicted browser store ----
+  //
+  // Simulates what an evicted IndexedDB actually leaves behind: the
+  // authenticator still holds the credential, but this page's record
+  // of it -- and hence the public key SSH needs -- is gone. Not the
+  // same as `forget()` (a user action reachable through the UI); this
+  // is deleting the database out from under the page, the way Safari
+  // ITP or a "clear site data" would. Reloading afterward clears the
+  // module's in-memory fallback too, so nothing about the identity
+  // survives except the credential itself.
+  await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.deleteDatabase("wosh-passkey");
+        req.onsuccess = () => resolve();
+        req.onblocked = () => resolve(); // no open connection should exist to block on
+        req.onerror = () => reject(req.error);
+      }),
+  );
+  console.log("[7] simulated IndexedDB eviction: deleted the wosh-passkey database");
+
+  await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
+  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  // Empirically: a CDP virtual authenticator is bound to the page's
+  // CDP session, which a same-page navigation does not tear down, so
+  // it survives the reload with no re-attach needed. Asserted here
+  // rather than assumed: if this ever stops holding, the enrol-shaped
+  // ceremony below would hang or error, and the message should say so
+  // plainly rather than blaming recovery.
+  console.log("[8] reloaded; virtual authenticator still attached (see below if not)");
+
+  // Confirm the identity really is gone -- not merely that recovery
+  // happens to work anyway. The panel opens itself on load (boot.mjs)
+  // whenever there is no live session, which is the case right after
+  // this reload.
+  const notEnrolledText = await page.locator("#panel .passkey .sub").first()
+    .textContent({ timeout: 15_000 });
+  if (!/no passkey enrolled/.test(notEnrolledText ?? "")) {
+    fail(`expected the not-enrolled passkey state after simulated eviction, got: ${notEnrolledText}`);
+  } else {
+    console.log("[9] confirmed not-enrolled state: the identity is really gone from this page");
+  }
+
+  const recoverBtn = page.locator("#panel button:has-text('recover from this passkey')");
+  await recoverBtn.waitFor({ timeout: 15_000 });
+  await recoverBtn.click();
+  let recoveredLine;
+  try {
+    recoveredLine = (await page.locator("#panel .passkey code").first()
+      .textContent({ timeout: 30_000 }) ?? "").trim();
+  } catch (e) {
+    console.error("recovery produced no line; passkey section said:",
+      await page.locator("#panel .passkey").first().innerText().catch(() => "(absent)"));
+    console.error("console errors:", consoleErrors);
+    throw e;
+  }
+  // Byte-identical to the line captured at enrolment is the whole
+  // property under test: recovery must reconstruct the SAME SSH
+  // identity, so the line already installed on the target (never
+  // appended to twice in this test) keeps authenticating.
+  if (recoveredLine !== line) {
+    fail(`recovered line does not match the enrolled one:\n  enrolled:  ${line}\n  recovered: ${recoveredLine}`);
+  } else {
+    console.log("[10] recovered line is byte-identical to the enrolled one");
+  }
+
+  // --- reconnect and authenticate with the recovered identity ---------
+  //
+  // Deliberately reuses WOSH_AUTHORIZED_KEYS as already written above
+  // rather than appending again: proving the SAME line still
+  // authenticates is exactly what proves recovery reconstructed the
+  // same identity, not merely produced a new working one.
+  await fillAndConnect("passkey");
+  await waitPrompt();
+  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await Promise.race([
+    page.locator("#panel .confirm button:has-text('touch your passkey to sign in')")
+      .waitFor({ timeout: 30_000 }).then(() => page.click(
+        "#panel .confirm button:has-text('touch your passkey to sign in')",
+      )).catch(() => {}),
+    page.waitForFunction(
+      (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
+      USER,
+      { timeout: 30_000 },
+    ).catch(() => {}),
+  ]);
+  await waitConnected();
+  console.log(`[11] authenticated with the RECOVERED passkey, connected as ${USER}`);
+
+  const marker2 = "WOSH_BROWSER_PASSKEY_RECOVERED_OK";
+  await page.click(".xterm-screen");
+  await page.keyboard.type(`echo ${marker2}\n`, { delay: 10 });
+  await page.waitForFunction(
+    (m) => {
+      const buf = window.__wosh.term?.buffer.active;
+      if (!buf) return false;
+      let text = "";
+      for (let i = 0; i < buf.length; i++) {
+        text += buf.getLine(i)?.translateToString(true) + "\n";
+      }
+      return text.split(m).length - 1 >= 2;
+    },
+    marker2,
+    { timeout: 30_000 },
+  );
+  console.log("[12] shell round-trip through the recovered identity painted in xterm");
+  await page.click("#bar button:has-text('detach')");
+
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
   }
 
   if (!process.exitCode) {
     console.log("\nBROWSER PASSKEY PASS: enrolled a passkey through a real WebAuthn " +
-      "ceremony in the page, and the authorized_keys line it printed authenticated " +
-      "for real through a real sshd" +
+      "ceremony in the page, authenticated for real through a real sshd, then simulated " +
+      "an evicted browser store and RECOVERED the same identity from the credential alone " +
+      "-- the recovered line matched byte-for-byte and authenticated again" +
       (gated ? " (ceremony gate prompt released by hand)" : ""));
   }
 } catch (e) {

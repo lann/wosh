@@ -224,6 +224,20 @@ export async function enrollPasskey() {
 }
 
 /**
+ * Recover this client's passkey identity from the credential itself --
+ * for when the browser storage that described it is gone (evicted,
+ * cleared, a different profile) but the passkey still exists. Asks
+ * the authenticator to sign twice (the same passkey both times) and
+ * works the public half out of the two signatures. Returns the new
+ * `authorized_keys` line, identical to the one from when it was first
+ * enrolled.
+ */
+export async function recoverPasskey() {
+  const t = await api();
+  return await t.recoverPasskey();
+}
+
+/**
  * Adopt a passkey identity enrolled on another device, from the
  * `authorized_keys` line it printed there. The passkey itself must
  * already be reachable from this device (a synced passkey) -- this

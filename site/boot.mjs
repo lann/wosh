@@ -25,6 +25,7 @@ import {
   passkeyIdentity,
   enrollPasskey,
   adoptPasskey,
+  recoverPasskey,
   forgetPasskey,
   installPasskeyCeremonyGate,
 } from "./app.mjs";
@@ -342,6 +343,7 @@ export async function initBoot(panel, { onConnect }) {
     placeholder: "paste the authorized_keys line from another device",
   });
   const adoptBtn = el("button", { textContent: "adopt" });
+  const recoverBtn = el("button", { textContent: "recover from this passkey" });
 
   // Connection history: tap to reconnect. Rendered only when there is
   // something to show; the whole section disappears otherwise.
@@ -602,6 +604,15 @@ export async function initBoot(panel, { onConnect }) {
           className: "sub",
           textContent: "adopting brings in a passkey already enrolled on another device, from the line it printed there",
         }),
+        el("div", { className: "row" }, recoverBtn),
+        el("div", {
+          className: "sub",
+          textContent:
+            "recovering needs nothing else -- not the authorized_keys line, not the target, not " +
+            "another device -- but asks for TWO touches of the SAME passkey to work its public " +
+            "key back out. Prefer adopt when the line is to hand: one touch, and no chance of " +
+            "picking the wrong passkey partway through.",
+        }),
       );
     }
     passkeySection.append(passkeyStatus);
@@ -631,6 +642,21 @@ export async function initBoot(panel, { onConnect }) {
       await renderPasskey();
     } catch (e) {
       passkeyStatus.textContent = `adopt failed: ${e.message ?? e}`;
+    }
+  });
+
+  // recover-passkey runs from a real button press, so it already has
+  // user activation of its own -- it does NOT go through the
+  // installPasskeyCeremonyGate below, which exists for
+  // authenticate-passkey's server-triggered ceremony instead.
+  recoverBtn.addEventListener("click", async () => {
+    passkeyStatus.textContent = "touch the passkey twice to recover it…";
+    try {
+      await recoverPasskey();
+      passkeyStatus.textContent = "";
+      await renderPasskey();
+    } catch (e) {
+      passkeyStatus.textContent = `recover failed: ${e.message ?? e}`;
     }
   });
 

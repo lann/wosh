@@ -951,6 +951,13 @@ impl Guest for Component {
     async fn forget_passkey() -> Result<(), String> {
         passkey::forget().await
     }
+
+    /// Work the passkey identity back out of the credential itself,
+    /// for when this browser's storage did not survive but the passkey
+    /// did.
+    async fn recover_passkey() -> Result<String, String> {
+        passkey::recover().await
+    }
 }
 
 thread_local! {

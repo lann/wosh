@@ -115,6 +115,101 @@ pub async fn forget() -> Result<(), String> {
         .map_err(|e| format!("forget the passkey: {e}"))
 }
 
+/// The two challenges the recovery ceremonies sign.
+///
+/// They are constants because nothing verifies them -- recovery reads
+/// the signatures, not the messages -- and because a component with no
+/// randomness of its own has no better source. What they must be is
+/// DIFFERENT from each other: an authenticator may sign
+/// deterministically and may report a zero counter, and two ceremonies
+/// over identical input would then return identical signatures, which
+/// carry identical ambiguity. (`wosh-webauthn-ssh` refuses that case
+/// rather than guessing, so the worst outcome is a legible failure --
+/// but the fix belongs here, where the challenges are chosen.)
+const RECOVERY_CHALLENGES: [&[u8]; 2] = [
+    b"wosh passkey recovery: first of two",
+    b"wosh passkey recovery: second of two",
+];
+
+/// Work this client's passkey identity back out of the credential.
+///
+/// The situation: the passkey is still there, but whatever this browser
+/// knew about it is not. Two assertions determine the public key that
+/// made them, which is the only piece SSH actually needs.
+pub async fn recover() -> Result<String, String> {
+    let mut ceremonies: Vec<passkey_store::RecoveryAssertion> =
+        Vec::with_capacity(RECOVERY_CHALLENGES.len());
+    for challenge in RECOVERY_CHALLENGES {
+        let ceremony = passkey_store::assert_unknown(challenge.to_vec())
+            .await
+            .map_err(|e| format!("passkey recovery ceremony: {e}"))?;
+
+        // Check the relying party as each ceremony lands, not at the
+        // end. It becomes the `application` field of the line this is
+        // about to print, so a wrong one yields a line that can never
+        // authenticate -- and catching it here costs the user one
+        // touch instead of two. The string is checked against what was
+        // actually SIGNED (the authenticator opens its signed data
+        // with the hash of the relying party), so it is proof rather
+        // than a claim.
+        let expected = ceremonies
+            .first()
+            .map_or(ceremony.relying_party.as_str(), |c| c.relying_party.as_str());
+        let signed_for = wire::asserted_for_rp(
+            wire::Assertion {
+                authenticator_data: &ceremony.assertion.authenticator_data,
+                client_data_json: &ceremony.assertion.client_data_json,
+                signature: &ceremony.assertion.signature,
+            },
+            expected,
+        );
+        if !signed_for || ceremony.relying_party != expected {
+            return Err(format!(
+                "passkey recovery: the authenticator did not sign for {expected:?}"
+            ));
+        }
+
+        ceremonies.push(ceremony);
+    }
+
+    // Insisting on one credential up front turns "the user picked a
+    // different passkey the second time" into a sentence about
+    // passkeys, rather than a puzzle about keys that do not agree.
+    let credential_id = ceremonies[0].credential_id.clone();
+    if ceremonies
+        .iter()
+        .any(|c| c.credential_id != credential_id)
+    {
+        return Err("passkey recovery: a different passkey answered the second time -- \
+                    choose the same one at both prompts"
+            .to_string());
+    }
+
+    let assertions: Vec<wire::Assertion<'_>> = ceremonies
+        .iter()
+        .map(|c| wire::Assertion {
+            authenticator_data: &c.assertion.authenticator_data,
+            client_data_json: &c.assertion.client_data_json,
+            signature: &c.assertion.signature,
+        })
+        .collect();
+    let public_key = wire::recover_public_key(&assertions)
+        .map_err(|e| format!("passkey recovery: {e}"))?;
+
+    // The relying party comes from the ceremonies rather than being
+    // recovered: it is just this site's domain, and the component has
+    // no other way to learn its own origin. Every ceremony above was
+    // checked to have signed for it.
+    let identity = PasskeyIdentity {
+        public_key,
+        relying_party: ceremonies[0].relying_party.clone(),
+    };
+    passkey_store::remember(identity.clone(), credential_id)
+        .await
+        .map_err(|e| format!("passkey recovery: {e}"))?;
+    passkey_line(&identity)
+}
+
 /// Run the ceremony the server's signature request calls for, and
 /// shape the result into an SSH signature.
 ///

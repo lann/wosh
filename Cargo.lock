@@ -4471,6 +4471,9 @@ name = "wosh-webauthn-ssh"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ecdsa",
+ "p256",
+ "sha2",
 ]
 
 [[package]]

@@ -88,14 +88,21 @@ interface identity-store {
 /// signature whose user-presence flag is clear, and can be told to
 /// demand user verification with `verify-required`.
 ///
-/// What it does NOT buy, and the reason `adopt` exists: an assertion
-/// does not return the credential's public key, and WebAuthn fixes the
-/// user handle at registration -- before the key exists -- so there is
-/// nowhere to stash it inside the credential. A passkey that syncs to
-/// a second device therefore arrives without the one thing SSH must
-/// put on the wire. The public half is not a secret, so the cure is
-/// mundane: carry the `authorized_keys` line (the same string already
-/// installed on the target) to the other device and `adopt` it.
+/// What it does NOT buy, and the reason `adopt` and `assert-unknown`
+/// exist: an assertion does not return the credential's public key, and
+/// WebAuthn fixes the user handle at registration -- before the key
+/// exists -- so there is nowhere to stash it inside the credential. A
+/// passkey that syncs to a second device, or that outlives an eviction
+/// of this browser's storage, therefore arrives without the one thing
+/// SSH must put on the wire.
+///
+/// The public half is not a secret, so there are two mundane cures.
+/// Carry the `authorized_keys` line (the same string already installed
+/// on the target) to the other device and `adopt` it. Or, when that
+/// line is not to hand -- storage evicted, and the target unreachable
+/// without it -- RECOVER it from the credential itself: two assertions
+/// determine the key that made them, at the cost of two touches and
+/// nothing else.
 ///
 /// This interface is WebAuthn-shaped rather than SSH-shaped on
 /// purpose. The host runs ceremonies and hands back exactly what the
@@ -121,6 +128,22 @@ interface passkey-store {
     /// on another domain cannot use the same line, and moving the site
     /// to a new domain means a new identity.
     relying-party: string,
+  }
+
+  /// An assertion plus the credential that produced it, for a ceremony
+  /// run against a credential this client cannot yet name.
+  record recovery-assertion {
+    /// The credential's id, as the authenticator reported it. Two
+    /// recovery ceremonies must agree on this or they are describing
+    /// two different passkeys.
+    credential-id: list<u8>,
+    /// The Relying Party ID the ceremony ran against -- the piece of
+    /// the identity that never needed recovering, since it is just this
+    /// site's domain. It rides along so the recovered identity is
+    /// complete without the client having to know its own origin, and
+    /// it is checkable: the authenticator signed over its hash.
+    relying-party: string,
+    assertion: assertion,
   }
 
   /// One WebAuthn assertion, verbatim as the ceremony produced it.
@@ -160,6 +183,21 @@ interface passkey-store {
   /// here rather than as an opaque server-side rejection later.
   adopt: async func(identity: passkey-identity) -> result<_, string>;
 
+  /// Store an identity whose public half has already been PROVED, along
+  /// with the credential it belongs to.
+  ///
+  /// This is `adopt` without the confirming ceremony, and exists for
+  /// the recovery path, where the proof is the two assertions recovery
+  /// already spent the user's patience on -- asking for a third touch
+  /// to re-establish what is known would be theatre.
+  ///
+  /// The store is trusted here in the same narrow way it is trusted
+  /// everywhere else in this design: nothing it keeps is a secret, and
+  /// a wrong public key costs one failed authentication and a re-run,
+  /// because the server checks the signature against the key that was
+  /// offered.
+  remember: async func(identity: passkey-identity, credential-id: list<u8>) -> result<_, string>;
+
   /// Forget the enrolled identity. The credential survives in the
   /// authenticator (only its owner can delete it there); this client
   /// simply stops offering it.
@@ -177,6 +215,22 @@ interface passkey-store {
   /// simplest way to keep the wire format predictable is to ask for
   /// nothing.
   assert: async func(challenge: list<u8>) -> result<assertion, string>;
+
+  /// Run an assertion ceremony without knowing which credential will
+  /// answer, and report which one did.
+  ///
+  /// This is the ceremony `recover-passkey` runs, and the only one that
+  /// works when nothing is enrolled: `assert` needs a stored record to
+  /// name the credential and to check the result against, and recovery
+  /// is precisely the situation where no such record survives. The user
+  /// chooses from whatever passkeys this site has -- which is why
+  /// `credential-id` comes back, so the caller can insist that two
+  /// ceremonies answered from the SAME credential rather than
+  /// intersecting assertions that were never going to agree.
+  ///
+  /// Same rules as `assert`: no extensions, and the challenge is passed
+  /// through untouched.
+  assert-unknown: async func(challenge: list<u8>) -> result<recovery-assertion, string>;
 }
 
 /// The browser-facing SSH terminal surface: what the static site drives
@@ -273,6 +327,21 @@ interface terminal {
   /// and return its `authorized_keys` line. Runs a registration
   /// ceremony: the user will be asked to approve it.
   enroll-passkey: async func() -> result<string, string>;
+
+  /// Recover this client's passkey identity from the credential itself,
+  /// and return its `authorized_keys` line.
+  ///
+  /// For when the passkey outlived the browser storage that described
+  /// it -- evicted, cleared, or a different browser profile. It needs
+  /// nothing external: not the line, not the target, not another
+  /// device. It asks the authenticator to sign twice (two touches, and
+  /// the SAME passkey must be chosen both times), and works the public
+  /// half out of the two signatures.
+  ///
+  /// Prefer `adopt-passkey` where the line IS to hand: one touch
+  /// instead of two, and no chance of picking the wrong credential
+  /// halfway through.
+  recover-passkey: async func() -> result<string, string>;
 
   /// Adopt a passkey identity enrolled on another device from its
   /// `authorized_keys` line (as `passkey-openssh` printed it there),

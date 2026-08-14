@@ -148,6 +148,40 @@ impl passkey_store::HostWithStore<Ctx> for HasSelf<Ctx> {
             }
         })))
     }
+
+    async fn assert_unknown(
+        accessor: &Accessor<Ctx, Self>,
+        challenge: Vec<u8>,
+    ) -> wasmtime::Result<std::result::Result<passkey_store::RecoveryAssertion, String>> {
+        Ok(Ok(accessor.with(|mut a| {
+            let (credential_id, relying_party, assertion) =
+                a.get().passkey.assert_unknown(&challenge);
+            passkey_store::RecoveryAssertion {
+                credential_id,
+                relying_party,
+                assertion: passkey_store::Assertion {
+                    authenticator_data: assertion.authenticator_data,
+                    client_data_json: assertion.client_data_json,
+                    signature: assertion.signature,
+                },
+            }
+        })))
+    }
+
+    async fn remember(
+        accessor: &Accessor<Ctx, Self>,
+        identity: passkey_store::PasskeyIdentity,
+        _credential_id: Vec<u8>,
+    ) -> wasmtime::Result<std::result::Result<(), String>> {
+        // The soft authenticator has no need for `credential_id` here
+        // (it only ever has one credential to check the claim
+        // against); a real platform authenticator's host would use it
+        // to pick which stored credential the claim is being recorded
+        // against.
+        Ok(accessor
+            .with(|mut a| a.get().passkey.remember(&identity.public_key, &identity.relying_party))
+            .map_err(|e| e.to_string()))
+    }
 }
 
 impl pairing_store::Host for Ctx {}
@@ -196,10 +230,14 @@ struct Args {
     /// "publickey" (default), "kbd" (keyboard-interactive against the
     /// scripted stand-in; see kbdint-sshd/), "auto" (the server
     /// steers: with no --kbd-answers this leg must complete silently
-    /// via publickey; with them it must ride the prompt loop), or
+    /// via publickey; with them it must ride the prompt loop),
     /// "passkey" (WebAuthn publickey auth via a software authenticator
     /// standing in for a browser's platform authenticator; see
-    /// passkey.rs).
+    /// passkey.rs), or "passkey-recover" (same, but the client's
+    /// stored identity is forgotten -- simulating evicted browser
+    /// storage -- and reconstructed via `recover-passkey` before
+    /// authenticating, proving recovery lands on the SAME identity
+    /// already installed on the target).
     auth: String,
     /// Answers for the keyboard-interactive rounds, consumed in prompt
     /// order across however many batches the server issues.
@@ -245,8 +283,10 @@ fn parse_args() -> Result<Args> {
         bail!("--connstring is required");
     }
     match a.auth.as_str() {
-        "publickey" | "kbd" | "auto" | "passkey" => {}
-        other => bail!("--auth must be publickey, kbd, auto or passkey, not {other}"),
+        "publickey" | "kbd" | "auto" | "passkey" | "passkey-recover" => {}
+        other => {
+            bail!("--auth must be publickey, kbd, auto, passkey or passkey-recover, not {other}")
+        }
     }
     Ok(a)
 }
@@ -319,7 +359,7 @@ async fn main() -> Result<()> {
 
             let gate = async {
 
-            if args.auth == "passkey" {
+            if args.auth == "passkey" || args.auth == "passkey-recover" {
                 // --- 1p. enrol the software passkey identity -------
                 // Check both directions of passkey-openssh's contract
                 // in one pass: none before enrolment, the SAME line
@@ -364,6 +404,64 @@ async fn main() -> Result<()> {
                 if !args.authorized_keys.as_os_str().is_empty() {
                     std::fs::write(&args.authorized_keys, format!("{line}\n"))?;
                     println!("[1p] installed into {}", args.authorized_keys.display());
+                }
+
+                if args.auth == "passkey-recover" {
+                    // --- 1r. simulate evicted browser storage --------
+                    // The credential survives in the (software)
+                    // authenticator; only the client's RECORD of it
+                    // (the public key, tucked away for `passkey-openssh`)
+                    // is gone -- exactly the scenario `recover-passkey`
+                    // exists for (see its doc comment in terminal.wit).
+                    iface
+                        .call_forget_passkey(acc)
+                        .await?
+                        .map_err(|e| anyhow!("forget-passkey: {e}"))?;
+                    let forgotten = iface
+                        .call_passkey_openssh(acc)
+                        .await?
+                        .map_err(|e| anyhow!("passkey-openssh (post-forget): {e}"))?;
+                    if forgotten.is_some() {
+                        bail!("passkey-openssh still reports an identity after forget-passkey: {forgotten:?}");
+                    }
+                    println!("[1r] forgot the passkey identity; passkey-openssh is none again (storage eviction, simulated)");
+
+                    // --- 2r. recover it from the credential itself ---
+                    // Two assertions (different challenges, same
+                    // credential) determine the public key that made
+                    // them. The property that matters: the line this
+                    // reconstructs must be BYTE-IDENTICAL to the one
+                    // from step [1p], because that line is already
+                    // sitting untouched in the target's
+                    // authorized_keys -- recovery has to reproduce the
+                    // same identity, not merely produce *an* identity.
+                    let recovered = iface
+                        .call_recover_passkey(acc)
+                        .await?
+                        .map_err(|e| anyhow!("recover-passkey: {e}"))?;
+                    if recovered != line {
+                        bail!(
+                            "recovered passkey line does not match the originally enrolled line:\n  enrolled:  {line}\n  recovered: {recovered}"
+                        );
+                    }
+                    println!("[2r] recover-passkey reconstructed the SAME authorized_keys line as enroll-passkey");
+
+                    let after_recover = iface
+                        .call_passkey_openssh(acc)
+                        .await?
+                        .map_err(|e| anyhow!("passkey-openssh (post-recover): {e}"))?;
+                    if after_recover.as_deref() != Some(line.as_str()) {
+                        bail!(
+                            "passkey-openssh after recovery does not match the recovered line:\n  recovered: {recovered}\n  passkey-openssh: {after_recover:?}"
+                        );
+                    }
+                    println!("[2r] passkey-openssh agrees with the recovered line (remember persisted it, not just returned it)");
+
+                    // Deliberately NOT reinstalling into
+                    // args.authorized_keys: authenticating below
+                    // against the line installed back in [1p] is what
+                    // proves recovery found the SAME identity, rather
+                    // than merely a working one.
                 }
 
                 // --- 2p. dial over iroh -----------------------------
@@ -447,10 +545,18 @@ async fn main() -> Result<()> {
 
                 session.call_detach(acc, s).await?;
                 println!("[6p] detached cleanly");
-                println!(
-                    "\nE2E-PASSKEY PASS: webauthn-sk-ecdsa-sha2-nistp256@openssh.com verified by \
-                     a real, unmodified sshd against a software authenticator"
-                );
+                if args.auth == "passkey-recover" {
+                    println!(
+                        "\nE2E-PASSKEY-RECOVER PASS: recovered the SAME identity from the credential \
+                         alone -- byte-identical authorized_keys line, still verified by a real, \
+                         unmodified sshd against the line already installed there"
+                    );
+                } else {
+                    println!(
+                        "\nE2E-PASSKEY PASS: webauthn-sk-ecdsa-sha2-nistp256@openssh.com verified by \
+                         a real, unmodified sshd against a software authenticator"
+                    );
+                }
                 return Ok::<(), anyhow::Error>(());
             }
 

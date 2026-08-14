@@ -109,11 +109,27 @@ is stamped with the origin that minted it, and a clone of this page on
 another domain cannot use the same line. And because a WebAuthn
 assertion does not return the credential's public key (nor is there
 anywhere in the credential to stash it: the user handle is fixed at
-registration, before the key exists), a passkey that syncs to a second
-device arrives without the one thing SSH has to put on the wire. The
-public half is not a secret, so the cure is mundane: paste the same
-`authorized_keys` line into the other device (**adopt**), which
-confirms it by asserting once before storing it.
+registration, before the key exists), the public half has to live in
+this browser's storage — which a passkey outlives. It outlives being
+carried to a second device, and it outlives eviction of the storage
+itself, which is a real event and not a hypothetical one: browsers
+reclaim IndexedDB from sites you have not visited lately.
+
+The public half is not a secret, so both cures are mundane:
+
+- **Adopt** — paste the same `authorized_keys` line into the other
+  device. One touch, which confirms the claim by asserting once before
+  storing it. Preferred when the line is to hand.
+- **Recover** — work the public key back out of the credential itself.
+  ECDSA verification reconstructs a point from a signature's `r`; run
+  backwards, one signature narrows the key to a couple of candidates,
+  and two assertions from the same passkey have exactly one in common.
+  Two touches, and it needs **nothing external** — not the line, not
+  the target, not another device — which is what makes it the answer
+  when storage went away and the line is only readable from a host you
+  can no longer log in to. It reconstructs the *same* key, so the line
+  already installed on the target keeps working untouched; both gates
+  assert that byte for byte.
 
 Offering both is the default under server-steered `auto`: the passkey
 is offered first, each key is offered *unsigned* before any is signed
@@ -316,10 +332,12 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   frames + cumulative offsets + bounded replay buffers, one codec
   linked by both Rust ends, with golden-byte tests.
 - `webauthn-ssh/` — the WebAuthn-to-SSH wire mapping: a passkey's
-  `authorized_keys` line, and a browser assertion turned into an
-  OpenSSH `webauthn-sk-ecdsa` signature. A crate of its own because
-  every rule it enforces is one sshd enforces silently, several round
-  trips away, so they are cheaper as unit tests than as failed logins.
+  `authorized_keys` line, a browser assertion turned into an OpenSSH
+  `webauthn-sk-ecdsa` signature, and the public-key recovery that gets
+  an identity back from nothing but two signatures. A crate of its own
+  because every rule it enforces is one sshd enforces silently, several
+  round trips away, so they are cheaper as unit tests than as failed
+  logins.
 - `listener-core/` — the `wasi:cli@0.3.1` listener component.
 - `listener-host/` — its native shell: wasmtime + the polymorph
   webcrypto/websocket/webrtc host crates + hand-rolled 0.3.1 bindgen.
