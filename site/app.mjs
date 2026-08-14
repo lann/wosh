@@ -367,7 +367,12 @@ async function settle(session, timeoutMs = 30000) {
  */
 function passkeyHint(cred, reason) {
   if (cred?.kind !== "passkey") return "";
-  if (!/authenticate|no supported methods|publickey/i.test(String(reason ?? ""))) return "";
+  // No pattern match on the reason: this is only ever called from the
+  // loop that waits for the authentication outcome, so a `closed`
+  // there is an authentication failure by construction. An earlier
+  // version matched the wording of the error, and stopped firing the
+  // moment that wording was improved -- exactly when the hint was
+  // wanted most.
   return "\n\nIf the passkey line is installed and this still fails, check the server: " +
     "OpenSSH before 10.3 needs " +
     "`PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com` " +

@@ -9,8 +9,34 @@
 #   scripts/test-sshd.sh start|stop|fingerprint|authorized-keys
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DIR="$(pwd)/.deps/test-sshd"
+# WOSH_SSHD_NAME gives an instance its own directory -- host key,
+# authorized_keys, config, pidfile -- so a gate that needs an sshd
+# configured differently can run one ALONGSIDE the shared instance
+# rather than reconfiguring it. Reconfiguring would be quietly
+# dangerous: `start` is idempotent, so a differently-configured sshd
+# left running would be adopted by every later gate as if it were the
+# usual one.
+DIR="$(pwd)/.deps/test-sshd${WOSH_SSHD_NAME:+-$WOSH_SSHD_NAME}"
 PORT="${WOSH_SSHD_PORT:-2222}"
+
+# WOSH_SSHD_UNPREPARED=1 stands up the sshd almost everyone actually
+# runs today, rather than the one the passkey gates want: password auth
+# on, and the browser-webauthn algorithm NOT enabled (its default state
+# before OpenSSH 10.3). That combination is what turns a refused key
+# into a password prompt, which is the shape the legibility gate
+# exists to pin -- a client that blames the password method for a
+# publickey failure sends its user looking in the wrong place.
+UNPREPARED="${WOSH_SSHD_UNPREPARED:-}"
+
+# The two lines WOSH_SSHD_UNPREPARED flips, resolved once rather than
+# smuggled through parameter expansion inside the heredoc.
+if [ -n "$UNPREPARED" ]; then
+  PASSWORD_AUTH=yes
+  WEBAUTHN_ALG="# webauthn deliberately NOT enabled (WOSH_SSHD_UNPREPARED)"
+else
+  PASSWORD_AUTH=no
+  WEBAUTHN_ALG="PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com"
+fi
 
 ensure() {
   mkdir -p "$DIR"
@@ -24,7 +50,7 @@ HostKey $DIR/host_ed25519
 AuthorizedKeysFile $DIR/authorized_keys
 PidFile $DIR/sshd.pid
 UsePAM no
-PasswordAuthentication no
+PasswordAuthentication $PASSWORD_AUTH
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 StrictModes no
@@ -45,7 +71,7 @@ PerSourcePenalties no
 # rather than the wire format. Appending it is exactly what a real
 # deployment on such a server must do, so this line is documentation as
 # much as configuration. Harmless on 10.3+, where it is already there.
-PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com
+$WEBAUTHN_ALG
 PrintMotd no
 X11Forwarding no
 LogLevel VERBOSE

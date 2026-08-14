@@ -101,6 +101,15 @@ default `PubkeyAcceptedAlgorithms` (upstream enabled it in February
 PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com
 ```
 
+Without it the client reports *the server did not accept the offered key
+(webauthn-sk-ecdsa-sha2-nistp256@openssh.com)*, and sshd at
+`LogLevel VERBOSE` says `signature algorithm ... not in
+PubkeyAcceptedAlgorithms`. Note that the client's message names the key
+rather than whatever method the server steered to afterwards — on a
+server that also offers passwords, the refusal arrives as a password
+prompt this session cannot answer, and reporting *that* would point at
+the wrong thing entirely.
+
 Two consequences of how WebAuthn works, worth knowing. The key's
 `application` field is the **site's domain**, not the customary `ssh:`,
 because the authenticator signs over `sha256(rp-id)` and sshd rebuilds
