@@ -183,18 +183,45 @@ host-key gate, real authentication — remains the boundary that
 matters.
 
 Sessions **survive transport death**. The tunnel (`tunnel/`, protocol
-v2) frames the byte streams with cumulative offsets and bounded replay
+v3) frames the byte streams with cumulative offsets and bounded replay
 buffers, so a dropped connection — relay restart, network roam, laptop
 sleep — parks the session on the listener (sshd leg held open, default
 `--resume-grace 600`) while the client redials with backoff and both
 sides retransmit exactly the bytes the other missed. The SSH stack
 never notices: the sans-I/O core is simply not told the wire broke
-unless the resume window (90s) is exhausted. Both endpoints also
+unless the resume budget is exhausted — 600s of TRYING, matched to the
+listener's default grace, because every definitive answer (a refusal, a
+replay gap) still fails fast and the long window is only ever spent on
+unreachability, where giving up early buys nothing. Both endpoints also
 REBIND themselves after a relay restart (an iroh endpoint shares fate
 with its relay websocket; the persistent identities are what make the
-rebind invisible), and v2 refusals travel as legible errors — a stale
-token now says "bad pairing token" at the client instead of silently
+rebind invisible), and refusals travel as legible errors — a stale
+token says "bad pairing token" at the client instead of silently
 dropping.
+
+Dead transports are DETECTED, not waited out. v3 adds liveness frames
+(PING/PONG) to the tunnel: the client probes after 10s of inbound
+silence and treats a probe unanswered for 5s as a verdict, a keystroke
+sent into a quiet link piggybacks a probe (typing into a black hole
+earns a verdict in ~5–7s, not the 30 QUIC's idle timeout takes), and a
+page returning from hidden/frozen probes immediately rather than
+trusting a connection that may have died in its sleep. The page shows
+"reconnecting…" while the resume machine runs — `status` deliberately
+stays `ready`, because the SSH session IS alive — via the `link-state`
+export, which reports the transport's truth separately.
+
+When a session CANNOT be resumed — the listener restarted and its
+registry is memory, the replay window was overrun — the death is
+classified (`close-kind`: `ended` / `failed` / `lost`), and on `lost`
+the page falls through to a FRESH session on the same parameters by
+itself, when it can do so silently: pinned host key, enrolled pairing
+(which is what lets the stale connstring keep working across the
+restart's token rotation), and a credential that needs no typing. A dim
+`[wosh]` divider marks the seam in the scrollback; the new shell is new,
+which is the truth. Deliberate detaches and authentication failures
+never auto-reconnect. (This fall-through is also where opt-in
+application-level resumption — tmux/dtach reattach — will slot in
+later.)
 
 The page keeps a **connection history** (opt-out checkbox, on by
 default; unchecking records nothing and forgets nothing): listener
@@ -353,9 +380,11 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 ## Layout
 
 - `connstring/` — the pairing format (shared by both ends), with tests.
-- `tunnel/` — the tunnel framing (protocol v2): resumable sessions as
-  frames + cumulative offsets + bounded replay buffers, one codec
-  linked by both Rust ends, with golden-byte tests.
+- `tunnel/` — the tunnel framing (protocol v3): resumable sessions as
+  frames + cumulative offsets + bounded replay buffers, plus liveness
+  (PING/PONG) frames, one codec linked by both Rust ends, with
+  golden-byte tests. v2 (no liveness) and the v1 raw pipe remain
+  accepted, so old pages and old listeners keep working.
 - `webauthn-ssh/` — the WebAuthn-to-SSH wire mapping: a passkey's
   `authorized_keys` line, a browser assertion turned into an OpenSSH
   `webauthn-sk-ecdsa` signature, and the public-key recovery that gets
@@ -452,6 +481,25 @@ Verified working:
   still holding parked. (The listener's
   accept loop previously went permanently deaf on the first relay
   hiccup — found by this gate's drill.)
+- **Fresh-session fall-through** (`just browser-fallthrough`): the
+  listener restarts mid-session (its session registry is memory, so
+  the parked session is unrecoverable by construction); the client's
+  liveness probe detects the dead transport in ~15s, the resume is
+  refused legibly, the death classifies as `lost`, and the page opens
+  a fresh session by itself — pinned host key, enrolled pairing
+  outliving the token rotation, silent browser-key auth, and a dim
+  `[wosh]` divider marking the seam. No dialog, no human.
+- The **freeze drill** (`just browser-freeze`, not yet in `check`):
+  SIGSTOP the page's renderer 45s — a faithful phone-in-pocket — then
+  thaw and demand the wake-probe/resume ladder recover the parked
+  session. This gate currently FAILS on an upstream bug it exposed,
+  which predates the liveness work (reproduced against the pre-v3
+  listener, and natively with no browser: `wosh-smoke-test --hold-ms`
+  + SIGSTOP): a peer silent for ~45s mid-session leaves the
+  polymorph-iroh endpoint on the other side permanently unable to
+  accept new connections, and the zombie session never idle-times-out
+  either — so the listener neither parks the old session nor answers
+  the redial. The gate stays, red, until the pin carries the fix.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
   xterm mounts, deltic instantiates the composed component and runs
