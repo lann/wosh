@@ -138,6 +138,9 @@ type credential struct {
 	// publickey / auto: the parked external signers, one per offered
 	// key, in offer order. Empty when no key was offered.
 	signers []ssh.Signer
+	// The same keys as records, kept only so a decline can name what
+	// was offered. Signers deliberately expose no way back to them.
+	keys []PublicKey
 }
 
 // offers reports whether this credential lets `method` proceed: the
@@ -181,6 +184,11 @@ type Engine struct {
 	// the embedder legitimately calls authenticate-* immediately
 	// after confirm-host-key returns.
 	confirmed bool
+
+	// Set once the publickey callback has handed the offered keys to
+	// x/crypto, so a later method's decline can tell "the server
+	// refused the key" from "the server never asked for one".
+	keysOffered bool
 
 	// Latched credentials. The auth callbacks park on credsReady,
 	// which closes exactly once when an Authenticate* call lands.
@@ -386,7 +394,7 @@ func (s *Engine) waitCreds() credential {
 func (s *Engine) passwordCallback() (string, error) {
 	c := s.waitCreds()
 	if !c.offers("password") {
-		return "", fmt.Errorf("password auth not selected")
+		return "", s.declined(c, "a password")
 	}
 	if c.kind == "password" {
 		return c.password, nil
@@ -416,12 +424,57 @@ func (s *Engine) publicKeysCallback() ([]ssh.Signer, error) {
 		// x/crypto moves on to password / keyboard-interactive.
 		return nil, fmt.Errorf("no public key was offered")
 	}
+	// Note that the keys reached the server, so a later method's
+	// decline can say whether they were refused or never tried. Only
+	// this callback knows: x/crypto walks the methods the SERVER
+	// allows, and an sshd that offers no publickey method never calls
+	// this at all.
+	s.mu.Lock()
+	s.keysOffered = true
+	s.mu.Unlock()
+
 	// Every offered key, in order. x/crypto probes them one at a time
 	// and only parks this engine's signer for one the server says it
 	// will accept, so offering several costs at most one ceremony --
 	// which is what lets a passkey fall back to an ordinary key
 	// inside a single connection.
 	return append([]ssh.Signer(nil), c.signers...), nil
+}
+
+// declined explains, as an error, why this engine will not answer the
+// method the server just steered to.
+//
+// It matters more than a decline usually would. x/crypto returns the
+// LAST error any auth method produced, so whatever this says becomes
+// the whole story of the failure -- and the honest story is almost
+// never about the method being declined. The common case by far is a
+// server that refused the offered key (no matching authorized_keys
+// line, or an algorithm it has not enabled) and then asked for a
+// password; blaming the password there sends the user looking in
+// exactly the wrong place.
+func (s *Engine) declined(c credential, method string) error {
+	s.mu.Lock()
+	offered := s.keysOffered
+	s.mu.Unlock()
+
+	switch {
+	case offered:
+		names := make([]string, 0, len(c.keys))
+		for _, k := range c.keys {
+			names = append(names, k.Algorithm)
+		}
+		return fmt.Errorf(
+			"the server did not accept the offered key (%s), then asked for %s, "+
+				"which this session did not offer",
+			strings.Join(names, ", "), method)
+	case len(c.keys) > 0:
+		return fmt.Errorf(
+			"the server did not offer publickey authentication, and asked for %s, "+
+				"which this session did not offer", method)
+	default:
+		return fmt.Errorf(
+			"the server asked for %s, which this session did not offer", method)
+	}
 }
 
 // keyboardInteractiveCallback answers RFC 4256 challenges. x/crypto/ssh
@@ -431,7 +484,7 @@ func (s *Engine) publicKeysCallback() ([]ssh.Signer, error) {
 func (s *Engine) keyboardInteractiveCallback(_, instruction string, questions []string, echos []bool) ([]string, error) {
 	c := s.waitCreds()
 	if !c.offers("keyboard-interactive") {
-		return nil, fmt.Errorf("keyboard-interactive auth not selected")
+		return nil, s.declined(c, "keyboard-interactive answers")
 	}
 
 	// A batch with no prompts carries nothing to collect (servers use
@@ -516,14 +569,14 @@ func (s *Engine) AuthenticatePassword(password string) error {
 // an authentication attempt, so it fails synchronously -- before
 // anything is latched.
 func (s *Engine) AuthenticatePublickey(keys []PublicKey) error {
-	signers, err := s.offerSigners(keys)
+	signers, offered, err := s.offerSigners(keys)
 	if err != nil {
 		return err
 	}
 	if len(signers) == 0 {
 		return fmt.Errorf("no public key was offered: publickey auth needs at least one key")
 	}
-	return s.supplyCreds(credential{kind: "publickey", signers: signers})
+	return s.supplyCreds(credential{kind: "publickey", signers: signers, keys: offered})
 }
 
 // AuthenticateInteractive backs `authenticate-interactive`.
@@ -536,35 +589,38 @@ func (s *Engine) AuthenticateInteractive() error {
 // offer publickey -- the publickey method then declines itself and the
 // server steers to password / keyboard-interactive.
 func (s *Engine) AuthenticateAuto(keys []PublicKey) error {
-	signers, err := s.offerSigners(keys)
+	signers, offered, err := s.offerSigners(keys)
 	if err != nil {
 		return err
 	}
-	return s.supplyCreds(credential{kind: "auto", signers: signers})
+	return s.supplyCreds(credential{kind: "auto", signers: signers, keys: offered})
 }
 
 // offerSigners validates and clones the offered key records, then
 // wraps each as a parked external signer. It validates EVERY key
 // before latching anything: a rejected offer must leave the session
 // exactly as it found it, free to be authenticated properly later.
-func (s *Engine) offerSigners(keys []PublicKey) ([]ssh.Signer, error) {
+func (s *Engine) offerSigners(keys []PublicKey) ([]ssh.Signer, []PublicKey, error) {
 	signers := make([]ssh.Signer, 0, len(keys))
+	cloned := make([]PublicKey, 0, len(keys))
 	for i, k := range keys {
 		if k.Algorithm == "" {
-			return nil, fmt.Errorf("public key %d has an empty algorithm name", i)
+			return nil, nil, fmt.Errorf("public key %d has an empty algorithm name", i)
 		}
 		if len(k.Blob) == 0 {
-			return nil, fmt.Errorf("public key %d (%s) has an empty key blob", i, k.Algorithm)
+			return nil, nil, fmt.Errorf("public key %d (%s) has an empty key blob", i, k.Algorithm)
 		}
 		// Clone: the bindings hand over zero-copy views of transferred
 		// cabi memory that is recycled once the export returns, and
 		// the auth goroutine reads these strictly after that.
-		signers = append(signers, s.newSigner(PublicKey{
+		key := PublicKey{
 			Algorithm: strings.Clone(k.Algorithm),
 			Blob:      append([]byte(nil), k.Blob...),
-		}))
+		}
+		cloned = append(cloned, key)
+		signers = append(signers, s.newSigner(key))
 	}
-	return signers, nil
+	return signers, cloned, nil
 }
 
 // PendingPrompts backs `pending-prompts`.

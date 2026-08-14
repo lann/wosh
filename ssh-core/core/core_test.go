@@ -520,6 +520,56 @@ func TestPublickeyFallsThroughToTheSecondKey(t *testing.T) {
 	r.waitState(t, StateReady)
 }
 
+// A server that refuses the offered key and then asks for a password
+// must not be reported as a PASSWORD problem.
+//
+// This is the shape of nearly every real sshd: publickey plus password.
+// When the key is refused -- an authorized_keys line that is absent, or
+// an algorithm the server has not enabled -- x/crypto moves on to the
+// next method the server says can continue, which lands in the password
+// callback with a credential that offers no password. Declining is
+// correct; the trap is that x/crypto returns the LAST error it saw, so
+// a bare "password auth not selected" became the whole story of a
+// failure that was never about passwords.
+func TestRefusedKeyThenPasswordBlamesTheKey(t *testing.T) {
+	offer, _, _ := ed25519Offer(t)
+
+	r := start(t, &ssh.ServerConfig{
+		// The key is not one this server knows.
+		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
+			return nil, &authError{"unknown key"}
+		},
+		// ...and password is on offer, as it is nearly everywhere.
+		PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+			return nil, &authError{"no"}
+		},
+	}, echoShell(0))
+
+	r.waitState(t, StateHostKeyCheck)
+	r.eng.ConfirmHostKey(true)
+	if err := r.eng.AuthenticatePublickey([]PublicKey{offer}); err != nil {
+		t.Fatalf("AuthenticatePublickey: %v", err)
+	}
+
+	r.waitState(t, StateClosed)
+	_, msg := r.eng.Status()
+	t.Logf("close message: %s", msg)
+	// The message must point at the key that was refused, and name the
+	// algorithm, since "the server has not enabled that algorithm" is
+	// the most common cause and the one the user can act on.
+	if !strings.Contains(msg, offer.Algorithm) {
+		t.Errorf("close message does not name the refused key's algorithm %q: %s",
+			offer.Algorithm, msg)
+	}
+	if !strings.Contains(msg, "did not accept") {
+		t.Errorf("close message does not say the key was refused: %s", msg)
+	}
+	// And it must NOT blame passwords: nothing here was ever about one.
+	if strings.Contains(msg, "password auth not selected") {
+		t.Errorf("close message blames the password method for a publickey failure: %s", msg)
+	}
+}
+
 func TestFailedSignatureClosesLegibly(t *testing.T) {
 	offer, _, _ := ed25519Offer(t)
 	r := start(t, &ssh.ServerConfig{
