@@ -297,7 +297,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[A] shell round-trip through the tunnel painted in xterm");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
   await reload();
@@ -327,7 +328,8 @@ try {
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
   console.log("[C] approved with 'remember this approval' checked");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg D: the pin skips the prompt --------------------------------
   await reload();
@@ -350,7 +352,8 @@ try {
   }
   const pinNote = await page.evaluate(() => document.querySelector("#panel .notice")?.textContent);
   console.log(`[D] pinned fingerprint connected with NO prompt (${pinNote})`);
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg E: a changed host key warns loudly -------------------------
   // Overwrite the pin for this listener's endpoint id with a bogus
@@ -405,7 +408,8 @@ try {
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
   console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg G: unchecked remember records nothing (and forgets nothing);
   // forgetting is the row's own two-step affordance ------------------
@@ -415,7 +419,8 @@ try {
   await waitPrompt();
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
   await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
   let rowsAfter = await page.locator("#panel .histrow").count();
   if (rowsAfter !== 1) {
