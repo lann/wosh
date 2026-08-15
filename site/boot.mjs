@@ -579,9 +579,9 @@ export async function initBoot(panel, { onConnect }) {
     csInput.value = lastConnected.connstring;
     userInput.value = lastConnected.user;
     // A passkey (or auto steered to one) may trigger an authenticator
-    // ceremony here; that is fine -- the ceremony gate wired below
-    // supplies the user gesture it needs, same as any other passkey
-    // reconnect.
+    // ceremony here, with the dialog CLOSED: the ceremony gate below
+    // opens it for the ask and closes it after -- a reconnect that
+    // needs a human is not the silent kind.
     const s = await doConnect();
     return !!s;
   };
@@ -782,16 +782,40 @@ export async function initBoot(panel, { onConnect }) {
     pendingCeremony = null;
   };
   installPasskeyCeremonyGate(() =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       withdrawCeremony();
+      // The ask can arrive with the dialog CLOSED: auto-reconnect
+      // after a lost session redials without opening it, and a passkey
+      // (or auto steering to one) then needs a gesture mid-connect. A
+      // row appended into a closed <dialog> is not rendered at all, so
+      // the attempt would park forever behind a question nobody could
+      // see. Open the dialog for the ask, and put it back once the
+      // tap answers it -- a reconnect that needs a human is not the
+      // silent kind, and pretending otherwise looks like a hang.
+      const openedForThis = !panel.open;
+      if (openedForThis) panel.showModal();
       const row = el("div", { className: "confirm" });
       const btn = el("button", { textContent: "touch your passkey to sign in" });
-      row.append(el("div", { textContent: "the server is asking for your passkey:" }), btn);
+      const cancelBtn = el("button", { textContent: "cancel" });
+      row.append(el("div", { textContent: "the server is asking for your passkey:" }), btn, " ", cancelBtn);
       ask(row);
       pendingCeremony = row;
       btn.addEventListener("click", () => {
         withdrawCeremony();
+        // Only the door this ask opened: a ceremony raised into an
+        // already-open panel (a manual connect) leaves it exactly as
+        // it found it.
+        if (openedForThis && panel.open) panel.close();
         resolve();
+      });
+      // The way out. Esc is deliberately blocked mid-connect (a hidden
+      // prompt looks like a hang), so without this a seized screen
+      // could only be answered with a touch. Rejecting fails the
+      // assertion, which fails the attempt, legibly -- and the panel
+      // stays open, because that is where the failure will be told.
+      cancelBtn.addEventListener("click", () => {
+        withdrawCeremony();
+        reject(new Error("passkey sign-in declined"));
       });
     })
   ).catch((e) => console.warn("wosh: could not install the passkey ceremony gate", e));
