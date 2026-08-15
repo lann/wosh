@@ -59,6 +59,18 @@
     #linkdialog .row .spacer { flex: 1; }
     #linkdialog label { display: flex; align-items: center; gap: 4px; }
     #linkdialog button { font-size: 13px; min-height: 30px; }
+    /* The between-sessions boundary (separator.mjs): an xterm
+       decoration overlaying its own blank buffer line, styled as page
+       chrome -- a rule with a label -- so it cannot be mistaken for
+       remote output. */
+    .session-separator {
+      display: flex; align-items: center; gap: 8px;
+      color: #8a8a8a; font: 11px system-ui, sans-serif;
+      white-space: nowrap; overflow: hidden;
+    }
+    .session-separator::before, .session-separator::after {
+      content: ""; flex: 1; border-top: 1px solid #3a3a3a;
+    }
     #panel .title {
       display: flex; align-items: center; margin-bottom: 6px;
       color: #ddd; font-weight: 600;
