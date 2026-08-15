@@ -146,6 +146,10 @@ try {
 
   await page.goto(`http://127.0.0.1:${PORT}/#${CONNSTRING}`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
+  // The panel collapses setup material into <details> (#65); these
+  // flows drive what is inside them, so open everything once the
+  // panel has rendered.
+  await page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
   await page.click("text=show this browser's public key");
   const line = (await page.locator("#panel .key code").first().textContent({ timeout: 120_000 })).trim();
   appendFileSync(AUTH_KEYS, line + "\n");

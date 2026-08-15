@@ -23,11 +23,11 @@ for f in "$bundle" "$client" "$translator"; do
 done
 
 cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs \
-   site/lifecycle.mjs site/qr.mjs "$dest/"
+   site/lifecycle.mjs site/links.mjs site/qr.mjs "$dest/"
 cp site/manifest.json "$dest/"
 cp site/icons/*.png "$dest/icons/"
 
-# xterm ships as npm packages; copy the three files the page loads.
+# xterm ships as npm packages; copy the files the page loads.
 # jsQR rides along from the same place: it is the QR fallback for the
 # browsers without a native BarcodeDetector (iOS Safari, Firefox), and
 # site/qr.mjs fetches it by this path, only when it needs it.
@@ -36,6 +36,11 @@ if [ -d "$XTERM" ]; then
   cp "$XTERM/@xterm/xterm/css/xterm.css"      "$dest/xterm/"
   cp "$XTERM/@xterm/xterm/lib/xterm.js"       "$dest/xterm/"
   cp "$XTERM/@xterm/addon-fit/lib/addon-fit.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-unicode11/lib/addon-unicode11.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-clipboard/lib/addon-clipboard.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-web-links/lib/addon-web-links.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-image/lib/addon-image.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-webgl/lib/addon-webgl.js" "$dest/xterm/"
   cp "$XTERM/jsqr/dist/jsQR.js"               "$dest/vendor/jsqr.js"
 else
   echo "note: site/node_modules missing; run 'npm install' in site/ for xterm + jsQR assets" >&2

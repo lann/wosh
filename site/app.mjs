@@ -17,6 +17,7 @@
 
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
+import { linkHandler } from "./links.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
@@ -43,6 +44,9 @@ const term = new Terminal({
   fontSize: 14,
   cursorBlink: true,
   scrollback: 1000,
+  // The unicode-11 addon registers through `term.unicode`, which xterm
+  // gates behind this flag (a stability marker, not a feature toggle).
+  allowProposedApi: true,
 });
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
@@ -50,6 +54,81 @@ const overlay = new OverlayAddon();
 term.loadAddon(overlay);
 term.open(document.getElementById("term"));
 fit.fit(); // synchronous: connect reads term.cols/rows immediately
+
+// --- the rest of the addon family --------------------------------------
+// All progressive enhancement, each behind its own try: a device that
+// refuses one (no WebGL, no clipboard permission) still gets a fully
+// working terminal, and the console says what degraded. What activated
+// is recorded on the test hook, because several of these are exactly
+// one easily-lost script tag or builder call, and only a gate that can
+// SEE them keeps them wired (host-test/browser-links.mjs).
+window.__wosh.addons = (() => {
+  const active = { unicode: null, clipboard: null, links: false, image: null, webgl: false };
+  const enhance = (what, load) => {
+    try {
+      load();
+    } catch (e) {
+      console.warn(`wosh: ${what} unavailable`, e);
+    }
+  };
+  // Width tables for Unicode 11: emoji and modern CJK render two cells
+  // wide, matching what the remote pty computed. Without this, any
+  // prompt with an emoji in it smears every redraw one cell left.
+  enhance("unicode 11 widths", () => {
+    term.loadAddon(new Unicode11Addon.Unicode11Addon());
+    term.unicode.activeVersion = "11";
+    active.unicode = term.unicode.activeVersion;
+  });
+  // OSC 52 clipboard, WRITE-ONLY. This is how tmux's set-clipboard and
+  // vim/nvim yanks reach the system clipboard through an SSH session.
+  // The read half is refused outright -- answered empty, not prompted:
+  // a remote host querying the local clipboard is an exfiltration
+  // primitive, and this page's posture is that the remote shell is not
+  // trusted with anything it did not produce.
+  enhance("clipboard (OSC 52)", () => {
+    const writeOnly = {
+      async readText() {
+        return "";
+      },
+      async writeText(_selection, text) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          /* no permission, or no user activation: the yank just does not land */
+        }
+      },
+    };
+    term.loadAddon(new ClipboardAddon.ClipboardAddon(undefined, writeOnly));
+    active.clipboard = "write-only";
+  });
+  // Web links, single tap, behind the confirmation dialog links.mjs
+  // owns (which is what makes single-tap safe; see that file).
+  enhance("web links", () => {
+    const handler = linkHandler(document.getElementById("linkdialog"), {
+      refocus: () => autofocusTerminal(term),
+    });
+    term.loadAddon(new WebLinksAddon.WebLinksAddon(handler));
+    active.links = true;
+  });
+  // Inline images (sixel + iTerm IIP). The addon object rides the test
+  // hook: its storageUsage is the only outside evidence a sixel landed.
+  enhance("inline images", () => {
+    const image = new ImageAddon.ImageAddon();
+    term.loadAddon(image);
+    active.image = image;
+  });
+  // The WebGL renderer, last: it needs the opened terminal, and on a
+  // lost context it disposes itself, which falls the terminal back to
+  // the DOM renderer -- slower, never wrong.
+  enhance("webgl renderer", () => {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+    active.webgl = true;
+  });
+  return active;
+})();
+
 autofocusTerminal(term); // not on a phone: see mobile.mjs (focus != keyboard)
 // Test hook: the browser e2e gate reads the screen through the buffer
 // API, because the canvas renderer leaves nothing scrapeable in the DOM.

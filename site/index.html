@@ -39,6 +39,26 @@
       width: min(560px, 92vw); box-sizing: border-box;
     }
     #panel::backdrop { background: rgba(0, 0, 0, 0.65); }
+    /* The link confirmation (links.mjs): same family as #panel, sized
+       for one URL and two buttons. The URL gets the full width and
+       breaks anywhere -- it is the thing being confirmed, so it must
+       be readable in full, not ellipsized. */
+    #linkdialog {
+      font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
+      border: 1px solid #333; border-radius: 8px;
+      padding: 12px 14px; margin: auto;
+      width: min(480px, 92vw); box-sizing: border-box;
+    }
+    #linkdialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+    #linkdialog code {
+      display: block; margin: 8px 0; padding: 6px;
+      background: #000; color: #9ecbff;
+      font: 12px monospace; word-break: break-all;
+    }
+    #linkdialog .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+    #linkdialog .row .spacer { flex: 1; }
+    #linkdialog label { display: flex; align-items: center; gap: 4px; }
+    #linkdialog button { font-size: 13px; min-height: 30px; }
     #panel .title {
       display: flex; align-items: center; margin-bottom: 6px;
       color: #ddd; font-weight: 600;
@@ -184,6 +204,11 @@
   </style>
   <script src="./xterm/xterm.js"></script>
   <script src="./xterm/addon-fit.js"></script>
+  <script src="./xterm/addon-unicode11.js"></script>
+  <script src="./xterm/addon-clipboard.js"></script>
+  <script src="./xterm/addon-web-links.js"></script>
+  <script src="./xterm/addon-image.js"></script>
+  <script src="./xterm/addon-webgl.js"></script>
 </head>
 <body>
   <div id="wrap">
@@ -196,6 +221,7 @@
     <div id="keys"></div>
   </div>
   <dialog id="panel"></dialog>
+  <dialog id="linkdialog"></dialog>
   <script type="module">
     import { connect } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
