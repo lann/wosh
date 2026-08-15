@@ -121,6 +121,11 @@ try {
   await page.click(".xterm-screen");
   await page.keyboard.type("echo MARK_BEFORE\n", { delay: 10 });
   await screenHas("MARK_BEFORE", 2);
+  // A first session starts on a pristine buffer: nothing to separate,
+  // so nothing may be drawn (separator.mjs).
+  if (await page.evaluate(() => document.querySelectorAll(".session-separator").length)) {
+    fail("a session separator appeared for the FIRST session");
+  }
   say("[2] pre-restart round trip");
 
   // Restart the listener: same identity dir (same endpoint id, so the
@@ -155,6 +160,19 @@ try {
   const text = await screenText();
   if (!text.includes("MARK_BEFORE")) {
     fail("pre-restart scrollback is gone: the page reloaded instead of reconnecting");
+  }
+
+  // The fresh session over the old scrollback is labeled: exactly one
+  // separator decoration, carrying the user, rendered in the viewport
+  // between the two sessions' output.
+  const separators = await page.evaluate(() =>
+    [...document.querySelectorAll(".session-separator")].map((el) => el.textContent));
+  if (separators.length !== 1) {
+    fail(`expected exactly one session separator, found ${separators.length}`);
+  } else if (!separators[0].includes(`new session — ${USER}`)) {
+    fail(`separator says ${JSON.stringify(separators[0])}, expected the new-session label with the user`);
+  } else {
+    say("[7] the new session is labeled in the scrollback");
   }
 
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);

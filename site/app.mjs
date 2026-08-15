@@ -18,6 +18,7 @@
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
 import { linkHandler } from "./links.mjs";
+import { markSessionStart } from "./separator.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
@@ -589,6 +590,11 @@ export async function connect({ connstring, user, ui }) {
   }
 
   status(`connected as ${user}`);
+  // A new session over existing scrollback gets a labeled boundary,
+  // anchored in the buffer so it scrolls with what it separates
+  // (separator.mjs). Awaited BEFORE the pump exists: nothing of this
+  // session may land above its own separator.
+  await markSessionStart(term, user);
   autofocusTerminal(term); // ditto: a phone gets the keyboard by tapping
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
