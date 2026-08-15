@@ -321,7 +321,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[6] shell round-trip through the tunnel painted in xterm");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- recovery: the credential survives an evicted browser store ----
   //
@@ -454,7 +455,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[12] shell round-trip through the recovered identity painted in xterm");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

@@ -117,7 +117,8 @@ try {
   await screenHas("MARK_AFTER", 2);
   console.log("[4] post-restart round trip: the session survived");
 
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
     console.log("\nBROWSER RESUME PASS: a live session rode out a relay restart" +
