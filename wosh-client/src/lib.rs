@@ -95,7 +95,8 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use bindings::exports::wosh::terminal::terminal::{
-    CloseKind as WitCloseKind, Guest, GuestSession, LinkState, Prompt, PromptBatch, Status,
+    CloseKind as WitCloseKind, Guest, GuestSession, LinkState, Prompt, PromptBatch, ProbeResult,
+    Status,
 };
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions, RecvStream, SendStream};
 use bindings::polymorph::iroh::identity::Identity;
@@ -166,6 +167,21 @@ const KEEPALIVE_TICK_MS: u64 = 1_000;
 /// black hole should earn a verdict in five-to-seven seconds, not the
 /// thirty QUIC's idle timeout would take.
 const INTERACTIVE_PROBE_MS: u64 = 2_000;
+
+/// How often `probe`'s poll loop ticks the core while waiting for a
+/// `probe-poll` answer. Same cadence as the keepalive prober -- there
+/// is nothing special about this number beyond "frequent enough that
+/// a fast command returns promptly, coarse enough not to spin".
+const PROBE_POLL_TICK_MS: u64 = 100;
+/// How long `probe` waits for an answer before giving up. This is the
+/// component's own bound, not the core's -- core.wit's probe surface
+/// is deliberately timer-free (see `wit/deps/wosh-ssh-core/core.wit`)
+/// -- so somebody has to own a deadline, and per the core's own doc
+/// comment that is the embedder. An abandoned probe stays in flight
+/// in the core past this deadline (module doc, `probe` in
+/// terminal.wit), which is why the next `probe` call may legitimately
+/// refuse until the stuck one finally answers.
+const PROBE_DEADLINE_MS: u64 = 15_000;
 
 /// The tunnel dialect this session settled on at connect. Fixed for
 /// the session's lifetime -- a resume redials the SAME ALPN -- which
@@ -1407,6 +1423,7 @@ impl GuestSession for Session {
         user: String,
         cols: u16,
         rows: u16,
+        command: Option<String>,
     ) -> Result<bindings::exports::wosh::terminal::terminal::Session, String> {
         let parsed =
             ConnString::decode(&connstring).map_err(|e| format!("connection string: {e}"))?;
@@ -1532,7 +1549,13 @@ impl GuestSession for Session {
         // `user` is snapshotted by the core's config before the
         // handshake, but is only ever SENT inside an auth request,
         // which cannot happen before the host-key gate resolves.
-        let core = CoreSession::connect(&user, cols, rows);
+        //
+        // `command` rides only on this initial connect, never on a
+        // transport resume: resume never re-creates the core session
+        // (see terminal.wit `connect`), so an exec request runs
+        // exactly once per SSH session regardless of how many times
+        // the underlying tunnel reconnects.
+        let core = CoreSession::connect(&user, cols, rows, command.as_deref());
 
         let state = Rc::new(State {
             inner: RefCell::new(Inner {
@@ -1837,6 +1860,71 @@ impl GuestSession for Session {
     async fn resize(&self, cols: u16, rows: u16) {
         self.state.inner.borrow().core.resize(cols, rows);
         drive(&self.state).await;
+    }
+
+    /// Run a one-shot command on the core's second (probe) channel and
+    /// wait for its result, without disturbing `write-input`/
+    /// `drain-output`'s interactive channel at all.
+    ///
+    /// `probe-start` is a state-changing core call like any other, so
+    /// it gets the same `drive`-shaped treatment: drain to the outbox
+    /// and wake the writer immediately after. But the ANSWER does not
+    /// arrive that way -- `probe-poll` only ever reports what a `pump`
+    /// tick turned up (core.wit's progress contract), and nothing here
+    /// wakes this task when that happens. So this export owns its own
+    /// small poll loop: sleep the same tick the keepalive prober uses
+    /// ([`sleep_ms`]/[`PROBE_POLL_TICK_MS`]), `pump` the core, drain
+    /// and wake exactly as `write-input` does, then check
+    /// `probe-poll`. `PROBE_DEADLINE_MS` bounds the wait -- the core
+    /// itself is timer-free by design, so the deadline belongs here.
+    ///
+    /// Every borrow below is taken, used synchronously, and dropped
+    /// before the next `.await` (module header): holding a `RefCell`
+    /// borrow across a suspension point is the one hazard this file
+    /// guards against everywhere.
+    async fn probe(&self, command: String) -> Result<ProbeResult, String> {
+        {
+            let mut inner = self.state.inner.borrow_mut();
+            inner.core.probe_start(&command)?;
+            inner.take_core_output();
+        }
+        self.state.writer_signal.notify();
+
+        let deadline = now_ms() + PROBE_DEADLINE_MS;
+        loop {
+            sleep_ms(PROBE_POLL_TICK_MS).await;
+
+            let (result, closed_reason, wire_gone) = {
+                let mut inner = self.state.inner.borrow_mut();
+                inner.core.pump();
+                inner.take_core_output();
+                let result = inner.core.probe_poll();
+                let closed_reason = match inner.core.status() {
+                    CoreStatus::Closed(reason) => Some(reason),
+                    _ => None,
+                };
+                (result, closed_reason, inner.link_down)
+            };
+            self.state.writer_signal.notify();
+
+            if let Some(result) = result {
+                return Ok(ProbeResult {
+                    exit_status: result.exit_status,
+                    output: result.output,
+                });
+            }
+            if let Some(reason) = closed_reason {
+                return Err(format!("session closed while probe was in flight: {reason}"));
+            }
+            if wire_gone {
+                return Err("connection lost while probe was in flight".to_string());
+            }
+            if now_ms() >= deadline {
+                return Err(
+                    "probe timed out (still in flight on the target)".to_string(),
+                );
+            }
+        }
     }
 
     /// Pty output buffered by the core since the last call. Purely a

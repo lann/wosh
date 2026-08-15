@@ -251,6 +251,26 @@ struct Args {
     /// before detaching). A window for an external orchestrator to act
     /// on the live session -- freeze this process, cut its network.
     hold_ms: u64,
+    /// The on-connect command (terminal.wit `connect`'s `command`):
+    /// sent as an SSH `exec` request in place of the default `shell`
+    /// request. Presence of this flag selects the exec leg entirely,
+    /// in place of the interactive-shell legs above.
+    command: Option<String>,
+    /// Expected exit status of the on-connect command.
+    expect_exit: Option<i32>,
+    /// A substring that must appear in the command's pty output
+    /// (matched against raw bytes including \r\n, so pass just the
+    /// marker text, not a full line).
+    expect_output: Option<String>,
+    /// A command to run on the probe's second channel, DURING the
+    /// live interactive session in the first (plain publickey) leg,
+    /// after its echo round-trip and before detach. Proves the probe
+    /// channel leaves the interactive channel undisturbed.
+    probe: Option<String>,
+    /// Expected exit status of the probe command.
+    probe_expect_exit: Option<i32>,
+    /// A substring that must appear in the probe's output.
+    probe_expect_output: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -265,6 +285,12 @@ fn parse_args() -> Result<Args> {
         expect_auth_fail: false,
         pairing_store: None,
         hold_ms: 0,
+        command: None,
+        expect_exit: None,
+        expect_output: None,
+        probe: None,
+        probe_expect_exit: None,
+        probe_expect_output: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -282,6 +308,17 @@ fn parse_args() -> Result<Args> {
             "--expect-auth-fail" => a.expect_auth_fail = true,
             "--pairing-store" => a.pairing_store = Some(PathBuf::from(v()?)),
             "--hold-ms" => a.hold_ms = v()?.parse().map_err(|e| anyhow!("--hold-ms: {e}"))?,
+            "--command" => a.command = Some(v()?),
+            "--expect-exit" => {
+                a.expect_exit = Some(v()?.parse().map_err(|e| anyhow!("--expect-exit: {e}"))?)
+            }
+            "--expect-output" => a.expect_output = Some(v()?),
+            "--probe" => a.probe = Some(v()?),
+            "--probe-expect-exit" => {
+                a.probe_expect_exit =
+                    Some(v()?.parse().map_err(|e| anyhow!("--probe-expect-exit: {e}"))?)
+            }
+            "--probe-expect-output" => a.probe_expect_output = Some(v()?),
             other => bail!("unknown flag {other}"),
         }
     }
@@ -472,7 +509,7 @@ async fn main() -> Result<()> {
 
                 // --- 2p. dial over iroh -----------------------------
                 let s = session
-                    .call_connect(acc, args.connstring.clone(), args.user.clone(), 80, 24)
+                    .call_connect(acc, args.connstring.clone(), args.user.clone(), 80, 24, None)
                     .await?
                     .map_err(|e| anyhow!("connect: {e}"))?;
                 println!("[2p] dialed the listener over iroh");
@@ -566,6 +603,130 @@ async fn main() -> Result<()> {
                 return Ok::<(), anyhow::Error>(());
             }
 
+            if let Some(command) = &args.command {
+                // The exec leg: same channel and pty as the shell legs
+                // above, but terminal.wit's `connect` sends `command`
+                // as an SSH `exec` request (RFC 4254 s6.5) in place of
+                // `shell` once authentication succeeds. Reuse the
+                // publickey plumbing verbatim -- only what happens
+                // after `ready` (or, for a fast-exiting command,
+                // instead of ever observing it) differs.
+
+                // --- 1e. identity, exactly like the publickey leg --
+                let line = iface
+                    .call_identity_openssh(acc)
+                    .await?
+                    .map_err(|e| anyhow!("identity: {e}"))?;
+                println!("[1e] identity (host-held, via identity-store):\n    {line}");
+                if !args.authorized_keys.as_os_str().is_empty() {
+                    std::fs::write(&args.authorized_keys, format!("{line}\n"))?;
+                    println!("[1e] installed into {}", args.authorized_keys.display());
+                }
+
+                // --- 2e. dial, carrying the on-connect command ------
+                let s = session
+                    .call_connect(
+                        acc,
+                        args.connstring.clone(),
+                        args.user.clone(),
+                        80,
+                        24,
+                        Some(command.clone()),
+                    )
+                    .await?
+                    .map_err(|e| anyhow!("connect: {e}"))?;
+                println!("[2e] dialed with on-connect command: {command:?}");
+
+                // --- 3e. host-key gate -------------------------------
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    match session.call_status(acc, s).await? {
+                        Status::HostKeyCheck => break,
+                        Status::Closed(why) => bail!("closed before the host-key gate: {why}"),
+                        _ if Instant::now() > deadline => {
+                            bail!("timed out reaching the host-key gate")
+                        }
+                        _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                    }
+                }
+                let fp = session
+                    .call_host_key_fingerprint(acc, s)
+                    .await?
+                    .ok_or_else(|| anyhow!("no fingerprint at the host-key gate"))?;
+                println!("[3e] server host key: {fp}");
+                if let Some(expected) = &args.expect_host_key {
+                    if &fp != expected {
+                        bail!("host key mismatch:\n  reported {fp}\n  expected {expected}");
+                    }
+                    println!("[3e] fingerprint matches the sshd host key");
+                }
+                session.call_confirm_host_key(acc, s, true).await?;
+
+                // --- 4e. publickey auth, exactly like the publickey leg
+                session
+                    .call_authenticate_publickey(acc, s)
+                    .await?
+                    .map_err(|e| anyhow!("publickey auth: {e}"))?;
+
+                // --- 5e. drive the exec to completion ---------------
+                // Deliberately do NOT wait for `ready` first: the
+                // on-connect command supplants the shell entirely, and
+                // a fast-exiting one (`exit 7` finishes essentially
+                // instantly) can carry the session from authenticating
+                // straight through `ready` to `closed` between two
+                // polls, so a loop gated on observing `ready` first
+                // could miss it and hang. `exited` is the only
+                // observation this leg can rely on.
+                let mut screen = String::new();
+                let deadline = Instant::now() + Duration::from_secs(60);
+                loop {
+                    let chunk = session.call_drain_output(acc, s).await?;
+                    if !chunk.is_empty() {
+                        screen.push_str(&String::from_utf8_lossy(&chunk));
+                    }
+                    if session.call_exited(acc, s).await? {
+                        break;
+                    }
+                    if Instant::now() > deadline {
+                        bail!("timed out waiting for the on-connect command to exit");
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                // One more drain: output produced between the last
+                // observed chunk and the exit becoming visible must
+                // not be dropped.
+                let chunk = session.call_drain_output(acc, s).await?;
+                if !chunk.is_empty() {
+                    screen.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                println!("[5e] on-connect command exited");
+
+                if let Some(expect) = args.expect_exit {
+                    let status = session.call_exit_status(acc, s).await?;
+                    if status != Some(expect) {
+                        bail!("exit status mismatch: got {status:?}, expected {expect}");
+                    }
+                    println!("[5e] exit status matches: {expect}");
+                }
+                if let Some(expect) = &args.expect_output {
+                    // Pty output carries \r\n line endings, so this is
+                    // a substring match on the marker text alone, not
+                    // a full-line comparison.
+                    if !screen.contains(expect.as_str()) {
+                        bail!("expected output {expect:?} not found; saw:\n{screen}");
+                    }
+                    println!("[5e] output contains expected marker: {expect}");
+                }
+
+                session.call_detach(acc, s).await?;
+                println!("[6e] detached cleanly");
+                println!(
+                    "\nE2E-EXEC PASS: on-connect command ran in place of the shell over the \
+                     same channel and pty; output and exit status verified"
+                );
+                return Ok(());
+            }
+
             // --- 1. the browser's own SSH identity -----------------
             let line = iface
                 .call_identity_openssh(acc)
@@ -582,7 +743,7 @@ async fn main() -> Result<()> {
 
             // --- 2. dial over iroh --------------------------------
             let s = session
-                .call_connect(acc, args.connstring.clone(), args.user.clone(), 80, 24)
+                .call_connect(acc, args.connstring.clone(), args.user.clone(), 80, 24, None)
                 .await?
                 .map_err(|e| anyhow!("connect: {e}"))?;
             println!("[2] dialed the listener over iroh");
@@ -789,6 +950,66 @@ async fn main() -> Result<()> {
 
             session.call_resize(acc, s, 100, 40).await?;
             println!("[6] resize accepted");
+
+            if let Some(cmd) = &args.probe {
+                // --- 8. probe on the second channel, mid-session ---
+                // The point of running this HERE, with the interactive
+                // shell still live, is that it proves the two channels
+                // are actually independent: the probe rides a second
+                // SSH channel of the same authenticated connection, no
+                // pty attached, so its output comes back unmangled --
+                // and the round-trip that follows proves the
+                // interactive channel above never noticed.
+                let result = session
+                    .call_probe(acc, s, cmd.clone())
+                    .await?
+                    .map_err(|e| anyhow!("probe: {e}"))?;
+                println!(
+                    "[8] probe {cmd:?} -> exit {:?}, {} byte(s) of output",
+                    result.exit_status,
+                    result.output.len()
+                );
+                if let Some(expect) = args.probe_expect_exit {
+                    if result.exit_status != Some(expect) {
+                        bail!(
+                            "probe exit status mismatch: got {:?}, expected {expect}",
+                            result.exit_status
+                        );
+                    }
+                    println!("[8] probe exit status matches: {expect}");
+                }
+                if let Some(expect) = &args.probe_expect_output {
+                    let output = String::from_utf8_lossy(&result.output);
+                    if !output.contains(expect.as_str()) {
+                        bail!("probe output missing {expect:?}; saw:\n{output}");
+                    }
+                    println!("[8] probe output contains expected marker: {expect}");
+                }
+
+                // Prove the interactive shell still answers after the
+                // probe ran alongside it.
+                let marker2 = "WOSH_E2E_POST_PROBE_OK";
+                session
+                    .call_write_input(acc, s, format!("echo {marker2}\n").into_bytes())
+                    .await?;
+                let mut screen2 = String::new();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < deadline {
+                    let chunk = session.call_drain_output(acc, s).await?;
+                    if !chunk.is_empty() {
+                        screen2.push_str(&String::from_utf8_lossy(&chunk));
+                    }
+                    if screen2.matches(marker2).count() >= 2 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                if screen2.matches(marker2).count() < 2 {
+                    bail!("shell never produced {marker2} after the probe; saw:\n{screen2}");
+                }
+                println!("[8] interactive shell still answers after the probe -- channels are independent");
+                println!("\nE2E-PROBE PASS: second-channel probe ran mid-session without disturbing the interactive shell");
+            }
 
             if args.hold_ms > 0 {
                 // Linger with the session open: gives an external

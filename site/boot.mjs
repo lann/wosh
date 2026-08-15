@@ -29,8 +29,19 @@ import {
   forgetPasskey,
   installPasskeyCeremonyGate,
   note,
+  probeSession,
+  sendDetachKeys,
 } from "./app.mjs";
+import {
+  PRESETS,
+  presetById,
+  matchCommand,
+  validName,
+  detectCommand,
+  parseDetect,
+} from "./sessions.mjs";
 import { scanQr } from "./qr.mjs";
+import * as bufferStore from "./buffer-store.mjs";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -95,6 +106,34 @@ export function connstringFrom(raw) {
 // any change in that pairing gets the loud warning below.
 
 const PINS_KEY = "wosh.hostkeys.v1";
+
+// --- the scrollback toggle ---------------------------------------------
+//
+// A single global on/off, not per-connection: the same person either
+// wants this device keeping a local copy of what terminals showed, or
+// doesn't. DEFAULT ON, because the failure mode of "off" (a reattach
+// opens onto a blank screen while dtach or abduco has kept the actual
+// session running) is exactly the confusing-looking-broken state this
+// whole feature exists to avoid, and the toggle is right here with its
+// own explanation for the person who would rather not have it.
+const SCROLLBACK_KEY = "wosh.scrollback.v1";
+
+function scrollbackEnabled() {
+  try {
+    return localStorage.getItem(SCROLLBACK_KEY) !== "off";
+  } catch {
+    return true; // no storage: harmless default, nothing persists anyway
+  }
+}
+
+function setScrollbackEnabled(on) {
+  try {
+    localStorage.setItem(SCROLLBACK_KEY, on ? "on" : "off");
+  } catch {
+    // Storage refused: the checkbox still reflects the choice for this
+    // visit; it just won't stick past a reload.
+  }
+}
 
 /**
  * The listener's endpoint id (raw Ed25519 pubkey, hex) out of a
@@ -241,11 +280,42 @@ export function tokenlessConnstring(idHex, relay) {
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** MRU list of `{ id, relay, user, at }`; [] when unavailable. */
+/**
+ * MRU list of `{ id, relay, user, at }`, each optionally carrying
+ * `command` (the on-connect command last used for it) and
+ * `autoResume`; [] when unavailable. Entries written before those
+ * fields existed simply lack them, and an absent `command` means a
+ * plain shell -- so old history keeps working untouched.
+ */
 function loadHistory() {
   try {
     const h = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
-    return Array.isArray(h) ? h : [];
+    if (!Array.isArray(h)) return [];
+    // The new fields flow outward into an input value and a connect
+    // parameter, so a corrupted store (hand-edited, or an old bug's
+    // leavings) is coerced here at the ONE reader instead of
+    // type-checked at every use: a non-string command is no command,
+    // a non-true autoResume is absent (never written as false, so an
+    // untouched entry round-trips byte-identical).
+    const entries = h.filter((e) => e && typeof e === "object");
+    for (const e of entries) {
+      if (typeof e.command !== "string" || !e.command) delete e.command;
+      if (e.autoResume !== true) delete e.autoResume;
+      // `tools` drives which presets are offered and which are marked
+      // "not installed here", so a store that says anything other than
+      // "a flat map of booleans" is dropped rather than coerced: a
+      // half-believed detection result would disable a preset that
+      // works, which is worse than having no detection at all.
+      if (
+        !e.tools || typeof e.tools !== "object" || Array.isArray(e.tools) ||
+        Object.values(e.tools).some((v) => typeof v !== "boolean")
+      ) {
+        delete e.tools;
+        delete e.toolsAt;
+      }
+      if (typeof e.toolsAt !== "number") delete e.toolsAt;
+    }
+    return entries;
   } catch {
     return [];
   }
@@ -259,10 +329,44 @@ function saveHistory(entries) {
   }
 }
 
-/** Insert-or-bump, deduped by (endpoint id, user). */
-function recordConnection(id, relay, user) {
+/**
+ * Insert-or-bump, deduped by (endpoint id, user) -- deliberately NOT
+ * by the command: the same account on the same target is one
+ * connection whose on-connect command was changed, not two.
+ * `command`/`autoResume` are left off the record entirely when unset,
+ * so an entry for a plain shell looks exactly like a pre-command one.
+ */
+function recordConnection(id, relay, user, command, autoResume) {
   const rest = loadHistory().filter((e) => !(e.id === id && e.user === user));
-  saveHistory([{ id, relay, user, at: new Date().toISOString() }, ...rest]);
+  const entry = { id, relay, user, at: new Date().toISOString() };
+  if (command) entry.command = command;
+  if (autoResume) entry.autoResume = true;
+  saveHistory([entry, ...rest]);
+}
+
+/**
+ * Merge `patch` into an EXISTING (id, user) entry, preserving every
+ * other field. Deliberately does not create one: the writers here are
+ * background observations about a connection (which session managers
+ * the target has), and an observation must never resurrect a
+ * connection the user chose not to remember -- or one they just
+ * forgot from the history rows.
+ */
+function updateConnection(id, user, patch) {
+  const entries = loadHistory();
+  const hit = entries.find((e) => e.id === id && e.user === user);
+  if (!hit) return;
+  Object.assign(hit, patch);
+  saveHistory(entries);
+}
+
+/** Drop the remembered on-connect command from one history entry. */
+function clearStoredCommand(id, user) {
+  saveHistory(loadHistory().map((e) => {
+    if (!(e.id === id && e.user === user)) return e;
+    const { command, ...rest } = e;
+    return rest;
+  }));
 }
 
 function removeConnection(id, user) {
@@ -375,9 +479,173 @@ export async function initBoot(panel, { onConnect }) {
     return { btn, body };
   };
 
+  // --- the session fold: what to run on connect --------------------------
+  //
+  // An SSH exec request instead of a plain shell. The point is not
+  // "run a command" in the abstract -- it is create-or-attach session
+  // managers, where the SAME command both starts the session the first
+  // time and reattaches to it afterwards, so the work on the target
+  // outlives this tab rather than only this transport. (Transport
+  // deaths were already invisible: the component redials underneath a
+  // live session. A closed tab is a different loss, and only the
+  // target can survive it.)
+  //
+  // Presets, not magic: each is an ordinary command line the target's
+  // shell parses (site/sessions.mjs owns them, so the picker below and
+  // the parser gate see exactly the same lines), shown in full in the
+  // field so nothing is hidden from the person who has to debug it on
+  // the other side.
+  const presetSelect = el("select", { className: "preset" });
+  // Held by id, because the availability annotation below rewrites
+  // their labels per host.
+  const presetOptions = new Map(
+    PRESETS.map((p) => [p.id, el("option", { value: p.id, textContent: p.label })]),
+  );
+  presetSelect.append(
+    el("option", { value: "", textContent: "plain shell" }),
+    ...presetOptions.values(),
+    el("option", { value: "custom", textContent: "custom…" }),
+  );
+  // The session NAME, next to the preset: one target routinely carries
+  // several sessions (one per task), and the name is the only thing
+  // that distinguishes them -- for dtach it is the socket file, for the
+  // other three the manager's own session name. "main" is the default
+  // because it is what phase 1's fixed dtach socket was called, so an
+  // existing dtach session keeps being found by the same line.
+  const nameInput = el("input", {
+    className: "sessname",
+    size: 10,
+    placeholder: "main",
+  });
+  const commandInput = el("input", {
+    className: "command",
+    size: 40,
+    placeholder: "command to run instead of a shell",
+  });
+  const nameOr = () => nameInput.value.trim() || "main";
+  // preset + name -> the field. Refuses rather than quotes: the name
+  // goes into a shell command line on the target, and sessions.mjs's
+  // whitelist is what makes that safe (see validName there).
+  const templateCommand = () => {
+    const preset = presetById(presetSelect.value);
+    if (!preset) return; // plain shell / custom: nothing to template
+    const name = nameOr();
+    if (!validName(name)) {
+      notice.textContent =
+        "a session name may only use letters, digits, - and _ (up to 32 characters)";
+      return;
+    }
+    notice.textContent = "";
+    commandInput.value = preset.command(name);
+  };
+  // The field is the truth; the select and the name are a view of it.
+  // Anything that writes the field (a preset, a history tap, a resume)
+  // calls this, so a hand-edited preset line honestly reads back as
+  // "custom…" instead of still claiming to be the preset it no longer
+  // is -- and a recognizable one fills the name back in, which is what
+  // lets a history tap land in the right row of the picker.
+  const syncPresetFromCommand = () => {
+    const value = commandInput.value.trim();
+    if (!value) return void (presetSelect.value = "");
+    const hit = matchCommand(value);
+    presetSelect.value = hit ? hit.preset.id : "custom";
+    if (hit) nameInput.value = hit.name;
+  };
+  presetSelect.addEventListener("change", () => {
+    const v = presetSelect.value;
+    if (v === "custom") return; // the field is already whatever it was
+    if (!v) return void (commandInput.value = ""); // "" == plain shell
+    templateCommand();
+  });
+  nameInput.addEventListener("input", () => {
+    // Only while a preset is selected: retyping the name must not
+    // rewrite a custom line the user is composing by hand.
+    if (presetById(presetSelect.value)) templateCommand();
+  });
+  commandInput.addEventListener("input", syncPresetFromCommand);
+
+  /**
+   * Mark the presets a host is known NOT to have. `tools` is the
+   * detection result recorded for that connection (see detectTools);
+   * absent -- a host never probed, or an older history entry -- leaves
+   * every option with its plain label and enabled, because "we never
+   * looked" must not read as "not installed".
+   */
+  const annotatePresets = (tools) => {
+    for (const p of PRESETS) {
+      const opt = presetOptions.get(p.id);
+      const missing = !!tools && tools[p.id] === false;
+      opt.textContent = missing ? `${p.label} — not installed here` : p.label;
+      opt.disabled = missing;
+    }
+  };
+
+  const commandHelp = helpToggle(
+    "This runs on the target instead of a login shell. With a create-or-attach " +
+      "session manager the same line both starts the session and reattaches to it, " +
+      "so a later connect lands in the SAME session and the work survives closing " +
+      "this tab. The tool has to be installed on the target already -- nothing is " +
+      "installed for you. dtach and abduco keep no copy of the screen contents, so a " +
+      "reattach starts blank until the program running inside redraws (tmux and " +
+      "screen do keep one). And on a systemd host configured with " +
+      "KillUserProcesses=yes, a detached session is killed when you log out unless " +
+      "`loginctl enable-linger <user>` has been run for that account.",
+  );
+  // Shown only if the loaded component predates the command argument;
+  // worded like the publickey-absent case below, and for the same
+  // reason: say what degraded rather than silently offering a control
+  // that cannot work.
+  const execNote = el("div", {
+    className: "sub",
+    hidden: true,
+    textContent:
+      "this build of the client component has no on-connect command yet; " +
+      "connecting still opens a plain shell",
+  });
+
+  // Escape hatch that does NOT cost the setting: one connect without
+  // the command (to fix a session manager that is now refusing to
+  // start, say), with the remembered line still there afterwards.
+  const onceShell = el("input", { type: "checkbox", id: "plain-shell-once" });
+  const autoResumeBox = el("input", { type: "checkbox", id: "auto-resume" });
+
+  // "keep scrollback on this device": a local copy of what the
+  // terminal showed, restored on the next load or reattach so a
+  // session manager that keeps no screen state of its own (dtach,
+  // abduco) -- or one that keeps only the visible screen (tmux,
+  // screen) -- doesn't hand back a blank terminal for work that is
+  // still running. Unticking calls wipe() immediately: the setting and
+  // the data leave together, rather than the data quietly outliving
+  // the toggle that was supposed to govern it.
+  const scrollbackBox = el("input", {
+    type: "checkbox",
+    id: "keep-scrollback",
+    checked: scrollbackEnabled(),
+  });
+  scrollbackBox.addEventListener("change", () => {
+    setScrollbackEnabled(scrollbackBox.checked);
+    if (!scrollbackBox.checked) {
+      bufferStore.wipe().catch((e) => console.warn("wosh: could not wipe scrollback", e));
+    }
+  });
+  const scrollbackHelp = helpToggle(
+    "This device keeps a local copy of what the terminal showed (the actual " +
+      "contents, not just that a session existed), so a reattach can put it back " +
+      "on screen right away instead of starting blank -- dtach and abduco keep no " +
+      "screen state of their own, and even tmux and screen only keep what was " +
+      "visible, not the scrollback above it. Stored only in this browser, only for " +
+      "this site, same as the host-key approvals above. Turning this off deletes " +
+      "what is stored.",
+  );
+
   // Connection history: tap to reconnect. Rendered only when there is
   // something to show; the whole section disappears otherwise.
   const historySection = el("div", { className: "history" });
+  // The session picker (renderSessions, further down): what is ALREADY
+  // running on the target, asked for over a probe channel while a
+  // session is live. Empty at every other moment -- there is nobody to
+  // ask.
+  const sessionsSection = el("div", { className: "sessions" });
   const rememberConn = el("input", {
     type: "checkbox",
     id: "remember-connection",
@@ -420,6 +688,41 @@ export async function initBoot(panel, { onConnect }) {
     keyRow,
     passkeySection);
 
+  // The session fold: everything about WHAT the connect runs, kept out
+  // of the ordinary path for the same reason auth settings are -- the
+  // common connect answers none of these questions, and the answers
+  // persist per connection in history anyway.
+  const sessionDetails = el("details", { className: "sessioncfg" },
+    el("summary", { textContent: "session" }),
+    el("div", { className: "row" },
+      el("label", { textContent: "run on connect" }), presetSelect,
+      el("label", { textContent: "name" }), nameInput, commandHelp.btn),
+    el("div", { className: "row" }, commandInput),
+    commandHelp.body,
+    execNote,
+    sessionsSection,
+    el("div", { className: "row" },
+      onceShell,
+      el("label", {
+        htmlFor: "plain-shell-once",
+        textContent: " plain shell just this once",
+        title: "the next connect sends no command; the remembered one stays",
+      })),
+    el("div", { className: "row" },
+      autoResumeBox,
+      el("label", {
+        htmlFor: "auto-resume",
+        textContent: " reconnect automatically when this page opens",
+      })),
+    el("div", { className: "row" },
+      scrollbackBox,
+      el("label", {
+        htmlFor: "keep-scrollback",
+        textContent: " keep scrollback on this device",
+      }),
+      scrollbackHelp.btn),
+    scrollbackHelp.body);
+
   panel.append(
     el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
     historySection,
@@ -438,6 +741,7 @@ export async function initBoot(panel, { onConnect }) {
         title: "history keeps the endpoint id, relay and user name -- the pairing token is never saved",
       })),
     authDetails,
+    sessionDetails,
   );
 
   /// Destructive history buttons arm on the first click (label turns
@@ -493,6 +797,7 @@ export async function initBoot(panel, { onConnect }) {
       const row = el("button", { className: "histrow", title: detail });
       const sub = [relTime(entry.at)];
       if (pins[entry.id]?.fp) sub.push("key pinned");
+      if (entry.command) sub.push("runs a command");
       row.append(
         el("div", { textContent: `${entry.user}@${entry.id.slice(0, 8)}…` }),
         el("div", { className: "sub", textContent: sub.join(" · ") }),
@@ -500,6 +805,17 @@ export async function initBoot(panel, { onConnect }) {
       row.addEventListener("click", () => {
         csInput.value = tokenlessConnstring(entry.id, entry.relay);
         userInput.value = entry.user;
+        // The session fold follows the entry, so a tap replays what
+        // this connection actually ran last time -- including the
+        // absence of a command, which is why this assigns
+        // unconditionally rather than only when one is present.
+        commandInput.value = entry.command ?? "";
+        syncPresetFromCommand();
+        // Whatever was detected on this host the last time, so the
+        // preset labels tell the truth about THIS target before the
+        // connect rather than after it.
+        annotatePresets(entry.tools);
+        autoResumeBox.checked = !!entry.autoResume;
         doConnect();
       });
       const del = el("button", {
@@ -515,8 +831,161 @@ export async function initBoot(panel, { onConnect }) {
     }
   };
 
+  // --- the session picker ------------------------------------------------
+  //
+  // What is ALREADY running on the target, for the one preset this
+  // connection is using. Everything here is asked over a probe channel
+  // of the live connection (app.probeSession): a second SSH channel
+  // with no pty, so nothing is typed into whatever the user is looking
+  // at, and the answer comes back unmangled by tty cooking.
+  //
+  // Best-effort throughout, and it says so: a failed probe renders one
+  // dim line rather than a spinner that never resolves, and the list
+  // itself is whatever four different tools' human-facing output could
+  // be parsed into (site/sessions.mjs).
+
+  // Whether a session is live right now -- the picker asks the live
+  // connection, so with nothing connected there is nothing to show and
+  // nobody to ask. Tracks the same fact the detach button's visibility
+  // does.
+  let sessionLive = false;
+  // One render owns the section: opening the panel and a connect
+  // finishing can both trigger one, and the slower probe must not
+  // paint its rows over the newer answer.
+  let sessionsToken = 0;
+
+  const renderSessions = async () => {
+    const token = ++sessionsToken;
+    sessionsSection.replaceChildren();
+    if (!sessionLive) return;
+    // The EFFECTIVE command of the live session, not the field: the
+    // field may already have been edited towards the next connect.
+    const current = matchCommand(lastConnected?.command ?? "");
+    if (!current) return; // a plain shell, or a custom line nothing here can list
+    const { preset } = current;
+    const result = await probeSession(preset.listCommand);
+    if (token !== sessionsToken) return; // superseded by a newer render
+    sessionsSection.append(
+      el("div", { className: "field" },
+        el("span", { textContent: `${preset.label} sessions on this host` })),
+    );
+    if (!result) {
+      // Truthful and terminal: no probe support in this component
+      // build, a refused channel, a target that never answered. None
+      // of them is worth a retry loop the user did not ask for.
+      sessionsSection.append(
+        el("div", { className: "sub", textContent: "session list unavailable" }),
+      );
+      return;
+    }
+    const rows = preset.parseList(result.text);
+
+    /// Switching sessions IS a reconnect: the same dial, the same
+    /// pinned host key, a different create-or-attach line -- and the
+    /// manager parks the session being left exactly as it would on any
+    /// other disconnect. Cheap, and it goes through doConnect so the
+    /// new choice is recorded (per "remember this connection") like
+    /// any other connect.
+    const attachTo = (name) => {
+      presetSelect.value = preset.id;
+      nameInput.value = name;
+      commandInput.value = preset.command(name);
+      doConnect();
+    };
+
+    if (rows.length === 0) {
+      sessionsSection.append(
+        el("div", { className: "sub", textContent: "no other sessions listed" }),
+      );
+    }
+    for (const row of rows) {
+      const isCurrent = row.name === current.name;
+      const bits = [];
+      if (isCurrent) bits.push("this session");
+      else if (row.attached === true) bits.push("attached elsewhere");
+      if (row.at) bits.push(relTime(new Date(row.at).toISOString()));
+      const line = el("div", { className: "row sessrow" },
+        el("span", { textContent: row.name }),
+        el("span", { className: "sub", textContent: bits.join(" · ") }));
+      if (!isCurrent) {
+        const btn = el("button", { className: "subtle", textContent: "attach" });
+        btn.addEventListener("click", () => attachTo(row.name));
+        line.append(btn);
+      }
+      sessionsSection.append(line);
+    }
+    if (preset.id === "dtach") {
+      // The one place the list is weaker than it looks, said plainly
+      // rather than papered over with a badge that would be a guess.
+      sessionsSection.append(el("div", {
+        className: "sub",
+        textContent:
+          "these are the sockets in ~/.wosh: a socket does not say whether anyone " +
+          "is attached, or whether the session behind it is still running",
+      }));
+    }
+
+    const newName = el("input", { size: 10, placeholder: "name" });
+    const newBtn = el("button", { className: "subtle", textContent: "new session" });
+    const startNew = () => {
+      const name = newName.value.trim();
+      if (!validName(name)) {
+        notice.textContent =
+          "a session name may only use letters, digits, - and _ (up to 32 characters)";
+        return;
+      }
+      attachTo(name);
+    };
+    newBtn.addEventListener("click", startNew);
+    newName.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") startNew();
+    });
+    sessionsSection.append(el("div", { className: "row sessrow" }, newName, newBtn));
+  };
+
+  /**
+   * Ask the target, once per connect, which session managers it
+   * actually has, and remember the answer against this connection.
+   * Fire-and-forget: nothing the user asked for waits on it, and a
+   * target that cannot answer simply keeps a fold with plain labels.
+   */
+  const detectTools = (id, user) => {
+    if (!id) return Promise.resolve();
+    return probeSession(detectCommand).then((r) => {
+      if (!r) return;
+      const tools = parseDetect(r.text);
+      // Only patches an entry that already exists -- an unremembered
+      // connection is not resurrected by an observation about it.
+      updateConnection(id, user, { tools, toolsAt: Date.now() });
+      annotatePresets(tools);
+      renderHistory();
+    }).catch(() => {
+      // A probe is a question; an unanswered one costs the annotation
+      // and nothing else.
+    });
+  };
+
+  /**
+   * The history entry for the connection currently (or most recently)
+   * dialed, or null -- for the detection data hung off it. Null is
+   * ordinary: a connection the user chose not to remember has no entry
+   * to carry observations.
+   */
+  const currentHistoryEntry = () => {
+    if (!lastConnected) return null;
+    const details = connstringDetails(lastConnected.connstring);
+    if (!details) return null;
+    return loadHistory().find(
+      (e) => e.id === details.id && e.user === lastConnected.user,
+    ) ?? null;
+  };
+
   const openPanel = () => {
     if (!panel.open) panel.showModal();
+    // The list is a snapshot of the other side, so it is re-asked every
+    // time the panel comes back rather than kept warm: sessions come
+    // and go on the target while this page is not looking.
+    renderSessions().catch(() => {});
     // Focus what the user actually has to type: the QR link prefills
     // the connstring, so usually that is the user field.
     (csInput.value.trim() ? userInput : csInput).focus();
@@ -564,6 +1033,10 @@ export async function initBoot(panel, { onConnect }) {
   // shape, and bring the connect form back.
   const sessionOver = (why) => {
     detachBtn.hidden = true;
+    // Nothing live means nobody to ask: the picker's rows would be a
+    // list this page can no longer act on, and openPanel below clears
+    // them.
+    sessionLive = false;
     settingsBtn.textContent = "connect…";
     if (why) notice.textContent = why;
     openPanel();
@@ -580,6 +1053,12 @@ export async function initBoot(panel, { onConnect }) {
   // automatic reconnect is a NEW session (a new shell), so silent
   // churn is invisible lost work, not a convenience.
   let lastAutoAt = 0;
+  // When the detach button last asked a session manager to park the
+  // session with its own keystroke. The pump notices that channel
+  // closing a moment later and fires an ordinary `ended` event -- which
+  // must not turn into the "reattach?" offer below, because the user
+  // just deliberately left and the panel already says "detached".
+  let politeDetachAt = 0;
 
   /**
    * Attempt a silent, same-parameters reconnect after a session was
@@ -598,26 +1077,153 @@ export async function initBoot(panel, { onConnect }) {
     // silently onto a key this browser has already pinned.
     const id = endpointIdOf(lastConnected.connstring);
     if (!id || !loadPins()[id]?.fp) return false;
-    if (Date.now() - lastAutoAt < 60_000) return false;
+    // With an on-connect command the reconnect REATTACHES: the shell
+    // and its work are on the target, so a redial costs nothing but a
+    // dial. The rate limit is then only a guard against battery-burning
+    // churn, not against silently losing a shell -- so it can be much
+    // shorter. Without a command every automatic reconnect is a NEW
+    // shell, and the minute stands.
+    const command = lastConnected.command;
+    if (Date.now() - lastAutoAt < (command ? 15_000 : 60_000)) return false;
     lastAutoAt = Date.now();
-    note(`${why} — starting a new session…`);
+    // EXACT copy on the no-command path: host-test/browser-fallthrough
+    // greps the scrollback for "starting a new session".
+    note(command ? `${why} — reattaching…` : `${why} — starting a new session…`);
     csInput.value = lastConnected.connstring;
     userInput.value = lastConnected.user;
     // A passkey (or auto steered to one) may trigger an authenticator
     // ceremony here, with the dialog CLOSED: the ceremony gate below
     // opens it for the ask and closes it after -- a reconnect that
     // needs a human is not the silent kind.
-    const s = await doConnect();
+    // The command travels as an OVERRIDE rather than through the
+    // field: replaying "no command" (a "just this once" connect) must
+    // not erase the line the user still has remembered.
+    const s = await doConnect({ command: command ?? "" });
     return !!s;
   };
+
+  /// The two things that can be said about an `ended` session that ran
+  /// a command, rendered as offers rather than actions: `ended` is a
+  /// deliberate act on the other side (a typed exit, a detach
+  /// keystroke), so redialing automatically would fight the human who
+  /// just left. Both paths go through sessionOver, so the panel is
+  /// open and nobody is stranded on a dead screen either way.
+  const commandSessionEnded = ({ why, code, uptimeMs }) => {
+    const command = lastConnected.command;
+    // The program 127 is about is almost never the FIRST word of the
+    // command: the presets open with `mkdir -p … && exec dtach …`, and
+    // "command not found" is the shell failing on the program it was
+    // finally asked to run. So: last `&&`/`||`/`;` segment, minus a
+    // leading `exec` and any VAR=value prefixes. A heuristic, but one
+    // that names dtach for the dtach preset instead of blaming mkdir.
+    const lastSegment = command.split(/&&|\|\||;/).pop() ?? "";
+    const tool =
+      lastSegment
+        .trim()
+        .split(/\s+/)
+        .filter((w) => w !== "exec" && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))[0] ??
+      command.trim().split(/\s+/)[0];
+    const reconnect = (row, opts) => () => {
+      row.remove();
+      doConnect(opts);
+    };
+
+    if (code === 127 && uptimeMs < 5000) {
+      // 127 within seconds of starting is the shell saying "command
+      // not found" and nothing else happening: the session manager is
+      // simply not on the target. Naming the likely cause beats an
+      // "exited (127)" the user has to decode, and both ways out are
+      // one tap.
+      //
+      // When a previous connect to this host managed to ASK it what it
+      // has (detectTools), the advice can be specific instead of
+      // generic: name the managers that are actually installed, and
+      // offer each as one tap. Without detection data nothing is
+      // claimed -- the original copy stands, because "install one of
+      // these four" is still true and a guess would not be.
+      const entry = currentHistoryEntry();
+      const alternatives = entry?.tools
+        ? PRESETS.filter((p) => p.id !== tool && entry.tools[p.id] === true)
+        : [];
+      const missingKnown = !!entry?.tools && entry.tools[tool] === false;
+      sessionOver(
+        missingKnown && alternatives.length
+          ? `${why}: \`${tool}\` is not installed on the target (the command exited 127 ` +
+            `immediately), but ${alternatives.map((p) => p.label).join(", ")} ` +
+            `${alternatives.length === 1 ? "is" : "are"} — or connect with a plain shell.`
+          : `${why}: \`${tool}\` does not seem to be installed on the target ` +
+            "(the command exited 127 immediately). install it there -- the dtach, " +
+            "abduco, tmux and screen packages are named after the tools -- or connect " +
+            "with a plain shell.",
+      );
+      const row = el("div", { className: "confirm" });
+      for (const p of alternatives) {
+        const swap = el("button", { textContent: `use ${p.label} instead` });
+        swap.addEventListener("click", () => {
+          // The name the user was already working with, so a swap of
+          // TOOL is not also a silent rename of the session.
+          const name = nameOr();
+          presetSelect.value = p.id;
+          commandInput.value = p.command(validName(name) ? name : "main");
+          row.remove();
+          doConnect();
+        });
+        row.append(swap, " ");
+      }
+      const once = el("button", { textContent: "connect with a plain shell" });
+      const always = el("button", { textContent: "always use a plain shell here" });
+      row.append(once, " ", always);
+      // once: this connect only; the remembered command is untouched.
+      once.addEventListener("click", reconnect(row, { command: "" }));
+      always.addEventListener("click", () => {
+        const details = connstringDetails(lastConnected.connstring);
+        if (details) clearStoredCommand(details.id, lastConnected.user);
+        commandInput.value = "";
+        syncPresetFromCommand();
+        renderHistory();
+        row.remove();
+        doConnect();
+      });
+      ask(row);
+      return;
+    }
+
+    // Anything else: the command is gone from THIS connection, but a
+    // session manager it started is very likely still running on the
+    // target -- which is the entire point of running one. Truthful
+    // hedge ("may"): a plain `exit` inside the manager ends it for
+    // good, and this side cannot tell the two apart.
+    sessionOver(
+      `${why} — session ended or detached; the session manager may still be ` +
+        "running on the target.",
+    );
+    const row = el("div", { className: "confirm" });
+    const again = el("button", { textContent: "reattach" });
+    row.append(again);
+    again.addEventListener("click", reconnect(row, { command }));
+    ask(row);
+  };
+
   window.addEventListener("wosh:session-ended", async (e) => {
-    const { why, kind } = e.detail ?? {};
+    const { why, kind, code, uptimeMs } = e.detail ?? {};
+    // A detach the user just performed, arriving as the session end it
+    // is: already told, already handled.
+    if (Date.now() - politeDetachAt < 10_000) {
+      politeDetachAt = 0;
+      return void sessionOver("detached");
+    }
     if (kind === "lost") {
       try {
         if (await autoReconnect(why ?? "connection lost")) return;
       } catch {
         // fall through to the dialog
       }
+      return void sessionOver(why);
+    }
+    // Only when this page actually asked for a command: without one
+    // there is nothing to reattach to and nothing 127 could be about.
+    if (kind === "ended" && lastConnected?.command) {
+      return void commandSessionEnded({ why: why ?? "session ended", code, uptimeMs });
     }
     sessionOver(why);
   });
@@ -644,6 +1250,14 @@ export async function initBoot(panel, { onConnect }) {
           "auth yet; password and keyboard-interactive still work";
       }
       if (!caps.keyboardInteractive) drop("keyboard-interactive");
+      if (!caps.execCommand) {
+        // A stale precache: new page, old component. The controls stay
+        // visible (so the setting they describe is still legible) but
+        // cannot be armed into a promise this build cannot keep.
+        presetSelect.disabled = true;
+        commandInput.disabled = true;
+        execNote.hidden = false;
+      }
       if (!caps.passkey) {
         drop("passkey");
       } else {
@@ -851,6 +1465,14 @@ export async function initBoot(panel, { onConnect }) {
       }
 
       return new Promise((resolve) => {
+        // A question nobody can see is a hang: the auto-reconnect path
+        // dials with the dialog CLOSED, betting on the pin matching.
+        // When the bet loses -- a stale pin, a reinstalled target, an
+        // interception -- the ask must bring its own window, exactly
+        // as the passkey ceremony ask does (#66). Guarded so the
+        // ordinary first-connect prompt (panel already open) keeps its
+        // focus untouched.
+        if (!panel.open) openPanel();
         const row = el("div", { className: "confirm" });
         if (pinned) {
           // Same listener identity, different SSH host key: the one
@@ -965,8 +1587,20 @@ export async function initBoot(panel, { onConnect }) {
     },
   };
 
-  const doConnect = async () => {
+  /**
+   * Dial what the form says. `opts.command` OVERRIDES the field for
+   * this attempt only (an automatic reattach replaying exactly what
+   * ran, a "plain shell" offer after a failure): `""` means explicitly
+   * no command, and leaving it out means "whatever the fold says".
+   */
+  const doConnect = async (opts = {}) => {
     notice.textContent = "";
+    // A new connect supersedes any pending polite-detach context: the
+    // latch below exists to translate ONE deliberate detach's ended
+    // event, and left armed it would swallow a genuinely dead NEW
+    // session's ended event as "detached" if that death landed inside
+    // the latch's window.
+    politeDetachAt = 0;
     // A pasted QR link becomes its fragment here, and the field is
     // rewritten to match: what the user sees is what gets dialed (and
     // what the host-key prompt keys its pin on).
@@ -975,14 +1609,60 @@ export async function initBoot(panel, { onConnect }) {
     const user = userInput.value.trim();
     if (!connstring) return void (notice.textContent = "a connection string is required");
     if (!user) return void (notice.textContent = "a user name is required");
+    // What the connection REMEMBERS (the field) and what this attempt
+    // RUNS can differ: that difference is exactly what "just this
+    // once" and the plain-shell offers are.
+    const persistentCommand = commandInput.value.trim();
+    const effectiveCommand =
+      opts.command !== undefined ? opts.command : (onceShell.checked ? "" : persistentCommand);
     connectBtn.disabled = true;
+
+    // Scrollback restore + persistence key, best-effort: this is a
+    // nicety on top of connecting, and the connect path owns the
+    // user's patience -- nothing here may turn into a reason a session
+    // fails to open. `endpointIdOf` returning null (an unrecognized
+    // connstring version) simply means no key, so no restore and no
+    // persistence for this attempt, same as the toggle being off.
+    // The dump is only PREFETCHED here; app.mjs paints it once the
+    // session is actually up. Painting it before the dial stranded
+    // another host's scrollback on screen whenever the attempt failed,
+    // and spent the one-shot restore latch on nothing.
+    let scrollbackKey;
+    let scrollbackRestore;
     try {
-      const session = await onConnect({ connstring, user, ui });
+      if (scrollbackEnabled()) {
+        const id = endpointIdOf(connstring);
+        if (id) {
+          scrollbackKey = `${id} ${user}`;
+          const saved = await bufferStore.get(scrollbackKey);
+          if (saved?.buf) {
+            scrollbackRestore = {
+              buf: saved.buf,
+              label: relTime(new Date(saved.at).toISOString()),
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("wosh: scrollback restore skipped", e);
+    }
+
+    try {
+      const session = await onConnect({
+        connstring,
+        user,
+        command: effectiveCommand || undefined,
+        ui,
+        persistKey: scrollbackKey,
+        restore: scrollbackRestore,
+      });
       if (session) {
         // In-memory, unconditional (not gated on rememberConn): the
         // one thing autoReconnect needs to redial these exact
-        // parameters after a `lost` close-kind.
-        lastConnected = { connstring, user };
+        // parameters after a `lost` close-kind. The EFFECTIVE command,
+        // so a redial replays what actually ran rather than what is
+        // merely remembered.
+        lastConnected = { connstring, user, command: effectiveCommand || undefined };
         // History bookkeeping, only for connects that actually reached
         // a session: failed dials and rejected host keys are not
         // "connections". Checked (the default) records or bumps the
@@ -990,9 +1670,29 @@ export async function initBoot(panel, { onConnect }) {
         // forgetting is the history rows' own, confirmed, affordance.
         const details = connstringDetails(connstring);
         if (details && rememberConn.checked) {
-          recordConnection(details.id, details.relay, user);
+          // The PERSISTENT command here: a one-off plain shell must
+          // not quietly become the new setting.
+          recordConnection(details.id, details.relay, user,
+            persistentCommand, autoResumeBox.checked);
           renderHistory();
         }
+        // The fold now describes a host we are actually talking to:
+        // annotate it with whatever was detected last time (so the
+        // labels are right immediately), then ask again in the
+        // background, and refresh the picker with the session that
+        // just came up.
+        sessionLive = true;
+        const entry = details
+          ? loadHistory().find((e) => e.id === details.id && e.user === user)
+          : null;
+        annotatePresets(entry?.tools);
+        // Sequenced, not raced: the core answers ONE probe at a time,
+        // and firing detection and the session list together made the
+        // list's first paint lose deterministically ("already in
+        // flight"). Detection answers first, then the list asks.
+        (details ? detectTools(details.id, user) : Promise.resolve())
+          .then(() => renderSessions())
+          .catch(() => {});
         // Out of the way: the session owns the screen now. The bar's
         // buttons take over (detach, and reopening this dialog).
         detachBtn.hidden = false;
@@ -1010,13 +1710,21 @@ export async function initBoot(panel, { onConnect }) {
       return null;
     } finally {
       connectBtn.disabled = false;
+      // "just this once" spends itself on the attempt, not on the
+      // success: a failed one-off plain shell that stayed armed would
+      // silently suppress the command on the NEXT connect too.
+      onceShell.checked = false;
       // An attempt that died mid-ceremony leaves nothing to tap: the
       // signature it was asking for belongs to a session that is gone.
       withdrawCeremony();
     }
   };
 
-  connectBtn.addEventListener("click", doConnect);
+  // The click handler drops its event: doConnect's first argument is
+  // an options object, and a MouseEvent has no `command`, but passing
+  // one is the kind of accident worth not leaving available.
+  connectBtn.addEventListener("click", () => doConnect());
+
   // Enter in either field connects -- scoped to THESE fields: the
   // prompt-batch rows manage their own Enter.
   for (const input of [csInput, userInput]) {
@@ -1025,12 +1733,88 @@ export async function initBoot(panel, { onConnect }) {
     });
   }
   detachBtn.addEventListener("click", async () => {
+    // The polite way first, when this connection runs a session
+    // manager: send that manager's DEFAULT detach keys and see whether
+    // the session actually goes away. A clean manager detach closes
+    // the channel, which is the only evidence available that the keys
+    // meant anything -- the binding is remappable in all four tools
+    // and a remapped target simply receives the sequence as junk typed
+    // into whatever is running, so the hard detach below stays as the
+    // fallback and is what makes trying this safe.
+    //
+    // The difference is small but real: a manager detach parks the
+    // session on the target (that is the whole point of running one),
+    // while the hard detach only tears down this SSH channel. With the
+    // -A create-or-attach lines this page writes, the two look
+    // identical on the next connect -- which is precisely why asking
+    // nicely first costs nothing.
+    const m = matchCommand(lastConnected?.command ?? "");
+    if (m) {
+      politeDetachAt = Date.now();
+      let parked = false;
+      try {
+        parked = await sendDetachKeys(m.preset.detachKeys, 2000);
+      } catch {
+        parked = false;
+      }
+      if (parked) return void sessionOver("detached");
+      politeDetachAt = 0;
+    }
     await detach();
     sessionOver("detached");
   });
 
   renderHistory();
   openPanel();
+
+  // One-tap resume on load. The offer is only made where it can be
+  // KEPT silently and where landing back is worth something: no
+  // connstring in the URL (a link is a deliberate destination and wins
+  // over history), the most recent connection asked for it, it runs a
+  // command (so the reconnect reattaches to work that is still there
+  // -- resuming into a brand-new shell is not a resume), and its host
+  // key is pinned (an unpinned key needs the TOFU prompt, which is
+  // never auto-answered).
+  //
+  // Gesture safety: nothing here implies the connect will be
+  // non-interactive. The method select defaults to `auto`, which is
+  // non-interactive when the browser key or a pinned passkey suffices;
+  // a passkey may still raise its authenticator ceremony, and that is
+  // the ceremony gate's business (it opens the dialog for the ask and
+  // puts it back) -- not a reason to refuse to start. The countdown
+  // itself is the consent: it is visible, it is cancellable, and
+  // cancelling leaves the panel exactly as it is today.
+  try {
+    const entry = connstringFromLocation() ? null : loadHistory()[0];
+    if (entry?.autoResume && entry.command && loadPins()[entry.id]?.fp) {
+      const row = el("div", { className: "confirm" });
+      const cancelBtn = el("button", { textContent: "cancel" });
+      row.append(
+        el("div", { textContent: `resuming ${entry.user}@${entry.id.slice(0, 8)}…` }),
+        cancelBtn,
+      );
+      ask(row);
+      const timer = setTimeout(() => {
+        row.remove();
+        csInput.value = tokenlessConnstring(entry.id, entry.relay);
+        userInput.value = entry.user;
+        commandInput.value = entry.command;
+        syncPresetFromCommand();
+        annotatePresets(entry.tools);
+        autoResumeBox.checked = true;
+        // Errors are already the panel's story (doConnect writes the
+        // notice and stays open): never a dead end.
+        doConnect();
+      }, 1500);
+      cancelBtn.addEventListener("click", () => {
+        clearTimeout(timer);
+        row.remove();
+      });
+    }
+  } catch {
+    // Unreadable storage, an entry that cannot be re-encoded: the
+    // ordinary panel is the fallback, and it is already on screen.
+  }
 
   return { connect: doConnect, ui };
 }

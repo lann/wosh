@@ -108,6 +108,58 @@ type Signature struct {
 	Trailer []byte
 }
 
+// ProbeResult mirrors the WIT `probe-result` record: the outcome of a
+// finished probe (see Engine.ProbeStart).
+type ProbeResult struct {
+	// The command's exit status, when the server reported one; nil
+	// when the channel closed without one (a vanished server, a
+	// signal, or the transport dying under the probe).
+	ExitStatus *int32
+	// Everything the command wrote, stdout and stderr interleaved in
+	// arrival order, capped at probeOutputCap.
+	Output []byte
+}
+
+// probeOutputCap bounds a probe's captured output. A probe is a
+// question, not a transfer: this exists so a runaway answer is
+// truncated rather than buffered without bound.
+const probeOutputCap = 256 * 1024
+
+// limitedBuffer is a mutex-guarded byte buffer capped at
+// probeOutputCap; ssh.Session.Stdout and Stderr are wired to the SAME
+// instance so the two streams interleave in arrival order, matching
+// the WIT `probe-result.output` doc.
+//
+// Write always reports success for the whole slice once the cap is
+// reached: (*ssh.Session).Run treats a Stdout/Stderr write error as
+// the command's own failure, and a truncated answer is not a failed
+// one -- it is exactly the tradeoff probeOutputCap exists to make.
+type limitedBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := probeOutputCap - len(b.buf); room > 0 {
+		if room > len(p) {
+			room = len(p)
+		}
+		b.buf = append(b.buf, p[:room]...)
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.buf) == 0 {
+		return nil
+	}
+	return append([]byte(nil), b.buf...)
+}
+
 // SignRequest mirrors the WIT `sign-request` record: the bytes to
 // sign, and the key they are to be signed for.
 //
@@ -219,14 +271,33 @@ type Engine struct {
 	out       lockedBuf // pty output awaiting the embedder
 	pendingIn lockedBuf // input typed before the shell's stdin existed
 
+	// The probe park-and-poll surface (see ProbeStart/ProbePoll).
+	// probeInFlight covers BOTH "a probe goroutine is running" and "a
+	// probe finished but its result has not been polled yet" -- per
+	// wit/core.wit's probe-poll doc, observing the result is what
+	// makes the next probe-start legal, not the goroutine finishing.
+	// probeResult is nil until the goroutine stores it, and ProbePoll
+	// clears both fields together when it hands the result over.
+	probeInFlight bool
+	probeResult   *ProbeResult
+
 	cols, rows uint16
+	// The command to run in place of the default shell (RFC 4254
+	// s6.5 `exec` vs `shell`), empty for a plain interactive shell.
+	// See wit/core.wit's `connect` doc for the create-or-attach
+	// session manager rationale.
+	command string
 }
 
 // New constructs the session and starts the handshake goroutine. It
 // never fails: everything the embedder can learn arrives through
 // Status. The client version banner is drainable as soon as this
 // returns, which the scheduler rounds below guarantee.
-func New(user string, cols, rows uint16) *Engine {
+//
+// command, when non-empty, is run via an `exec` request instead of
+// the default `shell` request once authenticated -- see run() and the
+// `connect` doc in wit/core.wit.
+func New(user string, cols, rows uint16, command string) *Engine {
 	s := &Engine{
 		conn:            newShuttleConn(),
 		state:           StateConnecting,
@@ -237,6 +308,7 @@ func New(user string, cols, rows uint16) *Engine {
 		sigReply:        make(chan sigReply, 1),
 		cols:            cols,
 		rows:            rows,
+		command:         strings.Clone(command),
 	}
 	// The ssh lifecycle runs on its own goroutine so this entry point
 	// can return: the embedder must observe `host-key-check` and show
@@ -334,9 +406,19 @@ func (s *Engine) run() {
 		s.closeWith("pty request: " + err.Error())
 		return
 	}
-	if err := sess.Shell(); err != nil {
-		s.closeWith("shell request: " + err.Error())
-		return
+	s.mu.Lock()
+	command := s.command
+	s.mu.Unlock()
+	if command != "" {
+		if err := sess.Start(command); err != nil {
+			s.closeWith("exec request: " + err.Error())
+			return
+		}
+	} else {
+		if err := sess.Shell(); err != nil {
+			s.closeWith("shell request: " + err.Error())
+			return
+		}
 	}
 
 	// Take the live pipe, then flush anything typed before it existed.
@@ -364,6 +446,14 @@ func (s *Engine) run() {
 	// A clean shell exit is not a wire failure: closeWith still
 	// prefers a recorded wire reason, which is what distinguishes
 	// "the shell ended" from "the tunnel died under it".
+	//
+	// The message stays "shell exited" for the exec path too, ON
+	// PURPOSE: it marks "the channel's program ended" generically,
+	// downstream close-kind classification is structural (on State),
+	// not string-matched -- but the string itself is user-visible and
+	// its exact spelling is part of the observable contract, so it is
+	// not worth forking into "exec exited" for what is, structurally,
+	// the same event.
 	s.closeWith("shell exited")
 }
 
@@ -833,6 +923,98 @@ func (s *Engine) ExitStatus() *int32 {
 	}
 	code := *s.exitCode
 	return &code
+}
+
+// --- the probe plane ---------------------------------------------------
+
+// ProbeStart backs `probe-start`: run `command` on a second session
+// channel of the same authenticated connection, opened fresh via
+// client.NewSession(), so the interactive channel above is never
+// touched. No pty is requested -- unmangled output is the whole point
+// of a probe. Fails synchronously when the session is not `ready` or a
+// previous probe's result has not been polled yet (see the
+// probeInFlight doc on the Engine struct); otherwise it returns at
+// once and the goroutine's progress rides feed/pump ticks like
+// everything else, so poll ProbePoll.
+func (s *Engine) ProbeStart(command string) error {
+	command = strings.Clone(command)
+
+	s.mu.Lock()
+	if s.state != StateReady {
+		s.mu.Unlock()
+		return fmt.Errorf("probe-start: session is not ready")
+	}
+	if s.probeInFlight {
+		s.mu.Unlock()
+		return fmt.Errorf("probe-start: a probe is already in flight")
+	}
+	client := s.client
+	s.probeInFlight = true
+	s.probeResult = nil
+	s.mu.Unlock()
+
+	// This goroutine parks on the same shuttle conn as every other ssh
+	// goroutine here: NewSession/Run block on channel I/O that only
+	// advances when the embedder feeds bytes, and Close() unblocks it
+	// the same way the interactive session unblocks (see the
+	// tolerant runErr handling below).
+	go func() {
+		var result ProbeResult
+		buf := &limitedBuffer{}
+
+		sess, err := client.NewSession()
+		if err != nil {
+			// The connection is gone or refused a second channel: no
+			// output, no status -- an absent status is exactly how
+			// "the server never told us" is represented.
+			s.mu.Lock()
+			s.probeResult = &result
+			s.mu.Unlock()
+			return
+		}
+		defer sess.Close()
+		sess.Stdout = buf
+		sess.Stderr = buf
+
+		runErr := sess.Run(command)
+		result.Output = buf.bytes()
+		switch e := runErr.(type) {
+		case nil:
+			code := int32(0)
+			result.ExitStatus = &code
+		case *ssh.ExitError:
+			code := int32(e.ExitStatus())
+			result.ExitStatus = &code
+		default:
+			// *ssh.ExitMissingError (channel closed with no
+			// exit-status), or the transport dying under the probe
+			// (Close() on the session/client unblocks Run with an
+			// error the same way): no status, whatever output
+			// arrived before the channel went away.
+		}
+
+		s.mu.Lock()
+		s.probeResult = &result
+		s.mu.Unlock()
+	}()
+
+	return nil
+}
+
+// ProbePoll backs `probe-poll`: hand over the finished result exactly
+// once. Returns nil while the probe is still running, or when nothing
+// is pending (none was started, or the last result was already
+// polled).
+func (s *Engine) ProbePoll() *ProbeResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.probeResult == nil {
+		return nil
+	}
+	r := s.probeResult
+	s.probeResult = nil
+	s.probeInFlight = false
+	return r
 }
 
 // Close backs `close` (and the resource destructor): fail every parked
