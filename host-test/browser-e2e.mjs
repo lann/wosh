@@ -229,6 +229,26 @@ try {
   await openPanelSections();
   console.log("[1] page loaded");
 
+  // The session fold's controls must be LIVE against the real
+  // component. This is the tripwire for capability-probe mistakes: an
+  // arity sniff on deltic's runtime-built Session.connect once
+  // disabled the whole feature for every real page while every gate
+  // stayed green, because the mobile gate stubs the component and
+  // nothing else looked at the fold.
+  {
+    await page.evaluate(() => {
+      document.querySelector("#panel details.sessioncfg").open = true;
+    });
+    const dead = await page.evaluate(() =>
+      [...document.querySelectorAll("#panel details.sessioncfg select, #panel details.sessioncfg input")]
+        .filter((n) => n.disabled).length);
+    if (dead) fail(`${dead} session-fold control(s) arrived disabled against the real component`);
+    await page.evaluate(() => {
+      document.querySelector("#panel details.sessioncfg").open = false;
+    });
+    console.log("[1s] session fold controls are live");
+  }
+
   // --- leg S: the scan button fills the field, then lets go -----------
   // The scan button is an icon now; its accessible name is the stable
   // handle, its class the cheap one.
