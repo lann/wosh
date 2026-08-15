@@ -142,6 +142,19 @@ interface core {
     data: list<u8>,
   }
 
+  /// The outcome of a finished probe (see `probe-start`).
+  record probe-result {
+    /// The command's exit status, when the server reported one; none
+    /// when the channel closed without one (a vanished server, a
+    /// signal).
+    exit-status: option<s32>,
+    /// Everything the command wrote, stdout and stderr interleaved in
+    /// arrival order, capped at 256 KiB: a probe is a question, not a
+    /// transfer, and a runaway answer is truncated rather than
+    /// buffered without bound.
+    output: list<u8>,
+  }
+
   resource session {
     /// Start an SSH client session whose wire is `feed`/`drain`.
     /// Never fails synchronously -- watch `status`. `user` is needed
@@ -283,6 +296,36 @@ interface core {
 
     /// The shell's exit status, once known.
     exit-status: func() -> option<s32>;
+
+    // --- the probe plane -------------------------------------------
+
+    /// Run `command` on a SECOND session channel of the same
+    /// authenticated connection -- the interactive channel above is
+    /// not disturbed. No pty is requested for it, so its output comes
+    /// back unmangled by tty cooking, which is what makes it
+    /// parseable (installed session managers, existing sessions,
+    /// whether anything is attached -- the kinds of questions this
+    /// exists for).
+    ///
+    /// Only one probe runs at a time: starting one while `status` is
+    /// not `ready`, or while a previous probe is still in flight (its
+    /// result not yet observed via `probe-poll`), is an error.
+    ///
+    /// Like everything in this core, a probe advances on `feed`/`pump`
+    /// ticks rather than inside this call, so poll `probe-poll` for
+    /// the outcome. This core is timer-free by design -- x/crypto's
+    /// client path never needs wall-clock help -- so any bound on how
+    /// long a probe may run belongs to the embedder, not here.
+    probe-start: func(command: string) -> result<_, string>;
+
+    /// The outcome of the in-flight probe, if it has finished.
+    ///
+    /// The finished outcome is handed over exactly once: observing it
+    /// here clears it, which is what makes the next `probe-start`
+    /// legal. Returns `none` while the probe is still running, or when
+    /// none was started (or the last one's result was already
+    /// polled).
+    probe-poll: func() -> option<probe-result>;
 
     /// Tear the session down: fails any parked gate, closes the ssh
     /// stack, and moves to `closed`.

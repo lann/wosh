@@ -164,6 +164,27 @@ func (s *Session) ExitStatus() witTypes.Option[int32] {
 	return witTypes.Some(*code)
 }
 
+// --- the probe plane ---------------------------------------------------
+
+func (s *Session) ProbeStart(command string) witTypes.Result[witTypes.Unit, string] {
+	return unit(s.eng.ProbeStart(command))
+}
+
+func (s *Session) ProbePoll() witTypes.Option[types.ProbeResult] {
+	r := s.eng.ProbePoll()
+	if r == nil {
+		return witTypes.None[types.ProbeResult]()
+	}
+	exitStatus := witTypes.None[int32]()
+	if r.ExitStatus != nil {
+		exitStatus = witTypes.Some(*r.ExitStatus)
+	}
+	return witTypes.Some(types.ProbeResult{
+		ExitStatus: exitStatus,
+		Output:     r.Output,
+	})
+}
+
 func (s *Session) Close() { s.eng.Close() }
 
 // engineKeys translates the offered key records; an empty list stays

@@ -262,6 +262,15 @@ struct Args {
     /// (matched against raw bytes including \r\n, so pass just the
     /// marker text, not a full line).
     expect_output: Option<String>,
+    /// A command to run on the probe's second channel, DURING the
+    /// live interactive session in the first (plain publickey) leg,
+    /// after its echo round-trip and before detach. Proves the probe
+    /// channel leaves the interactive channel undisturbed.
+    probe: Option<String>,
+    /// Expected exit status of the probe command.
+    probe_expect_exit: Option<i32>,
+    /// A substring that must appear in the probe's output.
+    probe_expect_output: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -279,6 +288,9 @@ fn parse_args() -> Result<Args> {
         command: None,
         expect_exit: None,
         expect_output: None,
+        probe: None,
+        probe_expect_exit: None,
+        probe_expect_output: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -301,6 +313,12 @@ fn parse_args() -> Result<Args> {
                 a.expect_exit = Some(v()?.parse().map_err(|e| anyhow!("--expect-exit: {e}"))?)
             }
             "--expect-output" => a.expect_output = Some(v()?),
+            "--probe" => a.probe = Some(v()?),
+            "--probe-expect-exit" => {
+                a.probe_expect_exit =
+                    Some(v()?.parse().map_err(|e| anyhow!("--probe-expect-exit: {e}"))?)
+            }
+            "--probe-expect-output" => a.probe_expect_output = Some(v()?),
             other => bail!("unknown flag {other}"),
         }
     }
@@ -932,6 +950,66 @@ async fn main() -> Result<()> {
 
             session.call_resize(acc, s, 100, 40).await?;
             println!("[6] resize accepted");
+
+            if let Some(cmd) = &args.probe {
+                // --- 8. probe on the second channel, mid-session ---
+                // The point of running this HERE, with the interactive
+                // shell still live, is that it proves the two channels
+                // are actually independent: the probe rides a second
+                // SSH channel of the same authenticated connection, no
+                // pty attached, so its output comes back unmangled --
+                // and the round-trip that follows proves the
+                // interactive channel above never noticed.
+                let result = session
+                    .call_probe(acc, s, cmd.clone())
+                    .await?
+                    .map_err(|e| anyhow!("probe: {e}"))?;
+                println!(
+                    "[8] probe {cmd:?} -> exit {:?}, {} byte(s) of output",
+                    result.exit_status,
+                    result.output.len()
+                );
+                if let Some(expect) = args.probe_expect_exit {
+                    if result.exit_status != Some(expect) {
+                        bail!(
+                            "probe exit status mismatch: got {:?}, expected {expect}",
+                            result.exit_status
+                        );
+                    }
+                    println!("[8] probe exit status matches: {expect}");
+                }
+                if let Some(expect) = &args.probe_expect_output {
+                    let output = String::from_utf8_lossy(&result.output);
+                    if !output.contains(expect.as_str()) {
+                        bail!("probe output missing {expect:?}; saw:\n{output}");
+                    }
+                    println!("[8] probe output contains expected marker: {expect}");
+                }
+
+                // Prove the interactive shell still answers after the
+                // probe ran alongside it.
+                let marker2 = "WOSH_E2E_POST_PROBE_OK";
+                session
+                    .call_write_input(acc, s, format!("echo {marker2}\n").into_bytes())
+                    .await?;
+                let mut screen2 = String::new();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < deadline {
+                    let chunk = session.call_drain_output(acc, s).await?;
+                    if !chunk.is_empty() {
+                        screen2.push_str(&String::from_utf8_lossy(&chunk));
+                    }
+                    if screen2.matches(marker2).count() >= 2 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                if screen2.matches(marker2).count() < 2 {
+                    bail!("shell never produced {marker2} after the probe; saw:\n{screen2}");
+                }
+                println!("[8] interactive shell still answers after the probe -- channels are independent");
+                println!("\nE2E-PROBE PASS: second-channel probe ran mid-session without disturbing the interactive shell");
+            }
 
             if args.hold_ms > 0 {
                 // Linger with the session open: gives an external

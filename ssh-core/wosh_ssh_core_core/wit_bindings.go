@@ -5,7 +5,9 @@
 
 package wosh_ssh_core_core
 
-import ()
+import (
+	witTypes "go.bytecodealliance.org/pkg/wit/types"
+)
 
 const (
 	// The transport handshake is running on fed bytes.
@@ -159,4 +161,17 @@ type SignRequest struct {
 	// service, algorithm, public key) to sign, verbatim. Not a hash:
 	// hashing, if the algorithm wants any, belongs to the signer.
 	Data []uint8
+}
+
+// The outcome of a finished probe (see `probe-start`).
+type ProbeResult struct {
+	// The command's exit status, when the server reported one; none
+	// when the channel closed without one (a vanished server, a
+	// signal).
+	ExitStatus witTypes.Option[int32]
+	// Everything the command wrote, stdout and stderr interleaved in
+	// arrival order, capped at 256 KiB: a probe is a question, not a
+	// transfer, and a runaway answer is truncated rather than
+	// buffered without bound.
+	Output []uint8
 }

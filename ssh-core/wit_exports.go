@@ -559,6 +559,82 @@ func wasm_export_wosh_ssh_core_core_method_session_exit_status(arg0 uintptr) uin
 
 }
 
+//go:wasmexport wosh:ssh-core/core#[method]session.probe-start
+func wasm_export_wosh_ssh_core_core_method_session_probe_start(arg0 uintptr, arg1 uintptr, arg2 uint32) uintptr {
+
+	pinner := &syncExportPinner
+	value := unsafe.String((*uint8)(unsafe.Pointer(arg1)), arg2)
+	witRuntime.Unpin()
+	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).ProbeStart(value)
+
+	switch result.Tag() {
+	case witTypes.ResultOk:
+
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.ResultErr:
+		payload := result.Err()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+		utf8 := unsafe.Pointer(unsafe.StringData(payload))
+		pinner.Pin(utf8)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (2 * 4))) = uint32(uint32(len(payload)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = uint32(uintptr(uintptr(utf8)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_wosh:ssh-core/core#[method]session.probe-start
+func wasm_export_post_return_wosh_ssh_core_core_method_session_probe_start(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
+//go:wasmexport wosh:ssh-core/core#[method]session.probe-poll
+func wasm_export_wosh_ssh_core_core_method_session_probe_poll(arg0 uintptr) uintptr {
+
+	pinner := &syncExportPinner
+	result := (export_wosh_ssh_core_core.SessionFromBorrowHandle(int32(uintptr(arg0)))).ProbePoll()
+
+	switch result.Tag() {
+	case witTypes.OptionNone:
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(0))
+
+	case witTypes.OptionSome:
+		payload := result.Some()
+		*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 0)) = int8(int32(1))
+
+		switch (payload).ExitStatus.Tag() {
+		case witTypes.OptionNone:
+			*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = int8(int32(0))
+
+		case witTypes.OptionSome:
+			payload := (payload).ExitStatus.Some()
+			*(*int8)(unsafe.Add(unsafe.Pointer(exportReturnArea), 4)) = int8(int32(1))
+			*(*int32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (4 + 1*4))) = payload
+
+		default:
+			panic("unreachable")
+		}
+		data := unsafe.Pointer(unsafe.SliceData((payload).Output))
+		pinner.Pin(data)
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (8 + 2*4))) = uint32(uint32(len((payload).Output)))
+		*(*uint32)(unsafe.Add(unsafe.Pointer(exportReturnArea), (8 + 1*4))) = uint32(uintptr(uintptr(data)))
+
+	default:
+		panic("unreachable")
+	}
+	return exportReturnArea
+
+}
+
+//go:wasmexport cabi_post_wosh:ssh-core/core#[method]session.probe-poll
+func wasm_export_post_return_wosh_ssh_core_core_method_session_probe_poll(result uintptr) {
+	syncExportPinner.Unpin()
+}
+
 //go:wasmexport wosh:ssh-core/core#[method]session.close
 func wasm_export_wosh_ssh_core_core_method_session_close(arg0 uintptr) {
 

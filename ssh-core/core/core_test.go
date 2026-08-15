@@ -111,6 +111,23 @@ func start(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel)) *rig {
 // start's plain-shell behaviour exactly.
 func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string) *rig {
 	t.Helper()
+	return startFull(t, cfg, shell, command, nil)
+}
+
+// startWithProbe is start, but the fixture server also answers a
+// SECOND session channel (the probe channel a ready session opens via
+// ProbeStart) with probeShell, which receives the exec command and the
+// probe's own channel -- distinct from the interactive channel `shell`
+// serves.
+func startWithProbe(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), probeShell func(command string, ch ssh.Channel)) *rig {
+	t.Helper()
+	return startFull(t, cfg, shell, "", probeShell)
+}
+
+// startFull is the shared setup behind start / startWithCommand /
+// startWithProbe.
+func startFull(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string, probeShell func(command string, ch ssh.Channel)) *rig {
+	t.Helper()
 
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -132,7 +149,7 @@ func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channe
 
 	requests := &requestLog{}
 	execCommand := &stringBox{}
-	go serveOne(srvSide, cfg, shell, requests, execCommand)
+	go serveOne(srvSide, cfg, shell, requests, execCommand, probeShell)
 
 
 	stop := make(chan struct{})
@@ -188,7 +205,7 @@ func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channe
 	}
 }
 
-func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), requests *requestLog, execCommand *stringBox) {
+func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), requests *requestLog, execCommand *stringBox, probeShell func(command string, ch ssh.Channel)) {
 	defer c.Close()
 	sconn, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
@@ -197,6 +214,15 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 	defer sconn.Close()
 	go ssh.DiscardRequests(reqs)
 
+	// The first session channel opened on a connection is the
+	// interactive one (plain shell or the reattach `exec`, per
+	// `command`); serving each incoming channel concurrently -- which
+	// this loop already did, one channel at a time in earlier phases
+	// -- is what lets a probe open a SECOND channel on the very same
+	// connection without disturbing the first. Later channels are
+	// probes: their `exec` command is handed to probeShell instead of
+	// running the interactive `shell`.
+	first := true
 	for newCh := range chans {
 		if newCh.ChannelType() != "session" {
 			_ = newCh.Reject(ssh.UnknownChannelType, "only session channels")
@@ -206,6 +232,8 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 		if err != nil {
 			return
 		}
+		isFirst := first
+		first = false
 		go func() {
 			// Grant what an interactive client asks for; there is no
 			// real pty behind it, just the echo loop.
@@ -221,7 +249,16 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 					// command string, nothing else.
 					var payload struct{ Command string }
 					if err := ssh.Unmarshal(req.Payload, &payload); err == nil {
-						execCommand.set_(payload.Command)
+						if isFirst {
+							execCommand.set_(payload.Command)
+						}
+						if req.WantReply {
+							_ = req.Reply(true, nil)
+						}
+						if !isFirst && probeShell != nil {
+							go probeShell(payload.Command, ch)
+						}
+						continue
 					}
 					if req.WantReply {
 						_ = req.Reply(true, nil)
@@ -233,7 +270,7 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 				}
 			}
 		}()
-		if shell != nil {
+		if isFirst && shell != nil {
 			go shell(ch)
 		}
 	}
@@ -994,4 +1031,259 @@ func TestWireBrokenAtTheGateClosesWithTheGivenReason(t *testing.T) {
 	if n := r.authAttempts.Load(); n != 0 {
 		t.Fatalf("server saw %d auth attempts; want 0", n)
 	}
+}
+
+// --- 7. the probe -------------------------------------------------
+
+// simplePasswordConfig is the fixture server config every probe test
+// authenticates against; the probe plane has nothing to do with which
+// auth method got the connection to `ready`.
+func simplePasswordConfig() *ssh.ServerConfig {
+	return &ssh.ServerConfig{
+		PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+			return &ssh.Permissions{}, nil
+		},
+	}
+}
+
+// reachReady drives a rig from the host-key gate to StateReady over a
+// plain password exchange, the common setup every probe test needs
+// before ProbeStart is legal.
+func (r *rig) reachReady(t *testing.T) {
+	t.Helper()
+	r.waitState(t, StateHostKeyCheck)
+	r.eng.ConfirmHostKey(true)
+	if err := r.eng.AuthenticatePassword("synthetic-fixture-password"); err != nil {
+		t.Fatalf("AuthenticatePassword: %v", err)
+	}
+	r.waitState(t, StateReady)
+}
+
+// waitProbe polls ProbePoll until the in-flight probe finishes.
+func (r *rig) waitProbe(t *testing.T) *ProbeResult {
+	t.Helper()
+	var result *ProbeResult
+	r.waitUntil(t, "probe result", func() bool {
+		result = r.eng.ProbePoll()
+		return result != nil
+	})
+	return result
+}
+
+// probeEcho is a probe-channel fixture: it writes `stdout` and
+// `stderr` (skipping either when empty), reports `code` as the exit
+// status, and closes -- the probe-side analogue of echoShell, minus
+// the pty byte-plane behaviour a probe never uses.
+func probeEcho(stdout, stderr []byte, code uint32) func(command string, ch ssh.Channel) {
+	return func(_ string, ch ssh.Channel) {
+		if len(stdout) > 0 {
+			_, _ = ch.Write(stdout)
+		}
+		if len(stderr) > 0 {
+			_, _ = ch.Stderr().Write(stderr)
+		}
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
+		_ = ch.Close()
+	}
+}
+
+// probeGated is probeEcho but parked on `release` first, letting a
+// test hold a probe "in flight" for as long as it likes -- used to
+// exercise the one-probe-at-a-time gate deterministically instead of
+// racing a real command's completion.
+func probeGated(release <-chan struct{}, stdout []byte, code uint32) func(command string, ch ssh.Channel) {
+	return func(_ string, ch ssh.Channel) {
+		<-release
+		if len(stdout) > 0 {
+			_, _ = ch.Write(stdout)
+		}
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
+		_ = ch.Close()
+	}
+}
+
+// probeFlood writes exactly `total` bytes of filler to stdout before
+// reporting `code` -- the fixture side of the truncation test, well
+// past probeOutputCap.
+func probeFlood(total int, code uint32) func(command string, ch ssh.Channel) {
+	return func(_ string, ch ssh.Channel) {
+		chunk := bytes.Repeat([]byte{'z'}, 4096)
+		for written := 0; written < total; {
+			n := len(chunk)
+			if remaining := total - written; remaining < n {
+				n = remaining
+			}
+			if _, err := ch.Write(chunk[:n]); err != nil {
+				break
+			}
+			written += n
+		}
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
+		_ = ch.Close()
+	}
+}
+
+// TestProbeRunsOnASecondChannelWithoutDisturbingTheFirst defends the
+// whole point of the probe plane: it rides its OWN session channel, so
+// the interactive one keeps working exactly as before, both while the
+// probe is in flight and after it finishes.
+func TestProbeRunsOnASecondChannelWithoutDisturbingTheFirst(t *testing.T) {
+	probeStdout := []byte("synthetic-probe-stdout")
+	probeStderr := []byte("synthetic-probe-stderr")
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeEcho(probeStdout, probeStderr, 3))
+	r.reachReady(t)
+
+	if err := r.eng.ProbeStart("wosh-probe: which-session-manager"); err != nil {
+		t.Fatalf("ProbeStart: %v", err)
+	}
+	result := r.waitProbe(t)
+	if result.ExitStatus == nil || *result.ExitStatus != 3 {
+		t.Fatalf("probe exit status = %v, want 3", result.ExitStatus)
+	}
+	if !bytes.Contains(result.Output, probeStdout) {
+		t.Fatalf("probe output = %q, want it to contain the stdout bytes", result.Output)
+	}
+	if !bytes.Contains(result.Output, probeStderr) {
+		t.Fatalf("probe output = %q, want it to contain the stderr bytes too", result.Output)
+	}
+
+	// The interactive channel is undisturbed: it still round-trips
+	// bytes AFTER the probe has completed.
+	r.eng.WriteInput([]byte("hello-after-the-probe"))
+	var got []byte
+	r.waitUntil(t, "echoed input after the probe", func() bool {
+		got = append(got, r.eng.DrainOutput()...)
+		return bytes.Contains(got, []byte("hello-after-the-probe"))
+	})
+}
+
+// TestProbeOneAtATime defends the park-and-poll discipline
+// wit/core.wit documents: a second ProbeStart while one is in flight
+// is refused, and the refusal lifts only once the first result has
+// been observed via ProbePoll.
+func TestProbeOneAtATime(t *testing.T) {
+	release := make(chan struct{})
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeGated(release, []byte("first-probe-output"), 0))
+	r.reachReady(t)
+
+	if err := r.eng.ProbeStart("first"); err != nil {
+		t.Fatalf("ProbeStart (first): %v", err)
+	}
+	if err := r.eng.ProbeStart("second"); err == nil {
+		t.Fatal("ProbeStart succeeded while a probe was in flight")
+	}
+
+	close(release) // let the fixture finish the first probe
+	result := r.waitProbe(t)
+	if result.ExitStatus == nil || *result.ExitStatus != 0 {
+		t.Fatalf("first probe exit status = %v, want 0", result.ExitStatus)
+	}
+
+	// Polled: a new probe is legal again.
+	if err := r.eng.ProbeStart("third"); err != nil {
+		t.Fatalf("ProbeStart after the first was polled: %v", err)
+	}
+}
+
+// TestProbeStartBeforeReadyErrors defends the other half of the gate:
+// a probe channel makes no sense before the interactive one has even
+// authenticated.
+func TestProbeStartBeforeReadyErrors(t *testing.T) {
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeEcho(nil, nil, 0))
+	r.waitState(t, StateHostKeyCheck)
+	if err := r.eng.ProbeStart("too-early"); err == nil {
+		t.Fatal("ProbeStart succeeded before the session reached ready")
+	}
+}
+
+// TestProbeOutputIsTruncatedAtTheCap defends probeOutputCap: a probe
+// is a question, not a transfer, so a runaway answer is capped rather
+// than buffered without bound -- and the exit status still arrives,
+// because truncation is not failure.
+func TestProbeOutputIsTruncatedAtTheCap(t *testing.T) {
+	const flood = probeOutputCap + 64*1024
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeFlood(flood, 5))
+	r.reachReady(t)
+
+	if err := r.eng.ProbeStart("flood"); err != nil {
+		t.Fatalf("ProbeStart: %v", err)
+	}
+	result := r.waitProbe(t)
+	if len(result.Output) != probeOutputCap {
+		t.Fatalf("probe output length = %d, want the %d-byte cap", len(result.Output), probeOutputCap)
+	}
+	if result.ExitStatus == nil || *result.ExitStatus != 5 {
+		t.Fatalf("probe exit status = %v, want 5 even though the output was truncated", result.ExitStatus)
+	}
+}
+
+// TestProbePollHandsTheResultOverExactlyOnce defends ProbePoll's
+// consume-once contract: a second poll right after the first sees
+// nothing, because the first already cleared it.
+func TestProbePollHandsTheResultOverExactlyOnce(t *testing.T) {
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeEcho([]byte("x"), nil, 0))
+	r.reachReady(t)
+
+	if err := r.eng.ProbeStart("once"); err != nil {
+		t.Fatalf("ProbeStart: %v", err)
+	}
+	if first := r.waitProbe(t); first == nil {
+		t.Fatal("first poll returned nil")
+	}
+	if second := r.eng.ProbePoll(); second != nil {
+		t.Fatalf("second poll returned %+v, want none", second)
+	}
+}
+
+// TestCloseDuringInFlightProbeDoesNotDeadlock defends the teardown
+// path ProbeStart's doc merely asserts: closing the session while a
+// probe goroutine sits parked inside sess.Run must not deadlock or
+// panic. x/crypto unblocks Run with an error once the transport it is
+// reading dies, so the goroutine is expected to run to completion
+// either way -- this pins that Close() actually delivers that
+// unblock, and that whatever ProbePoll then reports is honest: either
+// nothing (the goroutine never got to store a result) or a result
+// with NO exit status (the channel died without the server ever
+// reporting one), never a fabricated status standing in for a
+// probe that in truth never got an answer.
+func TestCloseDuringInFlightProbeDoesNotDeadlock(t *testing.T) {
+	release := make(chan struct{})
+	r := startWithProbe(t, simplePasswordConfig(), echoShell(0), probeGated(release, []byte("never-observed"), 0))
+	r.reachReady(t)
+
+	if err := r.eng.ProbeStart("parked-forever"); err != nil {
+		t.Fatalf("ProbeStart: %v", err)
+	}
+	// Confirm it is genuinely in flight before tearing down: a second
+	// probe must still be refused.
+	if err := r.eng.ProbeStart("second"); err == nil {
+		t.Fatal("ProbeStart succeeded while a probe was in flight")
+	}
+
+	r.eng.Close() // tear down while the probe's goroutine is parked in sess.Run
+
+	// Give the parked goroutine a bounded chance to observe the
+	// teardown and store a result. Unlike waitProbe/waitUntil, timing
+	// out here is NOT a failure: "no result ever arrives" is one of
+	// the two outcomes this test accepts, so the loop below only
+	// looks for a result -- it never fails on its own account. A
+	// shorter bound than testDeadline is deliberate: both accepted
+	// outcomes are the test passing, so there is nothing to gain by
+	// waiting the full deadline out.
+	deadline := time.Now().Add(2 * time.Second)
+	var result *ProbeResult
+	for time.Now().Before(deadline) {
+		if result = r.eng.ProbePoll(); result != nil {
+			break
+		}
+		r.eng.Pump()
+		time.Sleep(pollInterval)
+	}
+	if result != nil && result.ExitStatus != nil {
+		t.Fatalf("probe result after Close = %+v, want no fabricated exit status", result)
+	}
+
+	// Free the fixture's goroutine (still parked on <-release) so it
+	// does not leak into later tests.
+	close(release)
 }

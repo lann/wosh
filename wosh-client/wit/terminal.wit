@@ -336,6 +336,15 @@ interface terminal {
     prompts: list<prompt>,
   }
 
+  /// The outcome of a finished `probe`.
+  record probe-result {
+    /// The command's exit status, when the server reported one.
+    exit-status: option<s32>,
+    /// Everything the command wrote, stdout and stderr interleaved,
+    /// capped by the core at 256 KiB.
+    output: list<u8>,
+  }
+
   /// This browser's SSH identity, as an OpenSSH `authorized_keys` line
   /// (`ssh-ed25519 AAAA... wosh-browser`).
   ///
@@ -532,6 +541,28 @@ interface terminal {
 
     /// Propagate a terminal resize (xterm.js `onResize`).
     resize: async func(cols: u16, rows: u16);
+
+    /// Run a one-shot command on a SECOND channel of the same
+    /// authenticated SSH connection, leaving the interactive channel
+    /// -- and its pty, and everything `write-input`/`drain-output`
+    /// carry -- entirely undisturbed. No pty is attached to this
+    /// channel, so its output comes back unmangled by tty cooking;
+    /// that is what makes it parseable. The point is to ASK the
+    /// target something (which session managers are installed, what
+    /// sessions already exist, whether anything is attached), not to
+    /// render an interactive reply.
+    ///
+    /// Fails while the session is not `ready`, when a probe is
+    /// already in flight, and after roughly fifteen seconds without an
+    /// answer. That timeout is this component's own bound, not the
+    /// core's -- the core is timer-free by design -- and it comes with
+    /// a caveat: an abandoned in-flight probe stays in flight in the
+    /// core until it eventually answers, so the NEXT `probe` call may
+    /// refuse (already in flight) until then. In practice a probe that
+    /// gets stuck usually means the session itself is gone, and the
+    /// session's own failure modes (closed, exited) take over from
+    /// there.
+    probe: async func(command: string) -> result<probe-result, string>;
 
     /// Pty output accumulated since the last call: raw bytes, in
     /// order, to be written straight to xterm.js. Returns promptly
