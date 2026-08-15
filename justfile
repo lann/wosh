@@ -120,6 +120,16 @@ test-gate-proc:
 gates-down:
     scripts/gate-proc.sh stop-all
 
+# The session-manager knowledge in site/sessions.mjs: what the presets
+# run, what a session name may contain, which command lines read back
+# as which preset, and the four list parsers against golden samples of
+# what dtach, abduco, tmux and screen actually print. Pure node -- no
+# browser, no listener, no target -- because the parsers are the part
+# most likely to be subtly wrong and the part a browser gate can least
+# easily reach.
+test-sessions:
+    node host-test/sessions-parse.mjs
+
 # The connection-string format: the Rust crate is the single owner and
 # decoder now (the Go core never sees a connstring).
 test-connstring:
@@ -172,11 +182,16 @@ e2e: compose
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
     cs=$(scripts/gate-proc.sh field e2e connstring)
+    # The probe leg: a second channel on the live connection, its
+    # output unmangled by any pty, run mid-session so the round-trip
+    # right after it proves the interactive shell was never disturbed.
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
-        --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)" \
+        --probe 'echo probe-ok; echo probe-err >&2; exit 3' \
+        --probe-expect-exit 3 --probe-expect-output probe-ok
     target/release/wosh-smoke-test \
         --component target/components/wosh-ssh-client.wasm \
         --connstring "$cs" --user "$USER" --auth auto \
@@ -607,7 +622,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
+check: test-gate-proc test-sessions test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

@@ -380,7 +380,80 @@ export async function capabilities() {
     // worker serving a new page against an old wasm; that mix is what
     // this probe guards, not a supported configuration.
     execCommand: typeof t.Session?.connect !== "function" || t.Session.connect.length >= 5,
+    // One-shot commands on a second channel of the live connection
+    // (terminal.wit's `probe`), which is how the page can ask a target
+    // what session managers it has and what sessions are on it without
+    // touching the pty. Same assume-when-uninspectable philosophy as
+    // keyboardInteractive above: a prototype we cannot read belongs to
+    // a component that shipped with this page.
+    probe: !proto || typeof proto.probe === "function",
   };
+}
+
+/**
+ * Run one short command on the target, on a SECOND channel of the live
+ * authenticated connection: no pty, output unmangled, nothing typed
+ * into whatever the user is doing in the terminal. Returns
+ * `{ code, text }` -- or `null`, never a throw, because a probe is a
+ * QUESTION the page asks on its own initiative, and nothing the user
+ * asked for may break because one went unanswered.
+ */
+export async function probeSession(command) {
+  const s = currentSession;
+  if (!s) return null; // nothing live to ask: not connected, or just ended
+  if (typeof s.probe !== "function") return null; // stale precache: old component, new page
+  try {
+    const r = await s.probe(command);
+    // A lifted record is an object with camelCase fields; `exit-status`
+    // is an option, so it is the bare number or undefined (deltic
+    // embedder contract), and `output` arrives as a Uint8Array or a
+    // plain array of bytes depending on the lifting path.
+    const bytes = r?.output instanceof Uint8Array
+      ? r.output
+      : new Uint8Array(r?.output ?? []);
+    return {
+      code: r?.exitStatus ?? null,
+      text: new TextDecoder().decode(bytes),
+    };
+  } catch {
+    // A failed or timed-out probe (the component gives up after ~15s),
+    // a channel the server refused, a session that died underneath:
+    // all the same answer, which is "no answer".
+    return null;
+  }
+}
+
+/**
+ * Type a session manager's detach keys into the pty and wait, briefly,
+ * to see whether the session actually goes away -- a clean manager
+ * detach closes the SSH channel, which is the only observable
+ * difference between "the tool understood the keys" and "the tool has
+ * them remapped and just received junk". Returns whether the session
+ * ended within `graceMs`; a false means the caller should fall back to
+ * a hard detach.
+ */
+export async function sendDetachKeys(keys, graceMs = 2000) {
+  const s = currentSession;
+  if (!s || typeof s.writeInput !== "function") return false;
+  try {
+    await s.writeInput(new TextEncoder().encode(keys));
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    // Identity guard: a supersession (or an end the pump already
+    // noticed) replaces currentSession, and polling the session we no
+    // longer own would answer a question about somebody else's.
+    if (currentSession !== s) return true;
+    try {
+      if (await s.exited()) return true;
+    } catch {
+      return false; // cannot tell: let the hard detach be sure
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 /**
@@ -565,6 +638,20 @@ function serializeSession(session) {
   // which is an answer too.
   if (typeof session.closeKind === "function") {
     wrapped.closeKindRaw = session.closeKind.bind(session);
+  }
+  // `probe` is deliberately NOT in the chain above. It is a WIT `async
+  // func` that waits on the target to finish running a command -- up to
+  // fifteen seconds -- and the guest is not INSIDE the instance for any
+  // of that wait (it awaits; the component model lets the instance be
+  // re-entered meanwhile). Queueing it would therefore buy nothing
+  // against reentrance while parking every keystroke and every drain
+  // behind a command someone typed nothing to see. It still goes
+  // through enterPatiently, which is the part that actually guards the
+  // door: a probe that starts while the instance is momentarily busy
+  // retries instead of poisoning it.
+  if (typeof session.probe === "function") {
+    const probe = session.probe.bind(session);
+    wrapped.probe = (...args) => enterPatiently(() => probe(...args));
   }
   for (const name of GATED) {
     if (typeof session[name] !== "function") continue; // older component builds
