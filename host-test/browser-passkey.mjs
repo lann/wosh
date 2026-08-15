@@ -190,8 +190,8 @@ try {
   // localhost, not 127.0.0.1: see the file header. RP ID must be a
   // domain, or credentials.create/.get throw a SecurityError before
   // the virtual authenticator is ever asked anything.
-  // The panel collapses setup material (the auth override, keys &
-  // identity) into <details>; this gate drives the flows inside them,
+  // The panel collapses setup material (auth settings) into a
+  // <details> fold; this gate drives the flows inside them,
   // not the collapse itself (browser-mobile covers that), so open
   // everything after each page load (a load resets the open state).
   const openPanelSections = () =>
@@ -203,7 +203,7 @@ try {
   console.log("[1] page loaded on http://localhost -- a valid WebAuthn RP ID");
 
   // --- enrol -----------------------------------------------------------
-  const enrollBtn = page.locator("#panel button:has-text('enrol a passkey')");
+  const enrollBtn = page.locator("#panel .passkey button", { hasText: /^enrol$/ });
   await enrollBtn.waitFor({ timeout: 15_000 });
   await enrollBtn.click();
   // A ceremony that never completes is the most likely failure here
@@ -367,7 +367,7 @@ try {
     console.log("[9] confirmed not-enrolled state: the identity is really gone from this page");
   }
 
-  const recoverBtn = page.locator("#panel button:has-text('recover from this passkey')");
+  const recoverBtn = page.locator("#panel .passkey button", { hasText: /^recover$/ });
   await recoverBtn.waitFor({ timeout: 15_000 });
   await recoverBtn.click();
   let recoveredLine;

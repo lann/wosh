@@ -747,12 +747,12 @@ try {
       summaries: details.map((d) => d.querySelector("summary")?.textContent.trim()),
     };
   });
-  if (ok(shape.detailsCount === 2, `expected 2 folded sections, found ${shape.detailsCount}`) &&
-      ok(!shape.anyOpen, "a folded section opened itself on a fresh load") &&
-      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside closed folds are visible`) &&
+  if (ok(shape.detailsCount === 1, `expected 1 folded section, found ${shape.detailsCount}`) &&
+      ok(!shape.anyOpen, "the folded section opened itself on a fresh load") &&
+      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside the closed fold are visible`) &&
       ok(shape.visibleButtons.length <= 4,
          `a fresh panel still shows ${shape.visibleButtons.length} buttons: ${JSON.stringify(shape.visibleButtons)}`)) {
-    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons (${shape.visibleButtons.join(", ")}); setup is folded (${shape.summaries.join(" / ")})`);
+    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons; setup is folded ("${shape.summaries.join("")}")`);
   }
 
   // 23. The rows that need ANSWERS appear under the connect button,
@@ -782,23 +782,58 @@ try {
     console.log("[23] a host-key prompt lands under connect, above the folds");
   }
 
-  // 24. The auth override says what it is set to while folded, and
-  //     the select inside it still works.
-  await page.evaluate(() => { document.querySelector("#panel details.method").open = true; });
-  await page.selectOption("#panel select", "password");
-  const summary = await page.locator("#panel details.method summary").textContent();
-  if (ok(/password/.test(summary), `the method summary does not reflect the selection: "${summary}"`)) {
-    console.log(`[24] the folded auth row reports its setting ("${summary.trim()}")`);
+  // 24. The fold announces itself: display:flex on summary removes
+  //     the NATIVE disclosure marker in Chromium/WebKit, so the
+  //     chevron is drawn explicitly -- and a fold with no indicator
+  //     reads as a dead label, which is how this got reported.
+  const marker = await page.evaluate(() => {
+    const summary = document.querySelector("#panel details.auth summary");
+    const closed = getComputedStyle(summary, "::before").content;
+    document.querySelector("#panel details.auth").open = true;
+    const opened = getComputedStyle(summary, "::before").content;
+    return { closed, opened };
+  });
+  if (ok(marker.closed !== "none" && marker.closed !== "normal", "the folded row has no expand indicator") &&
+      ok(marker.opened !== marker.closed, "the indicator does not change when the fold opens")) {
+    console.log(`[24] the fold carries an explicit expand indicator (${marker.closed} -> ${marker.opened})`);
   }
 
-  // 25. The identity fold still carries the working flows: open it,
-  //     ask for the browser key, get the (synthetic) line.
-  await page.evaluate(() => { document.querySelector("#panel details.identity").open = true; });
+  // 25. Inside the (now open) fold, the flows work: the method select
+  //     selects, the browser key renders on demand.
+  await page.selectOption("#panel select", "password");
+  const picked = await page.locator("#panel select").inputValue();
+  if (!ok(picked === "password", `the method select did not take a selection (${picked})`)) {
+    // fall through; the key check is independent
+  }
   await page.click("#panel button:has-text(\"show this browser's public key\")");
   await page.waitForSelector("#panel .key code", { timeout: 5_000 });
   const line = (await page.locator("#panel .key code").textContent()).trim();
   if (ok(line.startsWith("ssh-ed25519 "), `the browser-key line did not render: "${line}"`)) {
-    console.log("[25] keys & identity opens and the browser key renders inside it");
+    console.log("[25] auth settings opens; the method select and the browser key work inside it");
+  }
+
+  // 25b. The passkey actions are one compact row: adopt's paste field
+  //      stays hidden until adopt… reveals it, and the guidance prose
+  //      hides behind the "?" -- rendering it permanently is how the
+  //      panel got crowded to begin with.
+  const submenu = await page.evaluate(() => {
+    const section = document.querySelector("#panel .passkey");
+    const visible = (el) => el.checkVisibility();
+    const byText = (t) => [...section.querySelectorAll("button")].find((b) => b.textContent.trim() === t);
+    const adoptInput = section.querySelector("input");
+    const helpBody = section.querySelector(".help-body");
+    const before = { adoptInput: visible(adoptInput), helpBody: visible(helpBody) };
+    byText("adopt…").click();
+    byText("?").click();
+    const after = { adoptInput: visible(adoptInput), helpBody: visible(helpBody) };
+    return { before, after,
+      actions: [...section.querySelectorAll("button")].filter(visible).map((b) => b.textContent.trim()) };
+  });
+  if (ok(!submenu.before.adoptInput, "the adopt paste field rendered before being asked for") &&
+      ok(!submenu.before.helpBody, "the guidance prose rendered before the ? was pressed") &&
+      ok(submenu.after.adoptInput, "adopt… did not reveal the paste field") &&
+      ok(submenu.after.helpBody, "? did not reveal the guidance")) {
+    console.log(`[25b] passkey is one action row (${submenu.actions.join(" / ")}); adopt and the guidance reveal on demand`);
   }
 
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it
