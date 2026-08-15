@@ -300,11 +300,16 @@ export async function initBoot(panel, { onConnect }) {
   // served over plain http, which is exactly how someone ends up
   // trying to scan from a phone), and that beats a button that
   // silently is not there.
+  // An icon, not a label: the button sits beside the field it fills
+  // and the glyph says QR better than the words did. The words remain
+  // for assistive tech and for anyone hovering.
   const scanBtn = el("button", {
     className: "scan",
-    textContent: "scan QR",
     title: "scan the listener's QR code with this device's camera",
   });
+  scanBtn.setAttribute("aria-label", "scan QR");
+  scanBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/></svg>';
   const scanRow = el("div", { className: "csrow" }, csInput, scanBtn);
   // The camera preview lands here, directly under the field it fills.
   const scanHost = el("div");
@@ -324,7 +329,7 @@ export async function initBoot(panel, { onConnect }) {
 
   const connectBtn = el("button", { textContent: "connect" });
   const showKeyBtn = el("button", { textContent: "show this browser's public key" });
-  const closeBtn = el("button", { textContent: "×", title: "close" });
+  const closeBtn = el("button", { className: "close", textContent: "×", title: "close" });
 
   // --- passkey section: enrol / adopt / forget ---------------------------
   //
@@ -339,14 +344,36 @@ export async function initBoot(panel, { onConnect }) {
   // promising it always just works.
   const passkeySection = el("div", { className: "passkey" });
   const passkeyStatus = el("div", { className: "sub" });
-  const enrollBtn = el("button", { textContent: "enrol a passkey" });
+  const enrollBtn = el("button", { textContent: "enrol" });
   const forgetBtn = el("button", { textContent: "forget" });
   const adoptInput = el("input", {
     size: 40,
     placeholder: "paste the authorized_keys line from another device",
   });
   const adoptBtn = el("button", { textContent: "adopt" });
-  const recoverBtn = el("button", { textContent: "recover from this passkey" });
+  const recoverBtn = el("button", { textContent: "recover" });
+  // adopt needs a paste first, so its button REVEALS the field rather
+  // than acting: the ellipsis is that promise. Wired once; the row is
+  // re-appended by every render with its hidden state intact.
+  const adoptRevealBtn = el("button", { textContent: "adopt…" });
+  const adoptRow = el("div", { className: "row", hidden: true }, adoptInput, adoptBtn);
+  adoptRevealBtn.addEventListener("click", () => {
+    adoptRow.hidden = !adoptRow.hidden;
+    if (!adoptRow.hidden) adoptInput.focus();
+  });
+
+  /// A "?" that reveals its explanation inline, on demand. Touch has
+  /// no hover, so a title attribute reaches nobody there; and rendering
+  /// guidance permanently is how this panel got crowded to begin with.
+  const helpToggle = (text) => {
+    const body = el("div", { className: "sub help-body", textContent: text, hidden: true });
+    const btn = el("button", { className: "help", textContent: "?", title: "explain" });
+    btn.setAttribute("aria-label", "explain");
+    btn.addEventListener("click", () => {
+      body.hidden = !body.hidden;
+    });
+    return { btn, body };
+  };
 
   // Connection history: tap to reconnect. Rendered only when there is
   // something to show; the whole section disappears otherwise.
@@ -372,29 +399,18 @@ export async function initBoot(panel, { onConnect }) {
   promptArea.append(notice);
   const ask = (row) => promptArea.prepend(row);
 
-  // The auth method is an override -- `automatic` steers correctly
-  // against any server, and forcing a method is a debugging move -- so
-  // it rides collapsed, its summary saying what it is set to. The
-  // <select> itself is unchanged, so the capabilities probe keeps
-  // working on it.
-  const methodSummary = el("summary");
-  const methodDetails = el("details", { className: "method" },
-    methodSummary,
-    el("div", { className: "row" }, method));
-  const syncMethodSummary = () => {
-    methodSummary.textContent = `auth: ${method.selectedOptions[0]?.textContent ?? "automatic"}`;
-  };
-  method.addEventListener("change", syncMethodSummary);
-
-  // Identity management is SETUP, not connecting: it is needed when
-  // installing a key on a new target and then never again, yet it was
-  // permanently the largest thing on screen -- biggest of all in the
-  // state where it mattered least (nothing enrolled = the full pitch,
-  // rendered on every visit). The browser key and the whole passkey
-  // story, prose included, live behind one collapsed row now; the
-  // prose is read where it is acted on.
-  const identityDetails = el("details", { className: "identity" },
-    el("summary", { textContent: "keys & identity" }),
+  // Everything about HOW to authenticate -- the method override, the
+  // browser key, the passkey -- lives behind one fold. It is all
+  // setup: needed when installing a key on a new target or forcing a
+  // method while debugging, and not at all on the ordinary connect.
+  // One fold rather than two, because the previous pair earned its
+  // keep badly: a "method" fold whose summary repeated the select's
+  // own label was the same content twice, once static.
+  const authDetails = el("details", { className: "auth" },
+    el("summary", { textContent: "auth settings" }),
+    el("div", { className: "row" },
+      el("label", { textContent: "method" }), method),
+    el("div", { className: "field" }, el("span", { textContent: "browser key" })),
     el("div", { className: "row" }, showKeyBtn),
     keyRow,
     passkeySection);
@@ -416,10 +432,8 @@ export async function initBoot(panel, { onConnect }) {
         textContent: " remember this connection",
         title: "history keeps the endpoint id, relay and user name -- the pairing token is never saved",
       })),
-    methodDetails,
-    identityDetails,
+    authDetails,
   );
-  syncMethodSummary();
 
   /// Destructive history buttons arm on the first click (label turns
   /// into a question, briefly) and act on the second: a same-size
@@ -431,6 +445,12 @@ export async function initBoot(panel, { onConnect }) {
     btn.addEventListener("click", () => {
       if (btn.classList.contains("armed")) {
         clearTimeout(timer);
+        // Disarm BEFORE acting: these buttons outlive their renders
+        // (forget is re-appended after enrol), and a button that acted
+        // while still wearing the armed state would fire again on one
+        // accidental tap the next time it appears.
+        btn.classList.remove("armed");
+        btn.textContent = idle;
         act();
         return;
       }
@@ -625,9 +645,6 @@ export async function initBoot(panel, { onConnect }) {
         passkeySection.hidden = false;
         renderPasskey();
       }
-      // Dropping the selected option promotes the next one; the
-      // collapsed summary must say so.
-      syncMethodSummary();
     } catch (e) {
       notice.textContent = `could not load the client component: ${e.message ?? e}`;
     }
@@ -667,45 +684,38 @@ export async function initBoot(panel, { onConnect }) {
       el("div", { className: "field" }, el("span", { textContent: "passkey" })),
     );
     if (line) {
+      const help = helpToggle(
+        "Nothing else is installed on the target. OpenSSH 10.3 and later accept " +
+          "this line as-is; on 8.4 through 10.2 the server also needs " +
+          "PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com " +
+          "in sshd_config, or it refuses the key before ever checking a signature.",
+      );
       passkeySection.append(
         el("div", {
           textContent:
             "enrolled -- add this line to ~/.ssh/authorized_keys on the target host:",
         }),
         el("code", { textContent: line }),
-        el("div", {
-          className: "sub",
-          textContent:
-            "Nothing else is installed on the target. OpenSSH 10.3 and later accept " +
-            "this as-is; on 8.4 through 10.2 the server also needs " +
-            "PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com " +
-            "in sshd_config, or it refuses the key before ever checking a signature.",
-        }),
-        el("div", { className: "row" }, forgetBtn),
+        el("div", { className: "row" }, forgetBtn, help.btn),
+        help.body,
       );
     } else {
+      // Three verbs side by side; the guidance for choosing between
+      // them behind the "?". adopt… reveals its paste field on demand.
+      const help = helpToggle(
+        "enrol asks your platform authenticator to create a passkey, then prints an " +
+          "ordinary authorized_keys line to install on the target. adopt brings in a " +
+          "passkey already enrolled on another device, from the line it printed there " +
+          "(one touch). recover works the public key back out of the passkey itself -- " +
+          "no line, no target, no other device -- but asks for two touches of the same " +
+          "passkey. Prefer adopt when the line is to hand.",
+      );
+      adoptRow.hidden = true; // fresh render, folded reveal
       passkeySection.append(
-        el("div", {
-          className: "sub",
-          textContent:
-            "no passkey enrolled -- enrolling asks your platform authenticator to create one, " +
-            "then prints an ordinary authorized_keys line to install on the target",
-        }),
-        el("div", { className: "row" }, enrollBtn),
-        el("div", { className: "row" }, adoptInput, adoptBtn),
-        el("div", {
-          className: "sub",
-          textContent: "adopting brings in a passkey already enrolled on another device, from the line it printed there",
-        }),
-        el("div", { className: "row" }, recoverBtn),
-        el("div", {
-          className: "sub",
-          textContent:
-            "recovering needs nothing else -- not the authorized_keys line, not the target, not " +
-            "another device -- but asks for TWO touches of the SAME passkey to work its public " +
-            "key back out. Prefer adopt when the line is to hand: one touch, and no chance of " +
-            "picking the wrong passkey partway through.",
-        }),
+        el("div", { className: "sub", textContent: "no passkey enrolled" }),
+        el("div", { className: "row" }, enrollBtn, adoptRevealBtn, recoverBtn, help.btn),
+        adoptRow,
+        help.body,
       );
     }
     passkeySection.append(passkeyStatus);

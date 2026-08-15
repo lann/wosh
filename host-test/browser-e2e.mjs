@@ -179,8 +179,8 @@ try {
     );
   };
 
-  // The panel collapses setup material (the auth override, keys &
-  // identity) into <details>; this gate drives the flows inside them,
+  // The panel collapses setup material (auth settings) into a
+  // <details> fold; this gate drives the flows inside them,
   // not the collapse itself (browser-mobile covers that), so open
   // everything whenever a fresh page load has reset it. Always AFTER
   // the panel has rendered: on an empty DOM it is a silent no-op.
@@ -230,7 +230,9 @@ try {
   console.log("[1] page loaded");
 
   // --- leg S: the scan button fills the field, then lets go -----------
-  await page.click("#panel button:has-text('scan QR')");
+  // The scan button is an icon now; its accessible name is the stable
+  // handle, its class the cheap one.
+  await page.click("#panel button.scan");
   await page.waitForSelector("#panel .scan-view video", { timeout: 10_000 });
   try {
     await page.waitForFunction(

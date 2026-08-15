@@ -63,12 +63,42 @@
     }
     #panel .scan-view .hint { color: #888; margin: 4px 0; }
     #panel .field { color: #888; margin-top: 8px; margin-bottom: 2px; }
-    /* The collapsed sections (auth override, keys & identity): the
-       summary is a one-line control styled like a .field label, with
-       enough padding to be a comfortable tap target. */
+    /* The collapsed auth-settings section: a one-line control styled
+       like a .field label. The expand indicator is drawn explicitly --
+       display:flex (used for the tap target below) removes the native
+       disclosure marker in Chromium and WebKit, which left the row
+       with no visible sign that it expands at all. */
+    /* `hidden` must mean hidden even on elements whose display an
+       author rule sets (the .row flex rule was silently overriding it,
+       which is the standard [hidden] trap). */
+    #panel [hidden] { display: none !important; }
     #panel details { margin-top: 8px; }
-    #panel summary { color: #888; cursor: pointer; user-select: none; padding: 4px 0; }
+    #panel summary { color: #888; cursor: pointer; user-select: none; padding: 4px 0; list-style: none; }
+    #panel summary::-webkit-details-marker { display: none; }
+    #panel summary::before { content: "▸"; display: inline-block; margin-right: 7px; font-size: 11px; }
+    #panel details[open] > summary::before { content: "▾"; }
     #panel summary:hover { color: #bbb; }
+    /* The dialog's close: needed rarely (Esc works, and the panel
+       closes itself on connect), so it carries no chrome -- a quiet
+       glyph that brightens under the pointer. */
+    #panel .title .close {
+      background: none; border: none; color: #555;
+      font-size: 18px; line-height: 1; padding: 2px 8px; cursor: pointer;
+    }
+    #panel .title .close:hover { color: #ccc; }
+    /* Inline help: a small "?" that reveals its explanation on demand.
+       Touch has no hover, so this is the only honest way to keep
+       guidance reachable without rendering it permanently. */
+    #panel button.help {
+      background: none; border: 1px solid #444; border-radius: 50%;
+      color: #888; width: 24px; height: 24px; min-height: 24px;
+      padding: 0; line-height: 1; flex: none;
+    }
+    #panel button.help:hover { color: #ddd; border-color: #666; }
+    #panel .help-body { border-left: 2px solid #333; padding-left: 8px; }
+    /* The scan button is an icon; size the glyph, centre it. */
+    #panel button.scan svg { display: block; width: 20px; height: 20px; }
+    #panel button.scan { display: flex; align-items: center; justify-content: center; }
     #panel .row { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     #panel .notice { color: #d90; margin-top: 8px; }
     /* connection history: tap a row to reconnect (tokenless; pairing
@@ -147,6 +177,8 @@
          them the same comfortable height the buttons get. */
       #panel summary { min-height: 32px; display: flex; align-items: center; font-size: 14px; }
       #panel button { font-size: 14px; min-height: 32px; }
+      /* the "?" is round: growing it keeps it round */
+      #panel button.help { width: 32px; height: 32px; }
       #bar button { font-size: 13px; min-height: 28px; }
     }
   </style>

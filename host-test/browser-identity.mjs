@@ -91,8 +91,8 @@ try {
 
   // 1. the page itself came up
   await page.waitForSelector("#panel button", { timeout: 15_000 });
-  // The panel collapses setup material (the auth override, keys &
-  // identity) into <details>; this gate drives the flows inside them,
+  // The panel collapses setup material (auth settings) into a
+  // <details> fold; this gate drives the flows inside them,
   // not the collapse itself (browser-mobile covers that), so open
   // everything after each load (a load resets the open state), and
   // always AFTER the panel has rendered -- on an empty DOM it is a
