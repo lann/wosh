@@ -1167,6 +1167,14 @@ export async function initBoot(panel, { onConnect }) {
       }
 
       return new Promise((resolve) => {
+        // A question nobody can see is a hang: the auto-reconnect path
+        // dials with the dialog CLOSED, betting on the pin matching.
+        // When the bet loses -- a stale pin, a reinstalled target, an
+        // interception -- the ask must bring its own window, exactly
+        // as the passkey ceremony ask does (#66). Guarded so the
+        // ordinary first-connect prompt (panel already open) keeps its
+        // focus untouched.
+        if (!panel.open) openPanel();
         const row = el("div", { className: "confirm" });
         if (pinned) {
           // Same listener identity, different SSH host key: the one

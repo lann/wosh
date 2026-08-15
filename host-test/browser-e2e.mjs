@@ -359,13 +359,15 @@ try {
   // Overwrite the pin for this listener's endpoint id with a bogus
   // fingerprint, exactly what a MITM or reinstalled target produces:
   // pinned != presented.
-  await page.evaluate(async (cs) => {
+  const realPin = await page.evaluate(async (cs) => {
     const { endpointIdOf } = await import("./boot.mjs");
     const id = endpointIdOf(cs);
     const pins = JSON.parse(localStorage.getItem("wosh.hostkeys.v1") ?? "{}");
     if (!id || !pins[id]) throw new Error("expected a pin to tamper with");
+    const displaced = pins[id];
     pins[id] = { fp: "SHA256:0000000000000000000000000000000000000000000", at: pins[id].at };
     localStorage.setItem("wosh.hostkeys.v1", JSON.stringify(pins));
+    return displaced;
   }, CONNSTRING);
   await reload();
   await fillAndConnect();
@@ -439,6 +441,22 @@ try {
   if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
   console.log("[G] forget is two-step: armed on the first click, done on the second");
 
+  // Undo leg E's tampering before the flood leg. The store still
+  // holds the bogus fingerprint -- legs F and G leaned on that (every
+  // reconnect re-prompted, which is part of what they test) -- but leg
+  // L needs the opposite footing: its poisoned-flood REBIRTH is a
+  // silent automatic reconnect, and silent is only possible onto a
+  // TRUE pin. Left bogus, the rebirth's changed-key warning is the
+  // page's correct answer and the leg would be testing the wrong
+  // thing.
+  await page.evaluate(async ({ cs, pin }) => {
+    const { endpointIdOf } = await import("./boot.mjs");
+    const id = endpointIdOf(cs);
+    const pins = JSON.parse(localStorage.getItem("wosh.hostkeys.v1") ?? "{}");
+    pins[id] = pin;
+    localStorage.setItem("wosh.hostkeys.v1", JSON.stringify(pins));
+  }, { cs: CONNSTRING, pin: realPin });
+
   // --- leg L: large output with concurrent input ----------------------
   //
   // The composed client can be POISONED under flood: the Go core's
@@ -452,13 +470,21 @@ try {
   // session. The user-visible invariant this leg pins: after a flood
   // with typing on top, the user has a WORKING SHELL without touching
   // anything -- same session or silently reborn.
-  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  // Via the FORM, not a history row: leg G's closing act deliberately
+  // forgot the last remaining entry, so there is no row to click and
+  // a wait for one could never end (and did not, once legs G and L
+  // first ran in this order). The fields get refilled either way, the
+  // pin is the true one again (restored above), and remember goes
+  // back to its checked default.
   await page.check("#panel #remember-connection");
-  await page.click("#panel .histrow");
-  await waitPrompt().then(
-    () => page.click("#panel .confirm button:has-text('yes, connect')"),
-    () => {}, // pinned from leg C: no prompt is the expected path
-  );
+  await fillAndConnect();
+  // The true pin is back, so no prompt is EXPECTED and this connect is
+  // silent; the short grace only covers a pin that failed to restore,
+  // so that failure answers the ask instead of typing into a parked
+  // host-key gate (waitPrompt here would stall its full 60s on every
+  // healthy run, and log its no-prompt diagnostic as noise).
+  await page.click("#panel .confirm button:has-text('yes, connect')", { timeout: 3_000 })
+    .catch(() => {});
   await waitConnected();
   await page.click(".xterm-screen");
   await page.keyboard.type("seq 1 300000\n", { delay: 0 });
@@ -488,20 +514,55 @@ try {
   if (settled !== true) {
     fail(`after the flood the page never returned to a live session: ${settled}`);
   } else {
-    const marker = `flood-ok-${Date.now()}`;
-    await page.keyboard.type(`echo ${marker}\n`, { delay: 10 });
-    await page.waitForFunction(
-      (m) => {
+    // The invariant is A WORKING SHELL, not a lossless input path: a
+    // keystroke typed in the instant of the silent rebirth lands in
+    // the dying session (swallowed) or splits across the swap -- the
+    // first probe here raced exactly that and lost. A human would
+    // just type again, so the check does too; what is NOT tolerated
+    // is a shell that answers nothing three prompts in a row.
+    const seek = (m) => {
+      const b = window.__wosh.term.buffer.active;
+      for (let i = Math.max(0, b.baseY + b.cursorY - 8); i <= b.baseY + b.cursorY; i++) {
+        if (b.getLine(i)?.translateToString(true).includes(m)) return true;
+      }
+      return false;
+    };
+    let echoed = false;
+    for (let attempt = 1; attempt <= 3 && !echoed; attempt++) {
+      await page.waitForFunction(
+        (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
+        USER,
+        { timeout: 30_000 },
+      );
+      const marker = `flood-ok-${Date.now()}`;
+      await page.keyboard.type(`echo ${marker}\n`, { delay: 10 });
+      echoed = await page
+        .waitForFunction(seek, marker, { timeout: 12_000 })
+        .then(() => true, () => false);
+    }
+    if (!echoed) {
+      // The naked timeout said nothing about WHERE the echo went
+      // missing; dump what the page can see before failing, so the
+      // next reader of this log is not reduced to guessing.
+      const state = await page.evaluate(() => {
         const b = window.__wosh.term.buffer.active;
-        for (let i = Math.max(0, b.baseY + b.cursorY - 8); i <= b.baseY + b.cursorY; i++) {
-          if (b.getLine(i)?.translateToString(true).includes(m)) return true;
+        const lines = [];
+        for (let i = Math.max(0, b.baseY + b.cursorY - 12); i <= b.baseY + b.cursorY; i++) {
+          lines.push(b.getLine(i)?.translateToString(true) ?? "");
         }
-        return false;
-      },
-      marker,
-      { timeout: 30_000 },
-    );
-    console.log("[L] a 300k-line flood with typing on top ends in a working shell (same or reborn)");
+        return {
+          status: document.getElementById("status")?.textContent,
+          cursorTail: lines,
+          panelOpen: document.getElementById("panel")?.open,
+          ask: document.querySelector("#panel .confirm")?.innerText,
+          pins: localStorage.getItem("wosh.hostkeys.v1"),
+        };
+      }).catch(() => "(page unreadable)");
+      console.error("marker never echoed; page state:", JSON.stringify(state, null, 1));
+      fail("after the flood, three echo probes went unanswered");
+    } else {
+      console.log("[L] a 300k-line flood with typing on top ends in a working shell (same or reborn)");
+    }
   }
   // Detach lives in the settings dialog now (#70): open, detach.
   await page.click("#settings-btn").catch(() => {});
