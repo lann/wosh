@@ -18,7 +18,7 @@
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
 import { linkHandler } from "./links.mjs";
-import { markSessionStart } from "./separator.mjs";
+import { markSessionEnd, markSessionStart } from "./separator.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 
 const DIST = {
@@ -476,7 +476,14 @@ export async function connect({ connstring, user, ui }) {
   // the tab closes, invisible to the user who thinks they reconnected.
   const prior = currentSession;
   currentSession = session;
-  if (prior) prior.detach().catch(() => {});
+  if (prior) {
+    prior.detach().catch(() => {});
+    // The superseded session's closing bookend, drawn now: its pump
+    // stopped painting the moment `currentSession` moved on, so the
+    // timeline would otherwise show its output running straight into
+    // the new session's opening rule.
+    await markSessionEnd(term, "detached");
+  }
 
   let st = await settle(session);
   if (statusOf(st) === "closed") fatal(`connect: ${st.value ?? "closed"}`);
@@ -590,10 +597,9 @@ export async function connect({ connstring, user, ui }) {
   }
 
   status(`connected as ${user}`);
-  // A new session over existing scrollback gets a labeled boundary,
-  // anchored in the buffer so it scrolls with what it separates
-  // (separator.mjs). Awaited BEFORE the pump exists: nothing of this
-  // session may land above its own separator.
+  // The opening bookend (separator.mjs), first session included.
+  // Awaited BEFORE the pump exists: nothing of this session may land
+  // above its own start rule.
   await markSessionStart(term, user);
   autofocusTerminal(term); // ditto: a phone gets the keyboard by tapping
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
@@ -669,6 +675,16 @@ function sessionEnded(session, why) {
     } catch {
       kind = undefined;
     }
+    // The closing bookend, labeled by HOW it ended -- this is the
+    // moment the client knows the session cannot come back (a
+    // resumable outage never reaches here), and the pump above has
+    // already stopped, so the rule lands after the session's last
+    // output. Drawn before the event: an auto-reconnect's new session
+    // must open below this session's close.
+    const what = kind === "lost" ? "session lost"
+      : kind === "failed" ? "session failed"
+      : "session ended";
+    await markSessionEnd(term, what).catch(() => {});
     window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why, kind } }));
   })();
 }
@@ -691,5 +707,8 @@ export async function detach() {
     await s.detach();
   } finally {
     status("detached");
+    // A deliberate detach is a confirmed end like any other; the
+    // timeline says so.
+    await markSessionEnd(term, "detached").catch(() => {});
   }
 }

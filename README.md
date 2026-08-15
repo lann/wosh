@@ -445,13 +445,17 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   hidden/frozen/pagehide mean "stop redialing, the network is being
   taken away", visible/resumed mean "redial now". No mobile gate on
   it: a desktop tab left in the background has the same problem.
-- `site/separator.mjs` — the boundary between sessions: a fresh
-  session over existing scrollback gets a labeled rule (user and
-  time), drawn as an xterm marker + decoration so it scrolls with the
-  content it separates and is styled as page chrome the remote cannot
-  fake. Anchored on its own blank line, written and awaited before
-  the output pump starts, so nothing of the new session can land
-  above its own boundary.
+- `site/separator.mjs` — the session bookends: every session opens
+  with a green start rule (user and time, the first session included)
+  and closes with a red end rule the moment the client knows it is
+  over for good — labeled by how it ended (`session lost`, `session
+  ended`, `detached`), so the scrollback reads as a timeline of
+  connects and disconnects. A resumable outage draws nothing: the
+  session is not over, and an end mark that might be taken back would
+  be a lie. Each rule is an xterm marker + decoration, so it scrolls
+  with the content it bounds and is styled as page chrome the remote
+  cannot fake; the writes are awaited where no session output can
+  interleave (before the pump starts, after it stops).
 - `site/links.mjs` — the link policy: terminal links activate on a
   SINGLE click or tap (a modifier convention does not exist on a
   phone) and open only through a confirmation dialog showing the URI
