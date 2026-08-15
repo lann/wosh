@@ -179,9 +179,18 @@ try {
     );
   };
 
+  // The panel collapses setup material (the auth override, keys &
+  // identity) into <details>; this gate drives the flows inside them,
+  // not the collapse itself (browser-mobile covers that), so open
+  // everything whenever a fresh page load has reset it. Always AFTER
+  // the panel has rendered: on an empty DOM it is a silent no-op.
+  const openPanelSections = () =>
+    page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
+
   const reload = async () => {
     await page.reload({ waitUntil: "load" });
     await page.waitForSelector("#panel button", { timeout: 15_000 });
+    await openPanelSections();
   };
 
   // The QR scan path, stubbed at its two edges: headless Chromium has
@@ -217,6 +226,7 @@ try {
 
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await openPanelSections();
   console.log("[1] page loaded");
 
   // --- leg S: the scan button fills the field, then lets go -----------

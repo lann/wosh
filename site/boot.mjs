@@ -362,6 +362,43 @@ export async function initBoot(panel, { onConnect }) {
   const detachBtn = document.getElementById("detach-btn");
   const settingsBtn = document.getElementById("settings-btn");
 
+  // Transient asks -- the host-key confirmation, prompt batches, the
+  // passkey ceremony button -- and the notice line land HERE, directly
+  // under the connect button. They used to append to the panel's END,
+  // below the passkey material: on a phone that put the one row that
+  // needed an answer below the fold, and the page looked hung on
+  // "authenticating…" while its question sat unseen.
+  const promptArea = el("div", { className: "prompts" });
+  promptArea.append(notice);
+  const ask = (row) => promptArea.prepend(row);
+
+  // The auth method is an override -- `automatic` steers correctly
+  // against any server, and forcing a method is a debugging move -- so
+  // it rides collapsed, its summary saying what it is set to. The
+  // <select> itself is unchanged, so the capabilities probe keeps
+  // working on it.
+  const methodSummary = el("summary");
+  const methodDetails = el("details", { className: "method" },
+    methodSummary,
+    el("div", { className: "row" }, method));
+  const syncMethodSummary = () => {
+    methodSummary.textContent = `auth: ${method.selectedOptions[0]?.textContent ?? "automatic"}`;
+  };
+  method.addEventListener("change", syncMethodSummary);
+
+  // Identity management is SETUP, not connecting: it is needed when
+  // installing a key on a new target and then never again, yet it was
+  // permanently the largest thing on screen -- biggest of all in the
+  // state where it mattered least (nothing enrolled = the full pitch,
+  // rendered on every visit). The browser key and the whole passkey
+  // story, prose included, live behind one collapsed row now; the
+  // prose is read where it is acted on.
+  const identityDetails = el("details", { className: "identity" },
+    el("summary", { textContent: "keys & identity" }),
+    el("div", { className: "row" }, showKeyBtn),
+    keyRow,
+    passkeySection);
+
   panel.append(
     el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
     historySection,
@@ -369,22 +406,20 @@ export async function initBoot(panel, { onConnect }) {
     scanRow,
     scanHost,
     el("div", { className: "row" },
-      el("label", { textContent: "user" }), userInput, method),
-    el("div", { className: "row" }, connectBtn, showKeyBtn),
+      el("label", { textContent: "user" }), userInput),
+    el("div", { className: "row" }, connectBtn),
+    promptArea,
     el("div", { className: "row remember" },
       rememberConn,
       el("label", {
         htmlFor: "remember-connection",
         textContent: " remember this connection",
-      }),
-      el("span", {
-        className: "hint",
-        textContent: "(the pairing token is never saved)",
+        title: "history keeps the endpoint id, relay and user name -- the pairing token is never saved",
       })),
-    keyRow,
-    passkeySection,
-    notice,
+    methodDetails,
+    identityDetails,
   );
+  syncMethodSummary();
 
   /// Destructive history buttons arm on the first click (label turns
   /// into a question, briefly) and act on the second: a same-size
@@ -590,6 +625,9 @@ export async function initBoot(panel, { onConnect }) {
         passkeySection.hidden = false;
         renderPasskey();
       }
+      // Dropping the selected option promotes the next one; the
+      // collapsed summary must say so.
+      syncMethodSummary();
     } catch (e) {
       notice.textContent = `could not load the client component: ${e.message ?? e}`;
     }
@@ -749,7 +787,7 @@ export async function initBoot(panel, { onConnect }) {
       const row = el("div", { className: "confirm" });
       const btn = el("button", { textContent: "touch your passkey to sign in" });
       row.append(el("div", { textContent: "the server is asking for your passkey:" }), btn);
-      panel.append(row);
+      ask(row);
       pendingCeremony = row;
       btn.addEventListener("click", () => {
         withdrawCeremony();
@@ -819,7 +857,7 @@ export async function initBoot(panel, { onConnect }) {
           );
         }
         row.append(yes, " ", no);
-        panel.append(row);
+        ask(row);
         const done = (accepted) => {
           if (accepted && endpointId && remember.checked) savePin(endpointId, fingerprint);
           row.remove();
@@ -873,7 +911,7 @@ export async function initBoot(panel, { onConnect }) {
         const answerBtn = el("button", { textContent: "answer" });
         const cancelBtn = el("button", { textContent: "cancel" });
         row.append(el("div", { className: "row" }, answerBtn, cancelBtn));
-        panel.append(row);
+        ask(row);
         inputs[0]?.focus();
         const done = (answers) => {
           row.remove();
