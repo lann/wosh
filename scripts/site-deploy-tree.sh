@@ -23,7 +23,7 @@ for f in "$bundle" "$client" "$translator"; do
 done
 
 cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs \
-   site/lifecycle.mjs site/links.mjs site/qr.mjs "$dest/"
+   site/lifecycle.mjs site/links.mjs site/separator.mjs site/qr.mjs "$dest/"
 cp site/manifest.json "$dest/"
 cp site/icons/*.png "$dest/icons/"
 
