@@ -445,6 +445,19 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   hidden/frozen/pagehide mean "stop redialing, the network is being
   taken away", visible/resumed mean "redial now". No mobile gate on
   it: a desktop tab left in the background has the same problem.
+- `site/links.mjs` — the link policy: terminal links activate on a
+  SINGLE click or tap (a modifier convention does not exist on a
+  phone) and open only through a confirmation dialog showing the URI
+  verbatim — an accidental tap costs a dismissal, never a navigation
+  to whatever a hostile `cat` painted. The dialog's checkbox turns
+  future confirmations off (opt-in, persisted, http(s)-only either
+  way; opens are `noopener,noreferrer`). The rest of the addon family
+  rides along in app.mjs: Unicode 11 widths, OSC 52 clipboard wired
+  WRITE-ONLY (yanks from tmux/vim reach the local clipboard; a remote
+  host asking to READ it is answered with an empty string — that is an
+  exfiltration primitive, not a feature), the WebGL renderer (falling
+  back to DOM on context loss), and inline images (sixel + iTerm
+  IIP).
 - `host-test/` — browser gates driven by playwright-core against the
   real assembled site.
 - `spikes/go-async/` — the three measurements above, as runnable code.
@@ -549,6 +562,15 @@ Verified working:
   prompt on the next connect, and a pinned listener presenting a
   DIFFERENT host key gets the loud changed-key warning showing both
   fingerprints.
+- **The addon family and the link policy** (`just browser-links`):
+  against the real assembled site with nothing else running — an emoji
+  is two cells wide (Unicode 11 tables active, matching what the
+  remote pty computes), the clipboard is wired write-only, the WebGL
+  renderer is up, a sixel decodes into the image addon's storage, and
+  a click on a painted URL opens the CONFIRMATION with the verbatim
+  URI: cancel opens nothing, confirming with "always open" checked
+  opens the link and persists, after which the next click opens
+  without asking.
 - **The mobile layer** (`just browser-mobile`): synthesized touch in
   headless Chromium drives the key strip against the page's
   real stylesheet -- a tap types (without taking focus off the

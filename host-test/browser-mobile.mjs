@@ -33,7 +33,7 @@ import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 const ROOT = new URL("../", import.meta.url).pathname;
-const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8101); // one per browser gate: 8098/8099/8102/8123/8129/8131/8132 are taken
+const PORT = Number(process.env.WOSH_HTTP_PORT ?? 8101); // one per browser gate: 8098/8099/8102/8123/8129/8131/8132/8133 are taken
 
 const MIME = { ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css" };
 
@@ -216,6 +216,11 @@ const XTERM_FILES = {
   "/xterm/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js",
   "/xterm/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
   "/xterm/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js",
+  "/xterm/addon-unicode11.js": "node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js",
+  "/xterm/addon-clipboard.js": "node_modules/@xterm/addon-clipboard/lib/addon-clipboard.js",
+  "/xterm/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js",
+  "/xterm/addon-image.js": "node_modules/@xterm/addon-image/lib/addon-image.js",
+  "/xterm/addon-webgl.js": "node_modules/@xterm/addon-webgl/lib/addon-webgl.js",
 };
 
 const server = createServer(async (req, res) => {

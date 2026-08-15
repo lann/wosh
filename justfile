@@ -416,6 +416,16 @@ browser-mobile:
 browser: site
     node host-test/browser-identity.mjs
 
+# The addon family and the link policy, against the real assembled
+# site with nothing else running (links, widths, and sixels work on
+# whatever is in the buffer): unicode-11 widths active (an emoji is
+# two cells), OSC 52 clipboard wired write-only, the webgl renderer
+# up, a sixel decoding into the image addon -- and links opening on a
+# single click only through the confirmation dialog: verbatim URI,
+# cancel costs nothing, "always open" is opt-in and persists.
+browser-links: site
+    node host-test/browser-links.mjs
+
 # Browser END TO END: the real page -- form, interactive host-key
 # prompt, xterm -- in headless Chromium, over real iroh, through the
 # listener, into a real sshd. This is the gate that fails if the page
@@ -586,7 +596,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
+check: test-gate-proc test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
