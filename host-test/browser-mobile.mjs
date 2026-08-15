@@ -221,6 +221,7 @@ const XTERM_FILES = {
   "/xterm/addon-web-links.js": "node_modules/@xterm/addon-web-links/lib/addon-web-links.js",
   "/xterm/addon-image.js": "node_modules/@xterm/addon-image/lib/addon-image.js",
   "/xterm/addon-webgl.js": "node_modules/@xterm/addon-webgl/lib/addon-webgl.js",
+  "/xterm/addon-serialize.js": "node_modules/@xterm/addon-serialize/lib/addon-serialize.js",
 };
 
 const server = createServer(async (req, res) => {
@@ -735,8 +736,9 @@ try {
   );
 
   // 22. A fresh panel is the TASK: connstring, user, connect, scan.
-  //     Setup material exists but is folded; nothing inside a closed
-  //     fold is visible or tappable.
+  //     Setup material exists but is folded (auth settings, and the
+  //     session fold with the on-connect command); nothing inside a
+  //     closed fold is visible or tappable.
   const shape = await page.evaluate(() => {
     const panel = document.getElementById("panel");
     // checkVisibility, not a rect test: Chromium renders a closed
@@ -752,12 +754,12 @@ try {
       summaries: details.map((d) => d.querySelector("summary")?.textContent.trim()),
     };
   });
-  if (ok(shape.detailsCount === 1, `expected 1 folded section, found ${shape.detailsCount}`) &&
-      ok(!shape.anyOpen, "the folded section opened itself on a fresh load") &&
-      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside the closed fold are visible`) &&
+  if (ok(shape.detailsCount === 2, `expected 2 folded sections, found ${shape.detailsCount}`) &&
+      ok(!shape.anyOpen, "a folded section opened itself on a fresh load") &&
+      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside the closed folds are visible`) &&
       ok(shape.visibleButtons.length <= 4,
          `a fresh panel still shows ${shape.visibleButtons.length} buttons: ${JSON.stringify(shape.visibleButtons)}`)) {
-    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons; setup is folded ("${shape.summaries.join("")}")`);
+    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons; setup is folded ("${shape.summaries.join(" / ")}")`);
   }
 
   // 23. The rows that need ANSWERS appear under the connect button,
@@ -804,9 +806,10 @@ try {
   }
 
   // 25. Inside the (now open) fold, the flows work: the method select
-  //     selects, the browser key renders on demand.
-  await page.selectOption("#panel select", "password");
-  const picked = await page.locator("#panel select").inputValue();
+  //     selects, the browser key renders on demand. Scoped to
+  //     details.auth: the session fold carries a select of its own.
+  await page.selectOption("#panel details.auth select", "password");
+  const picked = await page.locator("#panel details.auth select").inputValue();
   if (!ok(picked === "password", `the method select did not take a selection (${picked})`)) {
     // fall through; the key check is independent
   }

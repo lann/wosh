@@ -19,6 +19,7 @@ import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
 import { linkHandler } from "./links.mjs";
 import { OverlayAddon } from "./overlay.mjs";
+import * as bufferStore from "./buffer-store.mjs";
 
 const DIST = {
   translator: "./dist/deltic-translator-shim.wasm",
@@ -62,8 +63,17 @@ fit.fit(); // synchronous: connect reads term.cols/rows immediately
 // is recorded on the test hook, because several of these are exactly
 // one easily-lost script tag or builder call, and only a gate that can
 // SEE them keeps them wired (host-test/browser-links.mjs).
+// A module-level handle to the serialize addon, set inside the guard
+// below (null if it never loaded -- a stale precache without the
+// script tag, same degrade-silently posture as every other addon
+// here). Held outside the IIFE because the persistence cadence in
+// connect() below needs to call serialize() on it directly.
+let serializeAddon = null;
+
 window.__wosh.addons = (() => {
-  const active = { unicode: null, clipboard: null, links: false, image: null, webgl: false };
+  const active = {
+    unicode: null, clipboard: null, links: false, image: null, webgl: false, serialize: false,
+  };
   const enhance = (what, load) => {
     try {
       load();
@@ -126,6 +136,16 @@ window.__wosh.addons = (() => {
     term.loadAddon(webgl);
     active.webgl = true;
   });
+  // Buffer serialization: reconstructs scrollback + colors from a dump
+  // (site/buffer-store.mjs), so a reattach or reload does not open
+  // onto a blank screen. `typeof` guard same as every other addon here
+  // -- a stale service-worker precache missing the script tag degrades
+  // to "no restore, no periodic save", not a broken page.
+  enhance("scrollback serialization", () => {
+    serializeAddon = new SerializeAddon.SerializeAddon();
+    term.loadAddon(serializeAddon);
+    active.serialize = true;
+  });
   return active;
 })();
 
@@ -156,6 +176,14 @@ let flushTimer = null;
 const paintStats = { peak: 0, flushes: 0, timerFlushes: 0 };
 window.__wosh.paintStats = paintStats;
 
+// Whether ANYTHING has painted yet this page load, and whether output
+// has arrived since the last periodic scrollback save. Both flip in
+// paint() -- the one chokepoint every byte, from every session,
+// crosses on its way to the screen -- rather than being duplicated at
+// each call site.
+let everPainted = false;
+let dirtySincePersist = false;
+
 const flush = (viaTimer = false) => {
   if (rafId !== null) cancelAnimationFrame(rafId);
   if (flushTimer !== null) clearTimeout(flushTimer);
@@ -170,6 +198,8 @@ const flush = (viaTimer = false) => {
 
 const paint = (out) => {
   if (!out || !out.length) return;
+  everPainted = true;
+  dirtySincePersist = true;
   chunks.push(out);
   if (chunks.length > paintStats.peak) paintStats.peak = chunks.length;
   if (rafId === null) {
@@ -195,6 +225,80 @@ const sleep = (ms) =>
   });
 const wakeNow = () => wake?.();
 
+// Whose content the terminal is currently showing, for the saves
+// below. One page has ONE terminal, and serialize() captures the whole
+// buffer -- so the moment bytes attributable to two different
+// persistence keys (two hosts, or two accounts on one host) have
+// landed on the same screen, saving that buffer under either key would
+// file one host's scrollback in the other's slot. The honest response
+// is to stop persisting for the rest of the page load, not to guess.
+// `null` = nothing claimed yet; a key (or UNKEYED, for a session that
+// persists nothing) = sole owner so far; `false` = mixed, saves off.
+const UNKEYED = Symbol("unkeyed");
+let terminalOwner = null;
+const claimTerminal = (key) => {
+  const k = key || UNKEYED;
+  if (terminalOwner === null) terminalOwner = k;
+  else if (terminalOwner !== k) terminalOwner = false;
+};
+
+/**
+ * Write a serialize() dump straight to the terminal -- reconstructing
+ * scrollback, colors and cursor in one term.write -- but ONLY when
+ * nothing has painted yet this page load, and only once. `everPainted`
+ * is the pristine check: an in-page reconnect (a `lost` session
+ * auto-redialing, or a manual reconnect without a reload) already has
+ * the REAL scrollback sitting on screen, produced by whatever the
+ * previous session actually ran -- writing a stale dump over that
+ * would be a lie, not a restore. A fresh page load is the only moment
+ * this is honest: there is nothing on screen yet to contradict.
+ * The dump claims the terminal for `key` (see claimTerminal): restored
+ * content is content, and it belongs to the key it was saved under.
+ * Returns whether it restored, so the caller can decide whether to
+ * print the "restored scrollback from…" note.
+ */
+let restored = false;
+function restoreScrollback(text, key) {
+  if (everPainted || restored || !text) return false;
+  restored = true;
+  claimTerminal(key);
+  term.write(text);
+  return true;
+}
+
+// A cap on the serialized dump this persists, not a ration: IndexedDB
+// quotas are opaque -- they vary per browser, per origin, and per how
+// full the device already is -- and there is no reliable way to ask
+// "how much is left" before writing. A runaway buffer (someone `cat`ed
+// a very large file) must not wedge the 8ms output pump serializing an
+// ever-larger dump on every tick; skipping the save is the safe
+// failure, not growing the cap.
+const SCROLLBACK_SAVE_CAP = 768 * 1024;
+
+/**
+ * Serialize the terminal and save it under `key`, fire-and-forget.
+ * Silently a no-op without a key (persistence off for this session) or
+ * without the addon (a stale precache missing the script tag -- see
+ * the addon family block). Errors are swallowed after one warning:
+ * scrollback persistence is a nicety, never something worth surfacing
+ * to the person trying to use the terminal.
+ */
+async function saveScrollback(key) {
+  if (!key || !serializeAddon) return;
+  // Ownership gate (see claimTerminal): save only a buffer whose
+  // content is attributable to THIS key alone. A page that has shown
+  // another key's bytes -- an earlier session to a different host, or
+  // a restored dump for one -- must not persist the mixture anywhere.
+  if (terminalOwner !== key) return;
+  try {
+    const buf = serializeAddon.serialize();
+    if (buf.length > SCROLLBACK_SAVE_CAP) return;
+    await bufferStore.put(key, buf);
+  } catch (e) {
+    console.warn("wosh: could not save scrollback", e);
+  }
+}
+
 // --- component --------------------------------------------------------------
 // Memoized as a PROMISE, not a value: the boot-time capabilities probe
 // and an early connect click can overlap, and caching the resolved API
@@ -204,12 +308,23 @@ const wakeNow = () => wake?.();
 // screen forever (it did).
 let clientLoad = null;
 let currentSession = null;
+// The persistence key (boot.mjs's `${endpointId} ${user}`) for whatever
+// session is current, or null when this session isn't persisting
+// scrollback at all. Mirrors currentSession so the lifecycle flush
+// below -- which only ever sees "whatever the current session is" --
+// knows what to save without connect() re-registering a callback per
+// session.
+let currentPersistKey = null;
 
 // The page going away and coming back is a session event, not just a
 // painting one: see lifecycle.mjs. The flush stays on the moment it
 // always had -- the last frame before the page stops getting them.
 initLifecycle(() => currentSession, () => {
   if (chunks.length) flush(true);
+  // Same moment, same reasoning: the last frame before the page stops
+  // being scheduled is also the last chance to persist what is on
+  // screen before an iOS suspend or a tab close.
+  saveScrollback(currentPersistKey);
 });
 
 function api() {
@@ -256,6 +371,14 @@ export async function capabilities() {
     // browsers, and non-secure-context http serving, do not expose
     // PublicKeyCredential).
     passkey: typeof t.enrollPasskey === "function" && !!globalThis.PublicKeyCredential,
+    // On-connect commands (terminal.wit's `connect` grew a trailing
+    // `option<string>`): detected off the static's arity, and ASSUMED
+    // when the static is not inspectable at all -- same philosophy as
+    // the fields above. The page and the component ship together in
+    // one precache, so the only way these disagree is a stale service
+    // worker serving a new page against an old wasm; that mix is what
+    // this probe guards, not a supported configuration.
+    execCommand: typeof t.Session?.connect !== "function" || t.Session.connect.length >= 5,
   };
 }
 
@@ -423,6 +546,18 @@ async function settle(session, timeoutMs = 30000) {
  *                                 mask the input) | null (the user
  *                                 cancelled: the attempt is torn down)
  *
+ * `command`, when a non-empty string, is run on the target INSTEAD of
+ * a plain login shell (an SSH exec request). Empty or absent means the
+ * ordinary shell. Nothing here interprets it: it is the target's shell
+ * that parses the line.
+ *
+ * `persistKey`, when present, turns on periodic scrollback persistence
+ * for this session (site/buffer-store.mjs, keyed by boot.mjs as
+ * `${endpointId} ${user}`): the output pump below saves a serialize()
+ * dump every ~10s while there is new output to save, plus once at the
+ * lifecycle flush moment and once when the session ends. Absent means
+ * no saving at all -- the caller's opt-out (the session fold's toggle).
+ *
  * An auto credential offers every method and lets the server steer
  * (publickey first, silently, when the browser's key is installed);
  * whatever needs typing arrives as prompt batches below.
@@ -462,19 +597,26 @@ function passkeyHint(cred, reason) {
     "in sshd_config to accept a browser passkey at all.";
 }
 
-export async function connect({ connstring, user, ui }) {
+export async function connect({ connstring, user, command, ui, persistKey, restore }) {
   const t = await api();
   status("dialing over iroh…");
 
   // deltic maps a WIT resource to a PascalCase class, with the WIT
-  // static as a static method on it.
-  const session = await t.Session.connect(connstring, user, term.cols, term.rows);
+  // static as a static method on it. The trailing argument is
+  // terminal.wit's `option<string>` command: a WIT `option` is lowered
+  // from the bare value or `undefined` (deltic embedder contract, and
+  // see the note in passkeyIdentity above), so an empty field must
+  // become `undefined` here -- an empty STRING would ask the target to
+  // exec nothing at all instead of running a plain shell.
+  const session = await t.Session.connect(
+    connstring, user, term.cols, term.rows, command || undefined);
   // Supersede: from here the new session owns the page. The one it
   // replaces is DETACHED, not merely forgotten -- an orphaned session
   // keeps its SSH login and iroh connection alive on the target until
   // the tab closes, invisible to the user who thinks they reconnected.
   const prior = currentSession;
   currentSession = session;
+  currentPersistKey = persistKey || null;
   if (prior) prior.detach().catch(() => {});
 
   let st = await settle(session);
@@ -589,6 +731,18 @@ export async function connect({ connstring, user, ui }) {
   }
 
   status(`connected as ${user}`);
+  // Reattach continuity: the saved dump (prefetched by boot.mjs,
+  // `{buf, label}`) goes on screen only NOW, with the session
+  // established and nothing painted yet. Restoring before the dial --
+  // as this first shipped -- left another host's scrollback stranded
+  // on a blank page whenever the attempt failed or was cancelled, with
+  // the one-shot latch spent; and a later connect elsewhere would then
+  // have persisted that leftover under its own key. The pristine check
+  // inside restoreScrollback still governs: an in-page reconnect keeps
+  // its real scrollback and this is a no-op.
+  if (restore && restoreScrollback(restore.buf, persistKey)) {
+    note(`restored scrollback from ${restore.label}`);
+  }
   autofocusTerminal(term); // ditto: a phone gets the keyboard by tapping
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
@@ -602,15 +756,51 @@ export async function connect({ connstring, user, ui }) {
   // pump polls it -- coarsely, since it is not needed at output cadence.
   let lastLinkState = null;
   let linkPollTick = 0;
+  // When the pump started -- the session reached ready just above, so
+  // this is as close to "the remote side is up" as the page can see.
+  // The page around this one (boot.mjs) reads the resulting uptime to
+  // tell a command that died on the spot -- typically a session
+  // manager that is not installed on the target -- apart from one a
+  // human used and then left.
+  const readyAt = Date.now();
+  // ~10s cadence for the periodic scrollback save, tracked against the
+  // same 8ms pump tick the link-state poll uses -- another timer would
+  // just be one more thing to cancel on supersession.
+  let lastPersistAt = Date.now();
   (async () => {
     try {
       for (;;) {
         if (currentSession !== session) return; // superseded
-        paint(await session.drainOutput());
+        const out = await session.drainOutput();
+        // First bytes claim the screen for this session's key -- or
+        // taint it, when another key's content is already there (see
+        // claimTerminal). Claimed on OUTPUT rather than on connect: a
+        // session that never printed anything put nothing on screen,
+        // and must not spoil the buffer for whoever connects next.
+        if (out?.length) claimTerminal(persistKey);
+        paint(out);
         if (await session.exited()) {
           const code = await session.exitStatus();
-          sessionEnded(session, code === undefined ? "session ended" : `exited (${code})`);
+          sessionEnded(
+            session,
+            code === undefined ? "session ended" : `exited (${code})`,
+            { code, uptimeMs: Date.now() - readyAt },
+          );
           return;
+        }
+        // Only when there is a key AND something new to save: an idle
+        // session (nothing typed, nothing printed) has nothing worth
+        // re-writing every ten seconds. The currentSession check
+        // matters too: a superseded pump can reach here once more
+        // between its awaits and the loop-top check, and by then the
+        // screen already carries the NEW session's bytes -- saving
+        // them under this pump's old key would be the cross-key
+        // mix-up the ownership gate exists to stop.
+        if (persistKey && currentSession === session &&
+            dirtySincePersist && Date.now() - lastPersistAt >= 10_000) {
+          lastPersistAt = Date.now();
+          dirtySincePersist = false;
+          saveScrollback(persistKey);
         }
         // Every 32nd iteration of an 8ms sleep is ~every 250ms -- often
         // enough to feel live, rare enough not to matter for cost.
@@ -641,10 +831,16 @@ export async function connect({ connstring, user, ui }) {
   return session;
 }
 
-function sessionEnded(session, why) {
+function sessionEnded(session, why, extra) {
   if (currentSession !== session) return;
+  const persistKey = currentPersistKey;
   currentSession = null;
+  currentPersistKey = null;
   flush(true);
+  // Final save: the session is going away (the pump's own periodic
+  // save might be up to ~10s stale), and this is the last on-screen
+  // state a subsequent reattach could hope to restore.
+  saveScrollback(persistKey);
   status(why);
   // For the shell around the terminal (boot.mjs): the session this
   // page was showing is gone, bring the connect panel back. The event
@@ -652,7 +848,12 @@ function sessionEnded(session, why) {
   // boot.mjs can decide about automatic reconnection without parsing
   // this `why` string -- fetched in a fire-and-forget tail so a slow
   // or failing `close-kind` call never delays the synchronous cleanup
-  // above.
+  // above. `code`/`uptimeMs` ride along where they are known (the exit
+  // path, and only there -- a pump or input failure knows neither),
+  // for the same reason: an on-connect command that exits 127 within a
+  // second is a missing tool, and boot.mjs can say so instead of
+  // silently redialing into the same failure.
+  const { code, uptimeMs } = extra ?? {};
   (async () => {
     let kind;
     try {
@@ -663,7 +864,9 @@ function sessionEnded(session, why) {
     } catch {
       kind = undefined;
     }
-    window.dispatchEvent(new CustomEvent("wosh:session-ended", { detail: { why, kind } }));
+    window.dispatchEvent(
+      new CustomEvent("wosh:session-ended", { detail: { why, kind, code, uptimeMs } }),
+    );
   })();
 }
 

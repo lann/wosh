@@ -23,7 +23,7 @@ for f in "$bundle" "$client" "$translator"; do
 done
 
 cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs \
-   site/lifecycle.mjs site/links.mjs site/qr.mjs "$dest/"
+   site/lifecycle.mjs site/links.mjs site/qr.mjs site/buffer-store.mjs "$dest/"
 cp site/manifest.json "$dest/"
 cp site/icons/*.png "$dest/icons/"
 
@@ -41,6 +41,7 @@ if [ -d "$XTERM" ]; then
   cp "$XTERM/@xterm/addon-web-links/lib/addon-web-links.js" "$dest/xterm/"
   cp "$XTERM/@xterm/addon-image/lib/addon-image.js" "$dest/xterm/"
   cp "$XTERM/@xterm/addon-webgl/lib/addon-webgl.js" "$dest/xterm/"
+  cp "$XTERM/@xterm/addon-serialize/lib/addon-serialize.js" "$dest/xterm/"
   cp "$XTERM/jsqr/dist/jsQR.js"               "$dest/vendor/jsqr.js"
 else
   echo "note: site/node_modules missing; run 'npm install' in site/ for xterm + jsQR assets" >&2

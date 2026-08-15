@@ -82,13 +82,17 @@ try {
   // [1] the diagnostics: everything wired.
   const addons = await page.evaluate(() => {
     const a = window.__wosh.addons;
-    return { unicode: a.unicode, clipboard: a.clipboard, links: a.links, image: !!a.image, webgl: a.webgl };
+    return {
+      unicode: a.unicode, clipboard: a.clipboard, links: a.links, image: !!a.image,
+      webgl: a.webgl, serialize: a.serialize,
+    };
   });
   if (addons.unicode !== "11") fail(`unicode version is ${addons.unicode}, expected "11"`);
   if (addons.clipboard !== "write-only") fail(`clipboard is ${addons.clipboard}, expected write-only`);
   if (!addons.links) fail("web links addon did not load");
   if (!addons.image) fail("image addon did not load");
   if (!addons.webgl) fail("webgl renderer did not load (headless SwiftShader should provide GL)");
+  if (!addons.serialize) fail("scrollback serialize addon did not load");
   console.log(`[1] addons wired: ${JSON.stringify(addons)}`);
 
   // [2] unicode 11, behaviorally: the emoji is two cells wide.
