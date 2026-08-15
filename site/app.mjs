@@ -372,14 +372,18 @@ export async function capabilities() {
     // browsers, and non-secure-context http serving, do not expose
     // PublicKeyCredential).
     passkey: typeof t.enrollPasskey === "function" && !!globalThis.PublicKeyCredential,
-    // On-connect commands (terminal.wit's `connect` grew a trailing
-    // `option<string>`): detected off the static's arity, and ASSUMED
-    // when the static is not inspectable at all -- same philosophy as
-    // the fields above. The page and the component ship together in
-    // one precache, so the only way these disagree is a stale service
-    // worker serving a new page against an old wasm; that mix is what
-    // this probe guards, not a supported configuration.
-    execCommand: typeof t.Session?.connect !== "function" || t.Session.connect.length >= 5,
+    // NOTE the absence of a probe for on-connect commands (the
+    // trailing `option<string>` terminal.wit's `connect` grew): a
+    // parameter is not an export, so there is nothing reliable to
+    // inspect -- deltic builds `Session.connect` at runtime and its
+    // JS arity does not reflect the WIT signature (measured: the
+    // real class reported 0). An arity probe here disabled the
+    // feature for every real page while guarding a state the
+    // service worker's version-keyed ATOMIC precache (sw.js) makes
+    // unreachable: one deploy is one complete cache, so a new page
+    // never runs against an old component. Presence checks like the
+    // ones above stay; signature checks are not a thing this page
+    // can do honestly.
     // One-shot commands on a second channel of the live connection
     // (terminal.wit's `probe`), which is how the page can ask a target
     // what session managers it has and what sessions are on it without

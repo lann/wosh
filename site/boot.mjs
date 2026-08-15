@@ -591,17 +591,6 @@ export async function initBoot(panel, { onConnect }) {
       "KillUserProcesses=yes, a detached session is killed when you log out unless " +
       "`loginctl enable-linger <user>` has been run for that account.",
   );
-  // Shown only if the loaded component predates the command argument;
-  // worded like the publickey-absent case below, and for the same
-  // reason: say what degraded rather than silently offering a control
-  // that cannot work.
-  const execNote = el("div", {
-    className: "sub",
-    hidden: true,
-    textContent:
-      "this build of the client component has no on-connect command yet; " +
-      "connecting still opens a plain shell",
-  });
 
   // Escape hatch that does NOT cost the setting: one connect without
   // the command (to fix a session manager that is now refusing to
@@ -699,7 +688,6 @@ export async function initBoot(panel, { onConnect }) {
       el("label", { textContent: "name" }), nameInput, commandHelp.btn),
     el("div", { className: "row" }, commandInput),
     commandHelp.body,
-    execNote,
     sessionsSection,
     el("div", { className: "row" },
       onceShell,
@@ -1250,14 +1238,6 @@ export async function initBoot(panel, { onConnect }) {
           "auth yet; password and keyboard-interactive still work";
       }
       if (!caps.keyboardInteractive) drop("keyboard-interactive");
-      if (!caps.execCommand) {
-        // A stale precache: new page, old component. The controls stay
-        // visible (so the setting they describe is still legible) but
-        // cannot be armed into a promise this build cannot keep.
-        presetSelect.disabled = true;
-        commandInput.disabled = true;
-        execNote.hidden = false;
-      }
       if (!caps.passkey) {
         drop("passkey");
       } else {
