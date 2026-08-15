@@ -237,8 +237,21 @@ struct Signal {
 impl Signal {
     fn notify(&self) {
         self.dirty.set(true);
-        // Borrow held only across `take()` -- no await under it.
-        if let Some(w) = self.waker.borrow_mut().take() {
+        // The take happens in its OWN statement, and the distinction
+        // matters: an `if let` scrutinee's temporaries live to the end
+        // of the whole `if let` (Rust 2021), so writing
+        // `if let Some(w) = self.waker.borrow_mut().take()` holds the
+        // RefMut WHILE `wake()` runs. With inter-task wakeup, `wake()`
+        // may synchronously poll the woken task; if that task re-arms
+        // by taking `waker.borrow_mut()` on this very Signal, that is
+        // a double borrow -- a panic, i.e. a trap, and a trap poisons
+        // the component instance. A LATENT hazard, closed on
+        // principle: it was hypothesized as the flood-poison cause and
+        // falsified by rebuild (the observed poison is the Go
+        // runtime's clock read inside cabi_realloc during the
+        // may-leave-false copy window; see app.mjs serializeSession).
+        let w = self.waker.borrow_mut().take();
+        if let Some(w) = w {
             w.wake();
         }
     }
@@ -1906,7 +1919,19 @@ impl GuestSession for Session {
             inner.resuming = true;
             inner.generation
         };
-        resume_loop(&self.state, generation).await;
+        // Stand the resume up rather than riding it. This is a host
+        // call, and the host keeps the component entered until the
+        // call completes (the canonical enter/leave bracket) -- so
+        // awaiting the loop here would hold the instance un-enterable
+        // for the length of the redial, up to the whole resume window,
+        // and every other page call (a keystroke, the output pump's
+        // drain) would find the door shut. The spawned task carries
+        // the generation; wake's caller needs "the resume has
+        // started", never "finished".
+        let state = self.state.clone();
+        wit_bindgen::spawn_local(async move {
+            resume_loop(&state, generation).await;
+        });
     }
 
     /// Stop the session and close the iroh connection. The core is

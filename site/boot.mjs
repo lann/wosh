@@ -558,10 +558,15 @@ export async function initBoot(panel, { onConnect }) {
     checked: true,
   });
 
-  // The always-visible bar (index.html): session controls live there,
-  // not in the dialog, so they work while the dialog is closed.
-  const detachBtn = document.getElementById("detach-btn");
+  // The always-visible bar (index.html) keeps only the status line
+  // and the button that opens this dialog; everything that ACTS on
+  // the session lives in the dialog itself. Detach in particular is
+  // destructive-adjacent -- one stray tap on a phone's cramped bar
+  // ended sessions people meant to keep -- so it sits behind the
+  // deliberate step of opening settings, next to connect: the two
+  // session verbs in one place.
   const settingsBtn = document.getElementById("settings-btn");
+  const detachBtn = el("button", { textContent: "detach", hidden: true });
 
   // Transient asks -- the host-key confirmation, prompt batches, the
   // passkey ceremony button -- and the notice line land HERE, directly
@@ -630,7 +635,7 @@ export async function initBoot(panel, { onConnect }) {
     scanHost,
     el("div", { className: "row" },
       el("label", { textContent: "user" }), userInput),
-    el("div", { className: "row" }, connectBtn),
+    el("div", { className: "row" }, connectBtn, detachBtn),
     promptArea,
     el("div", { className: "row remember" },
       rememberConn,

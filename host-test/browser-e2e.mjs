@@ -297,7 +297,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[A] shell round-trip through the tunnel painted in xterm");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
   await reload();
@@ -327,7 +328,8 @@ try {
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
   console.log("[C] approved with 'remember this approval' checked");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg D: the pin skips the prompt --------------------------------
   await reload();
@@ -350,7 +352,8 @@ try {
   }
   const pinNote = await page.evaluate(() => document.querySelector("#panel .notice")?.textContent);
   console.log(`[D] pinned fingerprint connected with NO prompt (${pinNote})`);
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg E: a changed host key warns loudly -------------------------
   // Overwrite the pin for this listener's endpoint id with a bogus
@@ -405,7 +408,8 @@ try {
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
   console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
 
   // --- leg G: unchecked remember records nothing (and forgets nothing);
   // forgetting is the row's own two-step affordance ------------------
@@ -415,7 +419,8 @@ try {
   await waitPrompt();
   await page.click("#panel .confirm button:has-text('yes, connect')");
   await waitConnected();
-  await page.click("#bar button:has-text('detach')");
+  await page.click("#settings-btn");
+  await page.click("#panel button:has-text('detach')");
   await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
   let rowsAfter = await page.locator("#panel .histrow").count();
   if (rowsAfter !== 1) {
@@ -433,6 +438,74 @@ try {
   rowsAfter = await page.locator("#panel .histrow").count();
   if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
   console.log("[G] forget is two-step: armed on the first click, done on the second");
+
+  // --- leg L: large output with concurrent input ----------------------
+  //
+  // The composed client can be POISONED under flood: the Go core's
+  // cabi_realloc occasionally reads the clock (Go runtime GC pacing)
+  // inside the canonical copy window, where leaving the instance is
+  // forbidden -- an instant trap, and every later call answers
+  // "cannot enter component instance (reentrance forbidden)". The
+  // page defends in two layers (app.mjs): quick calls are serialized
+  // and retried through the reentrance gate, and a poisoned death is
+  // classified `lost` so the automatic reconnect starts a fresh
+  // session. The user-visible invariant this leg pins: after a flood
+  // with typing on top, the user has a WORKING SHELL without touching
+  // anything -- same session or silently reborn.
+  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
+  await page.check("#panel #remember-connection");
+  await page.click("#panel .histrow");
+  await waitPrompt().then(
+    () => page.click("#panel .confirm button:has-text('yes, connect')"),
+    () => {}, // pinned from leg C: no prompt is the expected path
+  );
+  await waitConnected();
+  await page.click(".xterm-screen");
+  await page.keyboard.type("seq 1 300000\n", { delay: 0 });
+  const floodDeadline = Date.now() + 15_000;
+  while (Date.now() < floodDeadline) {
+    // Typing through the flood: each keystroke is a write-input racing
+    // the drain pump, which is exactly the collision that trapped.
+    await page.keyboard.type("x", { delay: 0 });
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  // Ctrl-C the flood (and the typed junk), then prove the shell
+  // answers. A transient "pump: cannot enter…" status is EXPECTED on
+  // the poisoned path -- it is what the page shows between the death
+  // and the automatic rebirth (fresh component instantiation + silent
+  // reconnect takes seconds) -- so the only failure here is never
+  // getting back to a live session within the window.
+  await page.keyboard.press("Control+KeyC");
+  const settled = await (async () => {
+    const deadline = Date.now() + 90_000;
+    for (;;) {
+      const st = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+      if (st.startsWith("connected as")) return true;
+      if (Date.now() > deadline) return st;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  })();
+  if (settled !== true) {
+    fail(`after the flood the page never returned to a live session: ${settled}`);
+  } else {
+    const marker = `flood-ok-${Date.now()}`;
+    await page.keyboard.type(`echo ${marker}\n`, { delay: 10 });
+    await page.waitForFunction(
+      (m) => {
+        const b = window.__wosh.term.buffer.active;
+        for (let i = Math.max(0, b.baseY + b.cursorY - 8); i <= b.baseY + b.cursorY; i++) {
+          if (b.getLine(i)?.translateToString(true).includes(m)) return true;
+        }
+        return false;
+      },
+      marker,
+      { timeout: 30_000 },
+    );
+    console.log("[L] a 300k-line flood with typing on top ends in a working shell (same or reborn)");
+  }
+  // Detach lives in the settings dialog now (#70): open, detach.
+  await page.click("#settings-btn").catch(() => {});
+  await page.click("#panel button:has-text('detach')").catch(() => {});
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

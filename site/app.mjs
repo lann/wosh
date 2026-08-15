@@ -18,6 +18,7 @@
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
 import { linkHandler } from "./links.mjs";
+import { markSessionEnd, markSessionStart } from "./separator.mjs";
 import { OverlayAddon } from "./overlay.mjs";
 import * as bufferStore from "./buffer-store.mjs";
 
@@ -518,6 +519,105 @@ const statusOf = (s) => {
 };
 
 /** Poll `status` until it leaves `connecting`, or time out. */
+/**
+ * One call into the client component at a time.
+ *
+ * deltic enforces the component model's reentrance rule at the host
+ * boundary, and under load the enforcement is reachable: flood the
+ * terminal with output while keystrokes go the other way, and a
+ * `write-input` can arrive while the pump's `drain-output` still has
+ * the instance entered -- the call traps `cannot enter component
+ * instance N (reentrance forbidden)`, and A TRAP POISONS THE INSTANCE:
+ * every later call fails the same way and the session is
+ * unrecoverable. Reproduced live with `seq 1 400000` plus concurrent
+ * writes; xterm does it with no typing at all, because it auto-answers
+ * the cursor-position queries full-screen programs emit (ESC[6n ->
+ * onData -> write-input) while their output is still flooding in.
+ *
+ * So the page single-files itself: every quick session call rides one
+ * promise chain, so no two of ours are ever inside the instance at
+ * once. The chain ignores its members' failures (each caller still
+ * sees its own); ordering is preserved, which for write-input is a
+ * feature -- keystrokes stay in the order they were typed.
+ *
+ * `suspend` and `wake` ride the same gate as everything else. The one
+ * reason not to gate them -- `wake` used to hold its host call open
+ * for the length of a transport resume, which would have stalled every
+ * queued keystroke behind it -- is fixed at the source: the guest now
+ * SPAWNS the resume and returns, so wake is as quick as the rest.
+ */
+const GATED = [
+  "status", "linkState", "closeKind", "hostKeyFingerprint",
+  "confirmHostKey", "authenticatePassword", "authenticatePublickey",
+  "authenticatePasskey", "authenticateInteractive", "authenticateAuto",
+  "pendingPrompts", "answerPrompts", "writeInput", "resize",
+  "drainOutput", "exited", "exitStatus", "detach", "suspend", "wake",
+  "authenticate", // the pre-split spelling older component builds export
+];
+function serializeSession(session) {
+  let chain = Promise.resolve();
+  const wrapped = {};
+  // The death path's escape hatch: sessionEnded must ask close-kind
+  // withOUT the gate. On a poisoned instance every gated call queues
+  // behind the retries already in the chain (15s each), which would
+  // hold the session-ended event -- and the automatic reconnect behind
+  // it -- for minutes. The raw call fails in microseconds instead,
+  // which is an answer too.
+  if (typeof session.closeKind === "function") {
+    wrapped.closeKindRaw = session.closeKind.bind(session);
+  }
+  for (const name of GATED) {
+    if (typeof session[name] !== "function") continue; // older component builds
+    const method = session[name].bind(session);
+    wrapped[name] = (...args) => {
+      const run = chain.then(() => enterPatiently(() => method(...args)));
+      chain = run.then(
+        () => {},
+        () => {}, // a failed call must not jam the calls behind it
+      );
+      return run;
+    };
+  }
+  return wrapped;
+}
+
+/**
+ * Call, and if the instance was momentarily busy, call again.
+ *
+ * Serializing our own calls is necessary but not sufficient: a call's
+ * promise can resolve a beat before the instance is actually LEFT (the
+ * guest returns its value and then runs a short tail), so the next
+ * call -- ours, properly queued -- can still land in the closing door.
+ * The entry check throws before anything enters, so nothing is
+ * poisoned and the call is safely repeatable: the door was closing,
+ * not broken. Bounded, so a genuinely wedged instance still surfaces
+ * as the error it is rather than as an infinite quiet retry.
+ */
+async function enterPatiently(call, budgetMs = 15_000) {
+  const deadline = Date.now() + budgetMs;
+  let delay = 5;
+  for (;;) {
+    try {
+      return await call();
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      if (!msg.includes("reentrance forbidden") || Date.now() > deadline) throw e;
+      // Time-based, not attempt-based: under a sustained flood the
+      // guest's own tasks keep the instance busy in long stretches,
+      // and a fixed handful of quick retries loses to them. Fifteen
+      // seconds is far beyond any burst the reader can sustain
+      // (drain empties the buffer it fills), and a genuinely wedged
+      // instance still surfaces within one human sigh.
+      //
+      // A plain private timer: the module-level `sleep` shares its
+      // wake slot with the pump, and concurrent sleeps would clobber
+      // each other's shortcut.
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 50);
+    }
+  }
+}
+
 async function settle(session, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -608,8 +708,10 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
   // see the note in passkeyIdentity above), so an empty field must
   // become `undefined` here -- an empty STRING would ask the target to
   // exec nothing at all instead of running a plain shell.
-  const session = await t.Session.connect(
-    connstring, user, term.cols, term.rows, command || undefined);
+  const session = serializeSession(
+    await t.Session.connect(
+      connstring, user, term.cols, term.rows, command || undefined),
+  );
   // Supersede: from here the new session owns the page. The one it
   // replaces is DETACHED, not merely forgotten -- an orphaned session
   // keeps its SSH login and iroh connection alive on the target until
@@ -617,7 +719,14 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
   const prior = currentSession;
   currentSession = session;
   currentPersistKey = persistKey || null;
-  if (prior) prior.detach().catch(() => {});
+  if (prior) {
+    prior.detach().catch(() => {});
+    // The superseded session's closing bookend, drawn now: its pump
+    // stopped painting the moment `currentSession` moved on, so the
+    // timeline would otherwise show its output running straight into
+    // the new session's opening rule.
+    await markSessionEnd(term, "detached");
+  }
 
   let st = await settle(session);
   if (statusOf(st) === "closed") fatal(`connect: ${st.value ?? "closed"}`);
@@ -739,10 +848,16 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
   // the one-shot latch spent; and a later connect elsewhere would then
   // have persisted that leftover under its own key. The pristine check
   // inside restoreScrollback still governs: an in-page reconnect keeps
-  // its real scrollback and this is a no-op.
+  // its real scrollback and this is a no-op. Ordering: the dump and
+  // its seam note are OLD content, so they land above the opening
+  // bookend, and the new session starts below both.
   if (restore && restoreScrollback(restore.buf, persistKey)) {
     note(`restored scrollback from ${restore.label}`);
   }
+  // The opening bookend (separator.mjs), first session included.
+  // Awaited BEFORE the pump exists: nothing of this session may land
+  // above its own start rule.
+  await markSessionStart(term, user);
   autofocusTerminal(term); // ditto: a phone gets the keyboard by tapping
   wireInput(session, (e) => sessionEnded(session, `input: ${e.message ?? e}`));
 
@@ -857,13 +972,45 @@ function sessionEnded(session, why, extra) {
   (async () => {
     let kind;
     try {
-      if (typeof session.closeKind === "function") {
-        const raw = await session.closeKind();
+      // The RAW close-kind (see serializeSession): on a poisoned
+      // instance the gated one would queue behind minutes of retries.
+      const ck = session.closeKindRaw ?? session.closeKind;
+      if (typeof ck === "function") {
+        const raw = await ck();
         kind = typeof raw === "string" ? raw : raw?.kind;
       }
     } catch {
       kind = undefined;
     }
+    // A poisoned component instance answers EVERY call with the
+    // reentrance refusal -- close-kind included, so `kind` comes back
+    // undefined exactly when the session died of the poison. The
+    // session state on the LISTENER is fine (it parks, exactly as for
+    // a dropped transport); only this page's instance is beyond use --
+    // so the instance is DISCARDED: clientLoad is the memoized
+    // instantiation, and without this reset the automatic reconnect
+    // would dial through the same poisoned component and fail forever.
+    // A fresh instantiation keeps the browser's identity (IndexedDB)
+    // and the host-key pins (localStorage), so the reconnect is
+    // silent where it would have been silent before.
+    if (kind === undefined && /reentrance forbidden/.test(why ?? "")) {
+      kind = "lost";
+      clientLoad = null;
+    }
+
+    // The closing bookend, labeled by HOW it ended -- and labeled
+    // AFTER the poison classification above, so a poisoned death
+    // reads "session lost" (it is about to be silently redialed),
+    // not "session ended". This is the moment the client knows the
+    // session cannot come back (a resumable outage never reaches
+    // here), and the pump above has already stopped, so the rule
+    // lands after the session's last output. Drawn before the event:
+    // an auto-reconnect's new session must open below this session's
+    // close.
+    const what = kind === "lost" ? "session lost"
+      : kind === "failed" ? "session failed"
+      : "session ended";
+    await markSessionEnd(term, what).catch(() => {});
     window.dispatchEvent(
       new CustomEvent("wosh:session-ended", { detail: { why, kind, code, uptimeMs } }),
     );
@@ -888,5 +1035,8 @@ export async function detach() {
     await s.detach();
   } finally {
     status("detached");
+    // A deliberate detach is a confirmed end like any other; the
+    // timeline says so.
+    await markSessionEnd(term, "detached").catch(() => {});
   }
 }

@@ -121,6 +121,15 @@ try {
   await page.click(".xterm-screen");
   await page.keyboard.type("echo MARK_BEFORE\n", { delay: 10 });
   await screenHas("MARK_BEFORE", 2);
+  // Every session opens with a start bookend, the first one included
+  // -- and an end bookend must NOT exist yet (separator.mjs).
+  const early = await page.evaluate(() => ({
+    start: document.querySelectorAll(".session-separator.start").length,
+    end: document.querySelectorAll(".session-separator.end").length,
+  }));
+  if (early.start !== 1 || early.end !== 0) {
+    fail(`expected 1 start / 0 end bookends before the restart, found ${early.start}/${early.end}`);
+  }
   say("[2] pre-restart round trip");
 
   // Restart the listener: same identity dir (same endpoint id, so the
@@ -155,6 +164,25 @@ try {
   const text = await screenText();
   if (!text.includes("MARK_BEFORE")) {
     fail("pre-restart scrollback is gone: the page reloaded instead of reconnecting");
+  }
+
+  // The timeline reads: first session opened, first session LOST (the
+  // close-kind, verbatim -- a resume refusal is a loss, not an end),
+  // second session opened. Three bookends, in that order.
+  const timeline = await page.evaluate(() =>
+    [...document.querySelectorAll(".session-separator")].map((el) => ({
+      kind: el.classList.contains("start") ? "start" : "end",
+      text: el.textContent,
+    })));
+  const kinds = timeline.map((t) => t.kind).join(",");
+  if (kinds !== "start,end,start") {
+    fail(`expected a start,end,start timeline, found ${kinds || "nothing"}`);
+  } else if (!timeline[0].text.includes(`session start — ${USER}`)) {
+    fail(`opening bookend says ${JSON.stringify(timeline[0].text)}`);
+  } else if (!timeline[1].text.includes("session lost")) {
+    fail(`closing bookend says ${JSON.stringify(timeline[1].text)}, expected "session lost"`);
+  } else {
+    say("[7] the timeline reads start, lost, start");
   }
 
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
