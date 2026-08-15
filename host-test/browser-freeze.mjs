@@ -267,6 +267,16 @@ try {
   if (!text.includes("MARK_BEFORE")) {
     fail("pre-freeze scrollback is gone: this is not the session that froze");
   }
+  // And the bookends agree: one session opened, none closed -- a
+  // resumable outage is not a session end, so no end rule may exist
+  // (separator.mjs draws it only on a CONFIRMED termination).
+  const bookends = await page.evaluate(() => ({
+    start: document.querySelectorAll(".session-separator.start").length,
+    end: document.querySelectorAll(".session-separator.end").length,
+  }));
+  if (bookends.start !== 1 || bookends.end !== 0) {
+    fail(`expected 1 start / 0 end bookends across a resume, found ${bookends.start}/${bookends.end}`);
+  }
 
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
