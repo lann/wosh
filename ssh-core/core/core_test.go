@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,11 +50,66 @@ type rig struct {
 	eng          *Engine
 	hostFP       string
 	authAttempts *atomic.Int32
+	// requests records every channel request type the fixture server
+	// saw, in order (pty-req, shell/exec, window-change, env, ...),
+	// so tests can assert exec ran in place of shell (or vice versa)
+	// without inspecting server internals.
+	requests *requestLog
+	// execCommand is set from the fixture server's "exec" request
+	// payload, once one arrives (RFC 4254 s6.5): the command string,
+	// byte for byte, so tests can pin it against what New() was given.
+	execCommand *stringBox
+}
+
+// requestLog is a tiny concurrency-safe recorder: the fixture server's
+// request-handling goroutine writes, the test goroutine reads.
+type requestLog struct {
+	mu    sync.Mutex
+	types []string
+}
+
+func (l *requestLog) add(t string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.types = append(l.types, t)
+}
+
+func (l *requestLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.types...)
+}
+
+// stringBox is the same concurrency-safe capture for the exec payload.
+type stringBox struct {
+	mu  sync.Mutex
+	set bool
+	val string
+}
+
+func (b *stringBox) set_(v string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.set, b.val = true, v
+}
+
+func (b *stringBox) get() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.val, b.set
 }
 
 // start wires a fresh engine to an in-process x/crypto/ssh server over
 // a net.Pipe and pumps bytes between them for the life of the test.
 func start(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel)) *rig {
+	return startWithCommand(t, cfg, shell, "")
+}
+
+// startWithCommand is start, but the engine connects with `command`:
+// present, this drives the fixture's exec path (RFC 4254 s6.5), used
+// by the reattach-to-session-manager tests below; empty reproduces
+// start's plain-shell behaviour exactly.
+func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string) *rig {
 	t.Helper()
 
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -72,9 +128,12 @@ func start(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel)) *rig {
 	}
 
 	srvSide, cliSide := net.Pipe()
-	eng := New("tester", 80, 24)
+	eng := New("tester", 80, 24, command)
 
-	go serveOne(srvSide, cfg, shell)
+	requests := &requestLog{}
+	execCommand := &stringBox{}
+	go serveOne(srvSide, cfg, shell, requests, execCommand)
+
 
 	stop := make(chan struct{})
 	// Inbound: whatever the server writes becomes fed bytes. A read
@@ -120,10 +179,16 @@ func start(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel)) *rig {
 		_ = srvSide.Close()
 	})
 
-	return &rig{eng: eng, hostFP: ssh.FingerprintSHA256(hostSigner.PublicKey()), authAttempts: attempts}
+	return &rig{
+		eng:          eng,
+		hostFP:       ssh.FingerprintSHA256(hostSigner.PublicKey()),
+		authAttempts: attempts,
+		requests:     requests,
+		execCommand:  execCommand,
+	}
 }
 
-func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel)) {
+func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), requests *requestLog, execCommand *stringBox) {
 	defer c.Close()
 	sconn, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
@@ -145,8 +210,19 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel)) {
 			// Grant what an interactive client asks for; there is no
 			// real pty behind it, just the echo loop.
 			for req := range chReqs {
+				requests.add(req.Type)
 				switch req.Type {
 				case "pty-req", "shell", "window-change", "env":
+					if req.WantReply {
+						_ = req.Reply(true, nil)
+					}
+				case "exec":
+					// RFC 4254 s6.5: a single uint32-length-prefixed
+					// command string, nothing else.
+					var payload struct{ Command string }
+					if err := ssh.Unmarshal(req.Payload, &payload); err == nil {
+						execCommand.set_(payload.Command)
+					}
 					if req.WantReply {
 						_ = req.Reply(true, nil)
 					}
@@ -338,6 +414,79 @@ func TestPasswordAuthReachesReadyAndCarriesBytes(t *testing.T) {
 	if _, msg := r.eng.Status(); msg != "shell exited" {
 		t.Fatalf("close reason = %q, want %q", msg, "shell exited")
 	}
+	// The plain-shell path must still ask for "shell", never "exec" --
+	// pinned here so the exec addition below cannot silently regress it.
+	reqs := r.requests.snapshot()
+	if !containsStr(reqs, "shell") {
+		t.Fatalf("requests = %v, want a \"shell\" request", reqs)
+	}
+	if containsStr(reqs, "exec") {
+		t.Fatalf("requests = %v, plain connect must never send \"exec\"", reqs)
+	}
+}
+
+// TestConnectWithCommandSendsExecInsteadOfShell defends the
+// reattach-to-session-manager feature this engine exists to support:
+// a `command` given to New (dtach -A, tmux new -AD, abduco -A and
+// friends) rides an RFC 4254 s6.5 `exec` request in place of the
+// default `shell` request, on the very same channel and pty, and the
+// command's own exit status -- not any inner shell's -- is what
+// `exit-status` reports.
+func TestConnectWithCommandSendsExecInsteadOfShell(t *testing.T) {
+	const command = `dtach -A /tmp/wosh-synthetic-test.sock -z bash`
+	r := startWithCommand(t, &ssh.ServerConfig{
+		PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+			return &ssh.Permissions{}, nil
+		},
+	}, echoShell(3), command)
+
+	r.waitState(t, StateHostKeyCheck)
+	r.eng.ConfirmHostKey(true)
+	if err := r.eng.AuthenticatePassword("synthetic-fixture-password"); err != nil {
+		t.Fatalf("AuthenticatePassword: %v", err)
+	}
+	r.waitState(t, StateReady)
+
+	// Same channel, same pty, same byte plane: input still round-trips.
+	r.eng.WriteInput([]byte("hello-from-exec-path"))
+	var got []byte
+	r.waitUntil(t, "echoed input", func() bool {
+		got = append(got, r.eng.DrainOutput()...)
+		return bytes.Contains(got, []byte("hello-from-exec-path"))
+	})
+	r.eng.WriteInput([]byte{eotSentinel})
+
+	r.waitState(t, StateClosed)
+	r.waitUntil(t, "exit status", func() bool { return r.eng.ExitStatus() != nil })
+	if code := *r.eng.ExitStatus(); code != 3 {
+		t.Fatalf("exit status = %d, want 3 (the fixture command's own exit, not a shell's)", code)
+	}
+
+	// The server saw an exec request carrying the command byte for
+	// byte, and no shell request at all.
+	got2, ok := r.execCommand.get()
+	if !ok {
+		t.Fatal("server never received an exec request")
+	}
+	if got2 != command {
+		t.Fatalf("exec command = %q, want %q", got2, command)
+	}
+	reqs := r.requests.snapshot()
+	if !containsStr(reqs, "exec") {
+		t.Fatalf("requests = %v, want an \"exec\" request", reqs)
+	}
+	if containsStr(reqs, "shell") {
+		t.Fatalf("requests = %v, a command connect must never also send \"shell\"", reqs)
+	}
+}
+
+func containsStr(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 var errWrongPassword = &authError{"wrong password"}

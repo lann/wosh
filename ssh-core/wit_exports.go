@@ -19,11 +19,23 @@ var exportReturnArea = uintptr(witRuntime.Allocate(&staticPinner, (7 * 4), 4))
 var syncExportPinner = runtime.Pinner{}
 
 //go:wasmexport wosh:ssh-core/core#[static]session.connect
-func wasm_export_wosh_ssh_core_core_static_session_connect(arg0 uintptr, arg1 uint32, arg2 int32, arg3 int32) int32 {
+func wasm_export_wosh_ssh_core_core_static_session_connect(arg0 uintptr, arg1 uint32, arg2 int32, arg3 int32, arg4 int32, arg5 uintptr, arg6 uint32) int32 {
 
 	value := unsafe.String((*uint8)(unsafe.Pointer(arg0)), arg1)
+	var option witTypes.Option[string]
+	switch arg4 {
+	case 0:
+
+		option = witTypes.None[string]()
+	case 1:
+		value0 := unsafe.String((*uint8)(unsafe.Pointer(arg5)), arg6)
+
+		option = witTypes.Some[string](value0)
+	default:
+		panic("unreachable")
+	}
 	witRuntime.Unpin()
-	result := export_wosh_ssh_core_core.SessionConnect(value, uint16(arg2), uint16(arg3))
+	result := export_wosh_ssh_core_core.SessionConnect(value, uint16(arg2), uint16(arg3), option)
 	return (result).TakeHandle()
 
 }

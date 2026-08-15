@@ -182,6 +182,17 @@ e2e: compose
         --connstring "$cs" --user "$USER" --auth auto \
         --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)"
+    # The exec leg: same channel and pty as the shell leg above, but
+    # the on-connect command (the dtach/tmux/abduco reattach mechanism
+    # in real use) runs instead of a shell, and its output and exit
+    # status must surface to the caller.
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)" \
+        --command 'echo wosh-exec-ok; exit 7' \
+        --expect-output wosh-exec-ok --expect-exit 7
 
 # The legibility gate for a passkey a server will not take.
 #

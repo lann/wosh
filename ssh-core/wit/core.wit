@@ -150,7 +150,19 @@ interface core {
     /// cannot happen before the host-key gate resolves. `cols`/`rows`
     /// size the pty requested once authenticated. The client version
     /// banner is drainable immediately after construction.
-    connect: static func(user: string, cols: u16, rows: u16) -> session;
+    ///
+    /// `command`, when present, is sent as an SSH `exec` request in
+    /// place of the default `shell` request once authentication
+    /// succeeds (RFC 4254 s6.5) -- same channel, same pty, same I/O
+    /// plumbing either way. The server runs it through the user's
+    /// login shell, so $SHELL-style expansion happens there, not
+    /// here. The purpose is create-or-attach session managers (`dtach
+    /// -A`, `tmux new -AD`, `abduco -A`): create-or-attach semantics
+    /// live entirely in the command, so this core needs no
+    /// fresh-vs-reattach state of its own. `exit-status` then reports
+    /// the command's exit, which for a session manager is how IT
+    /// ended (detach or inner exit), not the inner shell's status.
+    connect: static func(user: string, cols: u16, rows: u16, command: option<string>) -> session;
 
     // --- the byte plane ------------------------------------------
 

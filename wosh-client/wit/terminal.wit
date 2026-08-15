@@ -404,7 +404,23 @@ interface terminal {
     /// SSH transport handshake. `cols`/`rows` size the pty requested
     /// once authenticated. Resolves once the dial either succeeded
     /// (poll `status` from here) or failed outright.
-    connect: static async func(connstring: string, user: string, cols: u16, rows: u16) -> result<session, string>;
+    ///
+    /// `command`, when present, is sent as an SSH `exec` request in
+    /// place of the default `shell` request once authentication
+    /// succeeds (RFC 4254 s6.5) -- same channel, same pty as the shell
+    /// case, just a different request type. Its reason for existing is
+    /// create-or-attach session managers (`dtach -A`, `tmux new -AD -s
+    /// wosh`, `abduco -A wosh`): that is what lets a session outlive
+    /// the browser TAB, as distinct from outliving the transport,
+    /// which the resume machinery already covers on its own. A
+    /// transport resume never re-runs `command` -- the SSH session it
+    /// started is still alive, `connect` is not called again, resume
+    /// only re-dials the tunnel underneath it -- so it runs exactly
+    /// once per SSH session, at the moment this call succeeds. `none`
+    /// is the plain shell, exactly as before. The string is executed
+    /// by the user's login shell on the target, so $SHELL-style
+    /// expansion (`~`, `$HOME`, globs) happens there, not here.
+    connect: static async func(connstring: string, user: string, cols: u16, rows: u16, command: option<string>) -> result<session, string>;
 
     status: async func() -> status;
 

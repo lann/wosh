@@ -37,8 +37,15 @@ type Session struct {
 
 // SessionConnect backs `session.connect`. It cannot fail: the engine
 // starts its handshake goroutine and the embedder watches `status`.
-func SessionConnect(user string, cols uint16, rows uint16) *Session {
-	return &Session{eng: core.New(user, cols, rows)}
+// command, when present, is run via an SSH `exec` request in place of
+// the default `shell` request -- see the `connect` doc in
+// wit/core.wit for the create-or-attach session manager rationale.
+func SessionConnect(user string, cols uint16, rows uint16, command witTypes.Option[string]) *Session {
+	cmd := ""
+	if command.IsSome() {
+		cmd = command.Some()
+	}
+	return &Session{eng: core.New(user, cols, rows, cmd)}
 }
 
 // OnDrop runs on the resource destructor; Close is idempotent.

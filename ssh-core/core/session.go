@@ -220,13 +220,22 @@ type Engine struct {
 	pendingIn lockedBuf // input typed before the shell's stdin existed
 
 	cols, rows uint16
+	// The command to run in place of the default shell (RFC 4254
+	// s6.5 `exec` vs `shell`), empty for a plain interactive shell.
+	// See wit/core.wit's `connect` doc for the create-or-attach
+	// session manager rationale.
+	command string
 }
 
 // New constructs the session and starts the handshake goroutine. It
 // never fails: everything the embedder can learn arrives through
 // Status. The client version banner is drainable as soon as this
 // returns, which the scheduler rounds below guarantee.
-func New(user string, cols, rows uint16) *Engine {
+//
+// command, when non-empty, is run via an `exec` request instead of
+// the default `shell` request once authenticated -- see run() and the
+// `connect` doc in wit/core.wit.
+func New(user string, cols, rows uint16, command string) *Engine {
 	s := &Engine{
 		conn:            newShuttleConn(),
 		state:           StateConnecting,
@@ -237,6 +246,7 @@ func New(user string, cols, rows uint16) *Engine {
 		sigReply:        make(chan sigReply, 1),
 		cols:            cols,
 		rows:            rows,
+		command:         strings.Clone(command),
 	}
 	// The ssh lifecycle runs on its own goroutine so this entry point
 	// can return: the embedder must observe `host-key-check` and show
@@ -334,9 +344,19 @@ func (s *Engine) run() {
 		s.closeWith("pty request: " + err.Error())
 		return
 	}
-	if err := sess.Shell(); err != nil {
-		s.closeWith("shell request: " + err.Error())
-		return
+	s.mu.Lock()
+	command := s.command
+	s.mu.Unlock()
+	if command != "" {
+		if err := sess.Start(command); err != nil {
+			s.closeWith("exec request: " + err.Error())
+			return
+		}
+	} else {
+		if err := sess.Shell(); err != nil {
+			s.closeWith("shell request: " + err.Error())
+			return
+		}
 	}
 
 	// Take the live pipe, then flush anything typed before it existed.
@@ -364,6 +384,14 @@ func (s *Engine) run() {
 	// A clean shell exit is not a wire failure: closeWith still
 	// prefers a recorded wire reason, which is what distinguishes
 	// "the shell ended" from "the tunnel died under it".
+	//
+	// The message stays "shell exited" for the exec path too, ON
+	// PURPOSE: it marks "the channel's program ended" generically,
+	// downstream close-kind classification is structural (on State),
+	// not string-matched -- but the string itself is user-visible and
+	// its exact spelling is part of the observable contract, so it is
+	// not worth forking into "exec exited" for what is, structurally,
+	// the same event.
 	s.closeWith("shell exited")
 }
 

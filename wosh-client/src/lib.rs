@@ -1394,6 +1394,7 @@ impl GuestSession for Session {
         user: String,
         cols: u16,
         rows: u16,
+        command: Option<String>,
     ) -> Result<bindings::exports::wosh::terminal::terminal::Session, String> {
         let parsed =
             ConnString::decode(&connstring).map_err(|e| format!("connection string: {e}"))?;
@@ -1519,7 +1520,13 @@ impl GuestSession for Session {
         // `user` is snapshotted by the core's config before the
         // handshake, but is only ever SENT inside an auth request,
         // which cannot happen before the host-key gate resolves.
-        let core = CoreSession::connect(&user, cols, rows);
+        //
+        // `command` rides only on this initial connect, never on a
+        // transport resume: resume never re-creates the core session
+        // (see terminal.wit `connect`), so an exec request runs
+        // exactly once per SSH session regardless of how many times
+        // the underlying tunnel reconnects.
+        let core = CoreSession::connect(&user, cols, rows, command.as_deref());
 
         let state = Rc::new(State {
             inner: RefCell::new(Inner {
