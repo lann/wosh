@@ -63,6 +63,12 @@
     }
     #panel .scan-view .hint { color: #888; margin: 4px 0; }
     #panel .field { color: #888; margin-top: 8px; margin-bottom: 2px; }
+    /* The collapsed sections (auth override, keys & identity): the
+       summary is a one-line control styled like a .field label, with
+       enough padding to be a comfortable tap target. */
+    #panel details { margin-top: 8px; }
+    #panel summary { color: #888; cursor: pointer; user-select: none; padding: 4px 0; }
+    #panel summary:hover { color: #bbb; }
     #panel .row { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     #panel .notice { color: #d90; margin-top: 8px; }
     /* connection history: tap a row to reconnect (tokenless; pairing
@@ -84,7 +90,6 @@
     }
     /* an armed (click-again-to-confirm) destructive button */
     #panel button.subtle.armed { color: #f55; border-color: #f55; }
-    #panel .remember .hint { color: #777; font-size: 11px; }
     #panel .confirm { color: #d90; margin-top: 8px; }
     #panel .confirm code, #panel .key code { color: #fd5; }
     /* a changed pinned host key: the one alarming state on this page */
@@ -138,6 +143,9 @@
       #keys button.armed { color: #fff; background: #2d5e9e; border-color: #4a7ec0; }
       /* 16px stops the iOS focus auto-zoom on the connect panel */
       #panel input, #panel select { font-size: 16px; }
+      /* The two folded summaries are primary tap targets here: give
+         them the same comfortable height the buttons get. */
+      #panel summary { min-height: 32px; display: flex; align-items: center; font-size: 14px; }
       #panel button { font-size: 14px; min-height: 32px; }
       #bar button { font-size: 13px; min-height: 28px; }
     }

@@ -190,8 +190,16 @@ try {
   // localhost, not 127.0.0.1: see the file header. RP ID must be a
   // domain, or credentials.create/.get throw a SecurityError before
   // the virtual authenticator is ever asked anything.
+  // The panel collapses setup material (the auth override, keys &
+  // identity) into <details>; this gate drives the flows inside them,
+  // not the collapse itself (browser-mobile covers that), so open
+  // everything after each page load (a load resets the open state).
+  const openPanelSections = () =>
+    page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
+
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await openPanelSections();
   console.log("[1] page loaded on http://localhost -- a valid WebAuthn RP ID");
 
   // --- enrol -----------------------------------------------------------
@@ -338,6 +346,7 @@ try {
 
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
   await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await openPanelSections();
   // Empirically: a CDP virtual authenticator is bound to the page's
   // CDP session, which a same-page navigation does not tear down, so
   // it survives the reload with no re-attach needed. Asserted here

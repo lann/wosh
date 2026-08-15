@@ -566,7 +566,13 @@ Verified working:
   pagehide and freeze all suspend the session, visible, pageshow and
   resume all wake it, and a missing or torn-down session is survived
   quietly -- these run on the browser's way out of the page, where
-  there is nobody to report an exception to. No other gate can see any of this; the
+  there is nobody to report an exception to. And the connect panel's
+  shape, against the real boot.mjs with only the component stubbed: a
+  fresh panel is the task (connstring, user, connect, scan -- three
+  buttons), setup material (the auth override, keys & identity) stays
+  folded until asked for, and the rows that need answers -- host-key
+  confirmation, prompt batches, the passkey ceremony -- land under the
+  connect button, above the folds, never below a phone's fold. No other gate can see any of this; the
   e2e legs type through xterm, and none of them synthesize a finger
   that moves.
 - Listener identity persistence: the endpoint id (and so the browser's

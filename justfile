@@ -406,6 +406,8 @@ e2e-pairing: compose
 # and the page's own stylesheet in headless Chromium -- no component,
 # no relay -- so it needs no `just site`, only `just web-deps` once
 # (the scrolling legs mount the real xterm from site/node_modules).
+# Also the connect panel's shape, against the real boot.mjs with a
+# stubbed component: setup stays folded, prompts land above the folds.
 browser-mobile:
     node host-test/browser-mobile.mjs
 

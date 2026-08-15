@@ -187,10 +187,50 @@ const LIFECYCLE_FIXTURE = `<!doctype html>
 </script>
 `;
 
+// The connect PANEL, real: index.html + boot.mjs + app.mjs verbatim,
+// with only the wasm component behind /dist/deltic.js stubbed (all
+// capabilities true, synthetic identity lines). What is under test is
+// the panel's structure -- what a user sees before touching anything,
+// and where the rows that need answers appear.
+const DELTIC_STUB = `
+export async function loadClient() {
+  class Session {}
+  Session.prototype.authenticateAuto = () => {};
+  Session.prototype.pendingPrompts = () => {};
+  return {
+    Session,
+    identityOpenssh: async () => "ssh-ed25519 AAAA-synthetic-not-a-real-key wosh-browser",
+    passkeyOpenssh: async () => undefined,
+    enrollPasskey: async () => {},
+    installCeremonyGate: async () => {},
+  };
+}
+`;
+const SITE = join(ROOT, "site");
+const XTERM_FILES = {
+  "/xterm/xterm.js": "node_modules/@xterm/xterm/lib/xterm.js",
+  "/xterm/xterm.css": "node_modules/@xterm/xterm/css/xterm.css",
+  "/xterm/addon-fit.js": "node_modules/@xterm/addon-fit/lib/addon-fit.js",
+};
+
 const server = createServer(async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
   if (path === "/") {
     res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(FIXTURE);
+    return;
+  }
+  if (path === "/panel") {
+    res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" })
+      .end(await readFile(join(SITE, "index.html")));
+    return;
+  }
+  if (path === "/dist/deltic.js") {
+    res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end(DELTIC_STUB);
+    return;
+  }
+  if (XTERM_FILES[path]) {
+    res.writeHead(200, { "content-type": MIME[extname(path)] ?? "text/plain", "cache-control": "no-store" })
+      .end(await readFile(join(SITE, XTERM_FILES[path])));
     return;
   }
   if (path === "/lifecycle") {
@@ -206,7 +246,9 @@ const server = createServer(async (req, res) => {
     return;
   }
   try {
-    const body = await readFile(join(ROOT, path));
+    // index.html (served at /panel) asks for its siblings at the root;
+    // they live in site/. Repo-prefixed paths keep working as before.
+    const body = await readFile(join(ROOT, path)).catch(() => readFile(join(SITE, path)));
     res.writeHead(200, {
       "content-type": MIME[extname(path)] ?? "application/octet-stream",
       "cache-control": "no-store",
@@ -660,6 +702,98 @@ try {
   const quiet = await calls();
   if (ok(quiet.length === 0, `a missing or broken session was not survived quietly: ${JSON.stringify(quiet)}`)) {
     console.log("[21] no session, or a torn-down one, is survived quietly");
+  }
+
+  // --- the connect panel's shape ---------------------------------------
+  //
+  // The panel used to render identity management -- the passkey pitch,
+  // adopt input, recover story, ~15 lines of prose -- permanently, and
+  // appended the rows that NEED answers (host-key confirm, prompt
+  // batches) below all of it, off a phone's screen. These legs pin the
+  // structure that fixed it, against the real index.html + boot.mjs
+  // with only the wasm component stubbed.
+  await page.goto(`http://127.0.0.1:${PORT}/panel`, { waitUntil: "load" });
+  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+  // The capabilities probe re-renders the sections; wait for its
+  // observable effect (the passkey section unhiding) rather than a
+  // fixed delay.
+  await page.waitForFunction(
+    () => !document.querySelector("#panel .passkey")?.hidden,
+    null,
+    { timeout: 15_000 },
+  );
+
+  // 22. A fresh panel is the TASK: connstring, user, connect, scan.
+  //     Setup material exists but is folded; nothing inside a closed
+  //     fold is visible or tappable.
+  const shape = await page.evaluate(() => {
+    const panel = document.getElementById("panel");
+    // checkVisibility, not a rect test: Chromium renders a closed
+    // <details>' contents as content-visibility:hidden, whose boxes
+    // keep their size while being unrenderable and untappable.
+    const visible = (el) => el.checkVisibility();
+    const details = [...panel.querySelectorAll("details")];
+    return {
+      detailsCount: details.length,
+      anyOpen: details.some((d) => d.open),
+      visibleButtons: [...panel.querySelectorAll("button")].filter(visible).map((b) => b.textContent.trim()),
+      foldedButtons: details.flatMap((d) => [...d.querySelectorAll("button")]).filter(visible).length,
+      summaries: details.map((d) => d.querySelector("summary")?.textContent.trim()),
+    };
+  });
+  if (ok(shape.detailsCount === 2, `expected 2 folded sections, found ${shape.detailsCount}`) &&
+      ok(!shape.anyOpen, "a folded section opened itself on a fresh load") &&
+      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside closed folds are visible`) &&
+      ok(shape.visibleButtons.length <= 4,
+         `a fresh panel still shows ${shape.visibleButtons.length} buttons: ${JSON.stringify(shape.visibleButtons)}`)) {
+    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons (${shape.visibleButtons.join(", ")}); setup is folded (${shape.summaries.join(" / ")})`);
+  }
+
+  // 23. The rows that need ANSWERS appear under the connect button,
+  //     above the folds -- never below them (the below-the-fold prompt
+  //     was how "authenticating…" could look like a hang on a phone).
+  const prompt = page.locator("#panel .confirm");
+  const asked = page.evaluate(() => {
+    // Resolved by the click below; the return value is the user's answer.
+    return window.__woshBoot.ui.confirmHostKey("SHA256:synthetic-fingerprint-for-the-gate", "");
+  });
+  await prompt.waitFor({ timeout: 5_000 });
+  const placement = await page.evaluate(() => {
+    const row = document.querySelector("#panel .confirm");
+    const firstFold = document.querySelector("#panel details");
+    const connect = [...document.querySelectorAll("#panel button")].find((b) => b.textContent.trim() === "connect");
+    return {
+      aboveFolds: !!(row.compareDocumentPosition(firstFold) & Node.DOCUMENT_POSITION_FOLLOWING),
+      belowConnect: !!(connect.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING),
+      visible: row.getBoundingClientRect().height > 0,
+    };
+  });
+  await page.click("#panel .confirm button:has-text('no')");
+  if (ok(await asked === false, "the host-key prompt did not resolve from its buttons") &&
+      ok(placement.visible, "the host-key prompt rendered without size") &&
+      ok(placement.belowConnect, "the prompt did not appear under the connect button") &&
+      ok(placement.aboveFolds, "the prompt appeared BELOW the folded sections again")) {
+    console.log("[23] a host-key prompt lands under connect, above the folds");
+  }
+
+  // 24. The auth override says what it is set to while folded, and
+  //     the select inside it still works.
+  await page.evaluate(() => { document.querySelector("#panel details.method").open = true; });
+  await page.selectOption("#panel select", "password");
+  const summary = await page.locator("#panel details.method summary").textContent();
+  if (ok(/password/.test(summary), `the method summary does not reflect the selection: "${summary}"`)) {
+    console.log(`[24] the folded auth row reports its setting ("${summary.trim()}")`);
+  }
+
+  // 25. The identity fold still carries the working flows: open it,
+  //     ask for the browser key, get the (synthetic) line.
+  await page.evaluate(() => { document.querySelector("#panel details.identity").open = true; });
+  await page.click("#panel button:has-text(\"show this browser's public key\")");
+  await page.waitForSelector("#panel .key code", { timeout: 5_000 });
+  const line = (await page.locator("#panel .key code").textContent()).trim();
+  if (ok(line.startsWith("ssh-ed25519 "), `the browser-key line did not render: "${line}"`)) {
+    console.log("[25] keys & identity opens and the browser key renders inside it");
   }
 
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
