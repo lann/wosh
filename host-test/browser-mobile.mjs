@@ -193,6 +193,11 @@ const LIFECYCLE_FIXTURE = `<!doctype html>
 // the panel's structure -- what a user sees before touching anything,
 // and where the rows that need answers appear.
 const DELTIC_STUB = `
+// app.mjs imports this DIRECTLY from the module (not off the client):
+// the ceremony gate the panel installs. Retained and exposed so the
+// gate legs can raise a ceremony exactly the way the store would.
+export function setCeremonyGate(fn) { globalThis.__ceremonyGate = fn; }
+
 export async function loadClient() {
   class Session {}
   Session.prototype.authenticateAuto = () => {};
@@ -794,6 +799,68 @@ try {
   const line = (await page.locator("#panel .key code").textContent()).trim();
   if (ok(line.startsWith("ssh-ed25519 "), `the browser-key line did not render: "${line}"`)) {
     console.log("[25] keys & identity opens and the browser key renders inside it");
+  }
+
+  // 26-28. The passkey ceremony ask must be VISIBLE wherever it
+  //     arrives. Auto-reconnect after a lost session redials with the
+  //     dialog closed; a row appended into a closed <dialog> is not
+  //     rendered, so the attempt used to park forever behind a
+  //     question nobody could see.
+  await page.waitForFunction(() => globalThis.__ceremonyGate, null, { timeout: 15_000 });
+  const raiseCeremony = () => page.evaluate(() => {
+    window.__cerState = "pending";
+    globalThis.__ceremonyGate().then(
+      () => { window.__cerState = "resolved"; },
+      () => { window.__cerState = "rejected"; },
+    );
+  });
+  const cerState = () => page.evaluate(() => window.__cerState);
+  const panelOpen = () => page.evaluate(() => document.getElementById("panel").open);
+
+  // 26. Closed dialog: the ask opens it, the tap answers it, and the
+  //     dialog goes back the way it was found.
+  await page.evaluate(() => document.getElementById("panel").close());
+  await raiseCeremony();
+  // waitForSelector requires VISIBILITY, which is the property under
+  // test: in the pre-fix panel the row exists but sits in a closed
+  // <dialog>, unrendered -- fail the leg legibly instead of dying on
+  // the timeout.
+  const askVisible = await page.waitForSelector("#panel .confirm button", { timeout: 5_000 })
+    .then(() => true, () => false);
+  if (!ok(askVisible && await panelOpen(),
+          "a ceremony raised into a closed dialog stayed invisible (the reconnect would park forever)")) {
+    // the taps below would time out; skip them
+  } else {
+    await page.click("#panel .confirm button:has-text('touch your passkey')");
+    await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
+    if (ok(await cerState() === "resolved", `the tap did not resolve the gate (${await cerState()})`) &&
+        ok(!(await panelOpen()), "the dialog stayed open after the ask it was opened for")) {
+      console.log("[26] a ceremony with the dialog closed opens it, and the tap puts it back");
+    }
+  }
+
+  // 27. Cancelling fails the gate (which fails the attempt, legibly)
+  //     and leaves the dialog open -- that is where the failure will
+  //     be told.
+  await page.evaluate(() => document.getElementById("panel").close());
+  await raiseCeremony();
+  await page.waitForSelector("#panel .confirm button", { timeout: 5_000 });
+  await page.click("#panel .confirm button:has-text('cancel')");
+  await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
+  if (ok(await cerState() === "rejected", `cancel did not reject the gate (${await cerState()})`) &&
+      ok(await panelOpen(), "cancel closed the dialog out from under the failure notice")) {
+    console.log("[27] cancelling the ceremony fails the gate and keeps the dialog for the story");
+  }
+
+  // 28. An ask into an ALREADY-open dialog (a manual connect) leaves
+  //     it exactly as it found it: open before, open after.
+  await raiseCeremony();
+  await page.waitForSelector("#panel .confirm button", { timeout: 5_000 });
+  await page.click("#panel .confirm button:has-text('touch your passkey')");
+  await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
+  if (ok(await cerState() === "resolved", "the open-dialog tap did not resolve the gate") &&
+      ok(await panelOpen(), "answering a ceremony closed a dialog it did not open")) {
+    console.log("[28] a ceremony into an open dialog leaves it open");
   }
 
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
