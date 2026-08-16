@@ -366,6 +366,10 @@ function loadHistory() {
     for (const e of entries) {
       if (typeof e.command !== "string" || !e.command) delete e.command;
       if (typeof e.name !== "string" || !e.name.trim()) delete e.name;
+      // A stored method must be one this page can offer; `auto` is
+      // never stored, so anything else -- typos, retired methods --
+      // coerces back to the auto default by absence.
+      if (!METHODS.some(([v]) => v === e.method) || e.method === "auto") delete e.method;
       if (e.autoResume !== true) delete e.autoResume;
       // `tools` drives which presets are offered and which are marked
       // "not installed here", so a store that says anything other than
@@ -403,7 +407,7 @@ function saveHistory(entries) {
  * PRESERVED from the old entry: reconnecting must never cost a card
  * its name.
  */
-function recordConnection(id, relay, user, command, autoResume) {
+function recordConnection(id, relay, user, command, method, autoResume) {
   const prior = loadHistory().find((e) => e.id === id && e.user === user);
   const rest = loadHistory().filter((e) => !(e.id === id && e.user === user));
   const entry = { id, relay, user, at: new Date().toISOString() };
@@ -413,7 +417,10 @@ function recordConnection(id, relay, user, command, autoResume) {
     if (typeof prior.toolsAt === "number") entry.toolsAt = prior.toolsAt;
   }
   if (command) entry.command = command;
-  if (autoResume) entry.autoResume = true;
+  // The method that just WORKED is the connection's method; auto is
+  // the default and rides as absence.
+  if (method && method !== "auto") entry.method = method;
+  if (autoResume === undefined ? prior?.autoResume === true : autoResume) entry.autoResume = true;
   saveHistory([entry, ...rest]);
 }
 
@@ -453,6 +460,17 @@ function relTime(iso) {
   if (s < 172800) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 }
+
+/** The auth methods a connection can be told to use. `auto` is the
+ * default and is never stored (an absent `method` means auto, the way
+ * an absent `command` means a plain shell). */
+const METHODS = [
+  ["auto", "automatic (server chooses)"],
+  ["publickey", "publickey (this browser's key)"],
+  ["passkey", "passkey"],
+  ["password", "password"],
+  ["keyboard-interactive", "keyboard-interactive (OTP/2FA)"],
+];
 
 /** The card label for an entry: the nickname, or the id prefix. */
 const labelOf = (entry) => entry?.name || `${entry?.id?.slice(0, 8) ?? "????????"}…`;
@@ -580,6 +598,23 @@ export async function initBoot(chrome, { onConnect }) {
       setTimeout(() => (b.textContent = "copy"), 1500);
     });
     return b;
+  };
+
+  /// The auth-method select, offering what the loaded component can
+  /// actually do (caps may still be null pre-probe: offer everything,
+  /// the probe's re-render corrects screens that stay open).
+  const methodSelect = () => {
+    const select = el("select", { className: "method" });
+    for (const [v, label] of METHODS) {
+      if (caps) {
+        if (v === "auto" && !caps.auto) continue;
+        if (v === "publickey" && !caps.publickey) continue;
+        if (v === "passkey" && !caps.passkey) continue;
+        if (v === "keyboard-interactive" && !caps.keyboardInteractive) continue;
+      }
+      select.append(el("option", { value: v, textContent: label }));
+    }
+    return select;
   };
 
   /// The fingerprint block. The textContent is the EXACT fingerprint
@@ -788,6 +823,9 @@ export async function initBoot(chrome, { onConnect }) {
             textContent: m ? `${m.preset.id}: ${m.name}` : "runs a command",
           }));
         }
+        if (entry.method) {
+          sub.append(el("span", { className: "pill", textContent: entry.method }));
+        }
         sub.append(relTime(entry.at));
         const body = el("span", { className: "body" },
           el("span", { className: "title", textContent: `${entry.user}@${labelOf(entry)}` }), sub);
@@ -960,6 +998,20 @@ export async function initBoot(chrome, { onConnect }) {
       el("div", { className: "row" }, plainOnce),
     );
     connectionEl.append(cmdCard);
+
+    // Auth: which method this connection dials with. Stored on the
+    // entry; auto is the default and rides as absence.
+    const authCard = el("div", { className: "idcard" });
+    authCard.append(el("h3", { textContent: "auth method" }));
+    const method = methodSelect();
+    method.value = entry.method ?? "auto";
+    method.addEventListener("change", () => {
+      updateConnection(entry.id, entry.user, {
+        method: method.value === "auto" ? undefined : method.value,
+      });
+    });
+    authCard.append(method);
+    connectionEl.append(authCard);
 
     const behaveCard = el("div", { className: "idcard" });
     const auto = el("input", { type: "checkbox", checked: entry.autoResume === true });
@@ -1345,23 +1397,8 @@ export async function initBoot(chrome, { onConnect }) {
       // Everything about HOW to authenticate and WHAT to run, behind
       // one fold: needed when installing a key or setting up a session
       // manager, and not at all on the ordinary connect.
-      const method = el("select", { className: "method" });
-      for (const [v, label] of [
-        ["auto", "automatic (server chooses)"],
-        ["publickey", "publickey (this browser's key)"],
-        ["passkey", "passkey"],
-        ["password", "password"],
-        ["keyboard-interactive", "keyboard-interactive (OTP/2FA)"],
-      ]) {
-        if (caps) {
-          if (v === "auto" && !caps.auto) continue;
-          if (v === "publickey" && !caps.publickey) continue;
-          if (v === "passkey" && !caps.passkey) continue;
-          if (v === "keyboard-interactive" && !caps.keyboardInteractive) continue;
-        }
-        method.append(el("option", { value: v, textContent: label }));
-      }
-      if (prefill?.method) method.value = prefill.method;
+      const method = methodSelect();
+      method.value = prefill?.method ?? entry?.method ?? "auto";
 
       const preset = el("select", { className: "preset" });
       preset.append(el("option", { value: "", textContent: "plain shell" }));
@@ -1673,7 +1710,7 @@ export async function initBoot(chrome, { onConnect }) {
       // Fields the bump does not own (nickname, detection results,
       // autoResume) are preserved by recordConnection.
       if (details && rememberEnabled()) {
-        recordConnection(details.id, details.relay, user, command, undefined);
+        recordConnection(details.id, details.relay, user, command, method, undefined);
       }
       const entry = details
         ? loadHistory().find((e) => e.id === details.id && e.user === user)
@@ -1714,9 +1751,10 @@ export async function initBoot(chrome, { onConnect }) {
   async function dialFromEntry(entry, { command } = {}) {
     const cs = tokenlessConnstring(entry.id, entry.relay);
     const cmd = command !== undefined ? command : (entry.command ?? "");
-    const outcome = await doConnect({ connstring: cs, user: entry.user, method: "auto", command: cmd });
+    const method = entry.method ?? "auto";
+    const outcome = await doConnect({ connstring: cs, user: entry.user, method, command: cmd });
     if (outcome.error) {
-      dialWithSheet(cs, { user: entry.user, method: "auto", command: cmd }, outcome.error);
+      dialWithSheet(cs, { user: entry.user, method, command: cmd }, outcome.error);
     }
   }
 
