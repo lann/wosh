@@ -203,7 +203,9 @@
     .pill.ok { color: var(--ok); border-color: #2e4a38; }
     .histrow .more {
       flex: none; width: 44px; height: 44px; border-radius: 8px;
-      background: none; border: none; color: var(--dim); font-size: 20px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface2); border: 1px solid var(--line2);
+      color: var(--dim); font-size: 18px; line-height: 1;
     }
     /* the auto-resume countdown, ON the card it resumes */
     .histrow.resuming { border-color: #3a4a5e; }
@@ -238,7 +240,19 @@
       max-height: calc(100dvh - 40px); overflow-y: auto;
     }
     #sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
-    #sheet .handle { width: 36px; height: 4px; border-radius: 2px; background: #333; margin: 0 auto 14px; }
+    #sheet[data-ask="scan"] {
+      margin: 0 auto auto;
+      border-radius: 0 0 16px 16px;
+      border-top: none; border-bottom: 1px solid var(--line2);
+      padding-top: calc(14px + env(safe-area-inset-top));
+    }
+    #sheet .close-x {
+      position: absolute; top: 8px; right: 8px;
+      width: 40px; height: 40px; min-height: 40px;
+      background: none; border: none; color: var(--dim);
+      font-size: 20px; line-height: 1; padding: 0;
+    }
+    #sheet { position: relative; }
     #sheet h2 { font: 600 17px var(--sans); color: var(--bright); margin: 0 0 8px; }
     #sheet h2.warn { color: var(--danger); }
     #sheet p { margin: 0 0 12px; color: var(--dim); font-size: 14px; }
@@ -295,16 +309,6 @@
     .newrow input { flex: 1; min-height: 44px; }
     .newrow button { flex: none; }
 
-    /* menu sheets: one action per row */
-    .menurow {
-      display: block; width: 100%; text-align: left; padding: 13px 4px;
-      background: none; border: none; border-bottom: 1px solid var(--line);
-      font-size: 15px; color: var(--text); border-radius: 0;
-    }
-    .menurow:last-of-type { border-bottom: none; }
-    .menurow.danger { color: var(--danger); }
-    .menurow.danger.armed { background: #802020; color: #fff; border-radius: 8px; }
-
     /* ---- identity & prefs cards ---- */
     .idcard {
       background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
@@ -337,11 +341,13 @@
     .prefrow .t { font: 15px var(--sans); color: var(--bright); }
     .prefrow .d { font: 13px var(--sans); color: var(--dim); margin-top: 2px; }
 
-    /* the camera preview, while a scan is running (qr.mjs) */
+    /* The camera preview, while a scan is running (qr.mjs): a square,
+       cropped (the decoder gets the full frame; only the VIEW clips),
+       so the sheet stays compact and the framing reads as a viewfinder. */
     .scan-view video {
-      display: block; width: 100%; max-height: 46vh;
+      display: block; width: 100%; aspect-ratio: 1 / 1;
       background: #000; border: 1px solid var(--line2); border-radius: 10px;
-      object-fit: contain;
+      object-fit: cover;
     }
     .scan-view .hint { color: var(--dim); margin: 8px 0; font-size: 13px; }
     .scan-view button { min-height: 44px; padding: 0 16px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; }
@@ -391,7 +397,7 @@
        session to look at; reachable in-session via the session sheet. -->
   <div id="chrome">
     <section id="home" class="screen on"></section>
-    <section id="identity" class="screen"></section>
+    <section id="connection" class="screen"></section>
     <section id="prefs" class="screen"></section>
   </div>
   <!-- Every ask rides this one dialog, one at a time: host-key

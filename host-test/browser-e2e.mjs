@@ -459,14 +459,15 @@ try {
   }
   console.log("[G] remember off: nothing recorded, nothing forgotten");
 
-  // Forget lives in the card's menu, and arms on the first tap.
+  // Forget lives on the connection-settings screen (the card's ⋯),
+  // and arms on the first tap.
   await page.click("#home .histrow .more");
-  await page.click("#sheet button:has-text('forget this connection')");
+  await page.click("#connection button:has-text('forget this connection')");
   rowsAfter = await page.locator("#home .histrow").count();
   if (rowsAfter !== 1) fail("one tap must only ARM the forget, not perform it");
-  const armed = await page.locator("#sheet button.menurow.danger").textContent();
+  const armed = await page.locator("#connection button.danger").textContent();
   if (!/forget it\?/.test(armed ?? "")) fail(`expected an armed 'forget it?' label, got: ${armed}`);
-  await page.click("#sheet button.menurow.danger");
+  await page.click("#connection button.danger");
   rowsAfter = await page.locator("#home .histrow").count();
   if (rowsAfter !== 0) fail(`confirmed forget should remove the card; ${rowsAfter} remain`);
   console.log("[G] forget is two-step: armed on the first tap, done on the second");
