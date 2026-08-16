@@ -128,10 +128,10 @@ try {
     console.log("[3] SKIP: this component build has no WebCrypto identity yet " +
                 "(password-only); publickey auth is the unfinished leg");
   } else {
-    // Through the identity SCREEN: this gate owns that UI.
-    await page.click("#home .footer button:has-text('identity')");
-    await page.click("#identity button:has-text(\"show this browser's public key\")");
-    const line = (await page.locator("#identity .key code").first()
+    // Through the settings screen (identity & keys live there).
+    await page.click("#home .topline button:has-text('settings')");
+    await page.click("#prefs button:has-text(\"show this browser's public key\")");
+    const line = (await page.locator("#prefs .key code").first()
       .textContent({ timeout: 120_000 }) ?? "").trim();
     console.log(`[3] identity: ${line}`);
     if (!/^ssh-ed25519 AAAA[A-Za-z0-9+/]+=* wosh-browser$/.test(line)) {

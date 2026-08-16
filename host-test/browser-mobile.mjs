@@ -832,20 +832,21 @@ try {
   }
   await page.click("#sheet button:text-is('cancel')");
 
-  // 25b. The identity screen: the browser key renders on demand, and
-  //      the passkey card is one compact action row -- adopt's paste
-  //      field hidden until asked for, the guidance behind the "?".
-  await page.click("#home .footer button:has-text('identity')");
+  // 25b. The settings screen carries identity & keys: the browser key
+  //      renders on demand, and the passkey card is one compact action
+  //      row -- adopt's paste field hidden until asked for, the
+  //      guidance behind the "?".
+  await page.click("#home .topline button:has-text('settings')");
   await page.waitForFunction(
-    () => !document.querySelector("#identity .passkey")?.hidden, null, { timeout: 15_000 });
-  await page.click(`#identity button:has-text("show this browser's public key")`);
-  await page.waitForSelector("#identity .key code", { timeout: 5_000 });
-  const line = (await page.locator("#identity .key code").textContent()).trim();
+    () => !document.querySelector("#prefs .passkey")?.hidden, null, { timeout: 15_000 });
+  await page.click(`#prefs button:has-text("show this browser's public key")`);
+  await page.waitForSelector("#prefs .key code", { timeout: 5_000 });
+  const line = (await page.locator("#prefs .key code").textContent()).trim();
   if (ok(line.startsWith("ssh-ed25519 "), `the browser-key line did not render: "${line}"`)) {
-    console.log("[25c] the identity screen renders the browser key on demand");
+    console.log("[25c] the settings screen renders the browser key on demand");
   }
   const submenu = await page.evaluate(() => {
-    const section = document.querySelector("#identity .passkey");
+    const section = document.querySelector("#prefs .passkey");
     const visible = (el) => el.checkVisibility();
     const byText = (t) => [...section.querySelectorAll("button")].find((b) => b.textContent.trim() === t);
     const adoptInput = section.querySelector("input");
@@ -862,7 +863,7 @@ try {
       ok(submenu.after.helpBody, "? did not reveal the guidance")) {
     console.log("[25d] passkey is one action row; adopt and the guidance reveal on demand");
   }
-  await page.click("#identity .backrow .back");
+  await page.click("#prefs .backrow .back");
 
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it
   //     arrives: the sheet is top-layer, so it renders over the home

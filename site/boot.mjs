@@ -463,7 +463,7 @@ const labelOf = (entry) => entry?.name || `${entry?.id?.slice(0, 8) ?? "????????
 /// and the gates.
 export async function initBoot(chrome, { onConnect }) {
   const homeEl = chrome.querySelector("#home");
-  const identityEl = chrome.querySelector("#identity");
+  const connectionEl = chrome.querySelector("#connection");
   const prefsEl = chrome.querySelector("#prefs");
   const sheet = document.getElementById("sheet");
   const dot = document.getElementById("dot");
@@ -497,7 +497,12 @@ export async function initBoot(chrome, { onConnect }) {
     withdrawSheet(); // supersede: the old ask resolves null first
     return new Promise((resolve) => {
       sheetResolve = resolve;
-      sheet.replaceChildren(el("div", { className: "handle" }));
+      // The x is the visible way out (backdrop taps and Esc do the
+      // same); a drag handle would promise a gesture nothing implements.
+      const closeX = el("button", { className: "close-x", textContent: "\u00d7", title: "close" });
+      closeX.setAttribute("aria-label", "close");
+      closeX.addEventListener("click", () => settleSheet(null));
+      sheet.replaceChildren(closeX);
       sheet.dataset.ask = ask;
       build({
         append: (...nodes) => sheet.append(...nodes),
@@ -643,9 +648,9 @@ export async function initBoot(chrome, { onConnect }) {
 
   const showChrome = (which) => {
     chrome.hidden = false;
-    for (const s of [homeEl, identityEl, prefsEl]) s.classList.toggle("on", s.id === which);
+    for (const s of [homeEl, connectionEl, prefsEl]) s.classList.toggle("on", s.id === which);
     if (which === "home") renderHome();
-    if (which === "identity") renderIdentity();
+    if (which === "connection") renderConnection();
     if (which === "prefs") renderPrefs();
   };
   const hideChrome = () => {
@@ -794,7 +799,8 @@ export async function initBoot(chrome, { onConnect }) {
         more.addEventListener("click", (e) => {
           e.stopPropagation();
           cancelResume();
-          cardMenu(entry);
+          connectionFor = { id: entry.id, user: entry.user };
+          showChrome("connection");
         });
         row.append(body, more);
         row.addEventListener("click", () => {
@@ -845,23 +851,190 @@ export async function initBoot(chrome, { onConnect }) {
       }
     }
 
-    const idLink = el("button", { className: "applink", textContent: "identity & keys" });
-    idLink.addEventListener("click", () => {
-      cancelResume();
-      showChrome("identity");
-    });
-    homeEl.append(el("div", { className: "footer" }, idLink));
   }
 
-  // --- #identity -------------------------------------------------------------
+  // --- #connection: per-connection settings -----------------------------
+  //
+  // Everything ABOUT one card, on its own screen (the old ⋯ menu-sheet
+  // was a list of verbs pointing at more sheets; settings deserve a
+  // settings screen). Edits write through to the stored entry as they
+  // are made.
 
-  function renderIdentity() {
-    identityEl.replaceChildren();
+  // Which connection the screen shows, set by the card's ⋯ button.
+  let connectionFor = null;
+
+  function renderConnection() {
+    connectionEl.replaceChildren();
+    const entry = connectionFor
+      ? loadHistory().find((e) => e.id === connectionFor.id && e.user === connectionFor.user)
+      : null;
+    if (!entry) return void showChrome("home"); // forgotten underneath us
+    const back = el("button", { className: "back", textContent: "\u2039" });
+    back.setAttribute("aria-label", "back");
+    back.addEventListener("click", () => showChrome("home"));
+    connectionEl.append(el("div", { className: "backrow" }, back,
+      el("h1", { textContent: `${entry.user}@${labelOf(entry)}` })));
+
+    // Nickname: written on change (blur/Enter), not per keystroke, so
+    // typing is not fighting a re-render.
+    const nickCard = el("div", { className: "idcard" });
+    nickCard.append(el("h3", { textContent: "nickname" }));
+    const nick = el("input", { type: "text", value: entry.name ?? "", placeholder: "a name for this card" });
+    nick.style.fontFamily = "var(--sans)";
+    nick.addEventListener("change", () => {
+      updateConnection(entry.id, entry.user, { name: nick.value.trim() || undefined });
+      renderConnection(); // the title above echoes it
+    });
+    nickCard.append(nick);
+    connectionEl.append(nickCard);
+
+    // Run on connect: the same preset/name/command trio the connect
+    // sheet carries, writing through to the stored entry. The field is
+    // the truth; the select and the name are a view of it.
+    const cmdCard = el("div", { className: "idcard" });
+    cmdCard.append(el("h3", { textContent: "run on connect" }));
+    const notice = el("div", { className: "notice" });
+    const preset = el("select", { className: "preset" });
+    preset.append(el("option", { value: "", textContent: "plain shell" }));
+    for (const p of PRESETS) {
+      const missing = !!entry.tools && entry.tools[p.id] === false;
+      preset.append(el("option", {
+        value: p.id,
+        textContent: missing ? `${p.label} — not installed here` : p.label,
+        disabled: missing,
+      }));
+    }
+    preset.append(el("option", { value: "custom", textContent: "custom…" }));
+    const name = el("input", { type: "text", className: "sessname", placeholder: "main" });
+    const command = el("input", {
+      type: "text",
+      className: "command",
+      placeholder: "command to run instead of a shell",
+      value: entry.command ?? "",
+    });
+    const nameOr = () => name.value.trim() || "main";
+    const store = () => {
+      const cmd = command.value.trim();
+      if (cmd) updateConnection(entry.id, entry.user, { command: cmd });
+      else clearStoredCommand(entry.id, entry.user);
+    };
+    const templateCommand = () => {
+      const p = presetById(preset.value);
+      if (!p) return;
+      if (!validName(nameOr())) {
+        notice.textContent = "a session name may only use letters, digits, - and _ (up to 32 characters)";
+        return;
+      }
+      notice.textContent = "";
+      command.value = p.command(nameOr());
+      store();
+    };
+    const syncFromCommand = () => {
+      const v = command.value.trim();
+      if (!v) return void (preset.value = "");
+      const hit = matchCommand(v);
+      preset.value = hit ? hit.preset.id : "custom";
+      if (hit) name.value = hit.name;
+    };
+    preset.addEventListener("change", () => {
+      if (preset.value === "custom") return;
+      if (!preset.value) {
+        command.value = "";
+        return void store();
+      }
+      templateCommand();
+    });
+    name.addEventListener("input", () => {
+      if (presetById(preset.value)) templateCommand();
+    });
+    command.addEventListener("input", syncFromCommand);
+    command.addEventListener("change", store);
+    syncFromCommand();
+    const plainOnce = el("button", { className: "small", textContent: "connect with a plain shell" });
+    plainOnce.addEventListener("click", () => dialFromEntry(entry, { command: "" }));
+    cmdCard.append(
+      el("div", { className: "fieldlabel", textContent: "preset" }), preset,
+      el("div", { className: "fieldlabel", textContent: "session name" }), name,
+      el("div", { className: "fieldlabel", textContent: "command" }), command,
+      notice,
+      el("div", { className: "row" }, plainOnce),
+    );
+    connectionEl.append(cmdCard);
+
+    const behaveCard = el("div", { className: "idcard" });
+    const auto = el("input", { type: "checkbox", checked: entry.autoResume === true });
+    auto.addEventListener("change", () => {
+      updateConnection(entry.id, entry.user, { autoResume: auto.checked ? true : undefined });
+    });
+    behaveCard.append(el("label", { className: "check" }, auto,
+      " reconnect automatically when this page opens"));
+    connectionEl.append(behaveCard);
+
+    // The facts the old card hid in a hover tooltip -- which no phone
+    // ever showed anyone.
+    const factsCard = el("div", { className: "idcard" });
+    factsCard.append(el("h3", { textContent: "details" }));
+    const pin = loadPins()[entry.id];
+    factsCard.append(
+      el("div", { className: "keyblock", textContent: `endpoint ${entry.id}\nrelay ${entry.relay}` }),
+      el("div", {
+        className: "sub",
+        textContent: pin
+          ? `host key pinned — approved ${String(pin.at).slice(0, 10)} (revocable under settings)`
+          : "no host key pinned: the next connect asks for confirmation",
+      }),
+    );
+    connectionEl.append(factsCard);
+
+    const dangerCard = el("div", { className: "idcard" });
+    const forget = el("button", { className: "small danger", textContent: "forget this connection…" });
+    armTwoStep(forget, "forget it?", () => {
+      removeConnection(entry.id, entry.user);
+      showChrome("home");
+    });
+    dangerCard.append(el("div", { className: "row" }, forget));
+    connectionEl.append(dangerCard);
+  }
+
+  // --- #prefs ---------------------------------------------------------------
+
+  function renderPrefs() {
+    prefsEl.replaceChildren();
     const back = el("button", { className: "back", textContent: "‹" });
     back.setAttribute("aria-label", "back");
     back.addEventListener("click", () => showChrome("home"));
-    identityEl.append(el("div", { className: "backrow" }, back,
-      el("h1", { textContent: "identity & keys" })));
+    prefsEl.append(el("div", { className: "backrow" }, back, el("h1", { textContent: "settings" })));
+
+    const prefRow = (id, checked, title, desc, onChange) => {
+      const box = el("input", { type: "checkbox", id, checked });
+      box.addEventListener("change", () => onChange(box.checked));
+      return el("label", { className: "prefrow" }, box,
+        el("span", { className: "body" },
+          el("span", { className: "t", textContent: title }),
+          el("div", { className: "d", textContent: desc })));
+    };
+    const card = el("div", { className: "idcard" });
+    card.append(
+      prefRow("pref-scrollback", scrollbackEnabled(), "keep scrollback on this device",
+        "a local copy of what each terminal showed, so a reattach doesn't start " +
+          "blank — dtach and abduco keep no screen state of their own, and tmux and " +
+          "screen keep only the visible screen. stored only in this browser; " +
+          "turning it off deletes what is stored.",
+        (on) => {
+          setScrollbackEnabled(on);
+          if (!on) bufferStore.wipe().catch((e) => console.warn("wosh: could not wipe scrollback", e));
+        }),
+      prefRow("pref-links", linksDirect(), "open links without asking",
+        "http(s) links painted in the terminal open on one tap instead of showing " +
+          "a confirmation first.",
+        setLinksDirect),
+      prefRow("pref-remember", rememberEnabled(), "remember new connections",
+        "endpoint id, relay and user name only — the pairing token is never saved.",
+        setRememberEnabled),
+    );
+    prefsEl.append(card);
+
+    // --- identity & keys: just more settings, so they live here -------
 
     // The browser's key: rendered on demand (the first press loads the
     // component), then shown with a copy button -- the line's entire
@@ -897,14 +1070,14 @@ export async function initBoot(chrome, { onConnect }) {
           "auth yet; password and keyboard-interactive still work",
       }));
     }
-    identityEl.append(keyCard);
+    prefsEl.append(keyCard);
 
     // The passkey: same visual register (an ordinary authorized_keys
     // line), plus its own enrol/adopt/recover/forget verbs. Hidden
     // until capabilities() confirms both the component build and the
     // platform support it.
     const passkeyCard = el("div", { className: "idcard passkey", hidden: true });
-    identityEl.append(passkeyCard);
+    prefsEl.append(passkeyCard);
     const renderPasskey = async () => {
       if (!caps?.passkey) return;
       passkeyCard.hidden = false;
@@ -1001,8 +1174,8 @@ export async function initBoot(chrome, { onConnect }) {
     };
     renderPasskey().catch(() => {});
 
-    // The pin store, finally visible: which machine keys this browser
-    // would connect to without asking, and the way to take one back.
+    // The pin store, visible: which machine keys this browser would
+    // connect to without asking, and the way to take one back.
     const pinsCard = el("div", { className: "idcard pins" });
     pinsCard.append(
       el("h3", { textContent: "approved machine keys" }),
@@ -1023,7 +1196,7 @@ export async function initBoot(chrome, { onConnect }) {
       const forget = el("button", { className: "small danger", textContent: "forget…" });
       armTwoStep(forget, "forget it?", () => {
         removePin(id);
-        renderIdentity();
+        renderPrefs();
       });
       pinsCard.append(el("div", { className: "pinrow" },
         el("span", { className: "id", textContent: label }),
@@ -1031,46 +1204,7 @@ export async function initBoot(chrome, { onConnect }) {
         el("span", { className: "spacer" }),
         forget));
     }
-    identityEl.append(pinsCard);
-  }
-
-  // --- #prefs ---------------------------------------------------------------
-
-  function renderPrefs() {
-    prefsEl.replaceChildren();
-    const back = el("button", { className: "back", textContent: "‹" });
-    back.setAttribute("aria-label", "back");
-    back.addEventListener("click", () => showChrome("home"));
-    prefsEl.append(el("div", { className: "backrow" }, back, el("h1", { textContent: "settings" })));
-
-    const prefRow = (id, checked, title, desc, onChange) => {
-      const box = el("input", { type: "checkbox", id, checked });
-      box.addEventListener("change", () => onChange(box.checked));
-      return el("label", { className: "prefrow" }, box,
-        el("span", { className: "body" },
-          el("span", { className: "t", textContent: title }),
-          el("div", { className: "d", textContent: desc })));
-    };
-    const card = el("div", { className: "idcard" });
-    card.append(
-      prefRow("pref-scrollback", scrollbackEnabled(), "keep scrollback on this device",
-        "a local copy of what each terminal showed, so a reattach doesn't start " +
-          "blank — dtach and abduco keep no screen state of their own, and tmux and " +
-          "screen keep only the visible screen. stored only in this browser; " +
-          "turning it off deletes what is stored.",
-        (on) => {
-          setScrollbackEnabled(on);
-          if (!on) bufferStore.wipe().catch((e) => console.warn("wosh: could not wipe scrollback", e));
-        }),
-      prefRow("pref-links", linksDirect(), "open links without asking",
-        "http(s) links painted in the terminal open on one tap instead of showing " +
-          "a confirmation first.",
-        setLinksDirect),
-      prefRow("pref-remember", rememberEnabled(), "remember new connections",
-        "endpoint id, relay and user name only — the pairing token is never saved.",
-        setRememberEnabled),
-    );
-    prefsEl.append(card);
+    prefsEl.append(pinsCard);
 
     const wipeCard = el("div", { className: "idcard" });
     const forgetAll = el("button", { className: "small danger", textContent: "forget all connections…" });
@@ -1471,81 +1605,6 @@ export async function initBoot(chrome, { onConnect }) {
     idleHome("detached");
   }
 
-  /// The card's ⋯ menu: everything per-connection that used to be a
-  /// global checkbox lives on the thing it configures.
-  async function cardMenu(entry) {
-    const action = await showSheet("menu", ({ append, done }) => {
-      append(el("div", { className: "sheet-title" },
-        el("span", { className: "who", textContent: `${entry.user}@${labelOf(entry)}` })));
-      const item = (label, value) => {
-        const b = el("button", { className: "menurow", textContent: label });
-        b.addEventListener("click", () => done(value));
-        return b;
-      };
-      append(item("rename…", "rename"));
-      append(item("edit run-on-connect…", "command"));
-      append(item("connect with a plain shell", "plain"));
-      append(item(`reconnect automatically when this page opens ${entry.autoResume ? "✓" : "✗"}`, "auto"));
-      const forget = el("button", { className: "menurow danger", textContent: "forget this connection…" });
-      armTwoStep(forget, "forget it?", () => done("forget"));
-      append(forget);
-    });
-    if (!action) return;
-    if (action === "rename") {
-      const name = await textSheet({
-        title: "rename",
-        label: `a nickname for ${entry.user}@${entry.id.slice(0, 8)}… (empty clears it)`,
-        value: entry.name ?? "",
-        placeholder: "nickname",
-      });
-      if (name === null) return;
-      // Assigning undefined and JSON round-tripping drops the field.
-      updateConnection(entry.id, entry.user, { name: name.trim() || undefined });
-      renderHome();
-    } else if (action === "command") {
-      const cmd = await textSheet({
-        title: "run on connect",
-        label: "the command a connect runs instead of a shell (empty = plain shell)",
-        value: entry.command ?? "",
-        placeholder: "command",
-        mono: true,
-      });
-      if (cmd === null) return;
-      if (cmd.trim()) updateConnection(entry.id, entry.user, { command: cmd.trim() });
-      else clearStoredCommand(entry.id, entry.user);
-      renderHome();
-    } else if (action === "plain") {
-      // One connect without the command; the remembered line stays.
-      dialFromEntry(entry, { command: "" });
-    } else if (action === "auto") {
-      updateConnection(entry.id, entry.user, { autoResume: entry.autoResume ? undefined : true });
-      renderHome();
-    } else if (action === "forget") {
-      removeConnection(entry.id, entry.user);
-      renderHome();
-    }
-  }
-
-  /// One text field in a sheet; resolves the string, or null.
-  function textSheet({ title, label, value = "", placeholder = "", mono = false }) {
-    return showSheet("text", ({ append, done }) => {
-      append(el("h2", { textContent: title }));
-      append(el("div", { className: "fieldlabel", textContent: label }));
-      const input = el("input", { type: "text", value, placeholder });
-      if (!mono) input.style.fontFamily = "var(--sans)";
-      append(input);
-      const save = el("button", { className: "primary", textContent: "save" });
-      const cancel = el("button", { className: "quiet", textContent: "cancel" });
-      save.addEventListener("click", () => done(input.value));
-      cancel.addEventListener("click", () => done(null));
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") done(input.value);
-      });
-      append(el("div", { className: "stack" }, save, cancel));
-      setTimeout(() => input.focus(), 0);
-    });
-  }
-
   // --- connecting -------------------------------------------------------------
 
   /**
@@ -1877,6 +1936,11 @@ export async function initBoot(chrome, { onConnect }) {
   (async () => {
     try {
       caps = await capabilities();
+      // Screens rendered before the probe answered were built against
+      // caps === null (the passkey card hidden, every method offered):
+      // re-render whichever is showing so the answer lands.
+      if (prefsEl.classList.contains("on")) renderPrefs();
+      if (connectionEl.classList.contains("on")) renderConnection();
     } catch (e) {
       setHomeNotice(`could not load the client component: ${e.message ?? e}`);
     }
