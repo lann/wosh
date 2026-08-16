@@ -278,11 +278,14 @@ several can run at once.
 
 The listener prints a QR code and a link. Open it, confirm the
 fingerprint, paste the `authorized_keys` line it shows you, connect.
-With the page already open, the connect panel's **scan QR** button
-fills the connection string from the camera instead (the platform's
+With the page already open, the home screen's **scan** button opens
+the connect sheet from the camera instead (the platform's
 BarcodeDetector where there is one, jsQR everywhere else) — that needs
 an https origin or localhost, like every camera on the web; on a plain
-http LAN address the button says so. Served over https the site installs as a PWA; over plain http (local development)
+http LAN address the button says so. Machines you have connected to
+become cards on the home screen: tap to reconnect (tokenless — pairing
+enrollment vouches), `⋯` for per-connection options (nickname,
+run-on-connect command, auto-resume, forget). Served over https the site installs as a PWA; over plain http (local development)
 the service worker deliberately never registers, so a stale cache
 cannot confuse iteration or the browser gate.
 
@@ -599,13 +602,16 @@ Verified working:
   pagehide and freeze all suspend the session, visible, pageshow and
   resume all wake it, and a missing or torn-down session is survived
   quietly -- these run on the browser's way out of the page, where
-  there is nobody to report an exception to. And the connect panel's
-  shape, against the real boot.mjs with only the component stubbed: a
-  fresh panel is the task (connstring, user, connect, scan -- three
-  buttons), setup material (the auth override, keys & identity) stays
-  folded until asked for, and the rows that need answers -- host-key
-  confirmation, prompt batches, the passkey ceremony -- land under the
-  connect button, above the folds, never below a phone's fold. No other gate can see any of this; the
+  there is nobody to report an exception to. And the chrome's shape,
+  against the real boot.mjs with only the component stubbed: a fresh
+  home screen is the task (scan + paste, no cards, the extra-keys bar
+  hidden until a session exists), every question -- host-key
+  confirmation, prompt batches, the passkey ceremony -- arrives as ONE
+  modal bottom sheet that owns the screen (never below a phone's fold,
+  never outlived by its attempt: superseding an ask resolves it null),
+  the fingerprint's textContent is the exact string (its 4-char
+  grouping is visual only), and the identity screen reveals the adopt
+  field and guidance on demand. No other gate can see any of this; the
   e2e legs type through xterm, and none of them synthesize a finger
   that moves.
 - Listener identity persistence: the endpoint id (and so the browser's

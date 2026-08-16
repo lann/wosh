@@ -90,18 +90,9 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
 
   // 1. the page itself came up
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
-  // The panel collapses setup material (auth settings) into a
-  // <details> fold; this gate drives the flows inside them,
-  // not the collapse itself (browser-mobile covers that), so open
-  // everything after each load (a load resets the open state), and
-  // always AFTER the panel has rendered -- on an empty DOM it is a
-  // silent no-op.
-  const openPanelSections = () =>
-    page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
-  await openPanelSections();
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   await page.waitForSelector(".xterm-screen", { timeout: 15_000 });
-  console.log("[1] page loaded: connect panel and xterm are live");
+  console.log("[1] page loaded: home screen and xterm are live");
 
   // 2. deltic really instantiates the component AND guest code runs.
   //    Proven by feeding a deliberately malformed connection string and
@@ -137,8 +128,10 @@ try {
     console.log("[3] SKIP: this component build has no WebCrypto identity yet " +
                 "(password-only); publickey auth is the unfinished leg");
   } else {
-    await page.click("text=show this browser's public key");
-    const line = (await page.locator("#panel .key code").first()
+    // Through the identity SCREEN: this gate owns that UI.
+    await page.click("#home .footer button:has-text('identity')");
+    await page.click("#identity button:has-text(\"show this browser's public key\")");
+    const line = (await page.locator("#identity .key code").first()
       .textContent({ timeout: 120_000 }) ?? "").trim();
     console.log(`[3] identity: ${line}`);
     if (!/^ssh-ed25519 AAAA[A-Za-z0-9+/]+=* wosh-browser$/.test(line)) {
@@ -155,8 +148,7 @@ try {
     // come back identical from IndexedDB. This is THE property the
     // identity-store import exists for.
     await page.reload({ waitUntil: "load" });
-    await page.waitForSelector("#panel button", { timeout: 15_000 });
-    await openPanelSections();
+    await page.waitForSelector("#home button.scan", { timeout: 15_000 });
     const reloaded = await page.evaluate(async () => {
       const { identity } = await import("./app.mjs");
       return await identity();

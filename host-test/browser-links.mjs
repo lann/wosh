@@ -72,12 +72,15 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
   await page.waitForFunction(() => !!window.__wosh?.term && !!window.__wosh?.addons, { timeout: 30_000 });
 
-  // A fresh load opens the connect panel, and a MODAL dialog makes the
-  // rest of the page inert -- no hover, no clicks reach the terminal.
-  // Esc is the sanctioned way out with nothing in flight (boot.mjs).
-  await page.waitForFunction(() => document.getElementById("panel")?.open, null, { timeout: 15_000 });
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.getElementById("panel")?.open, null, { timeout: 5_000 });
+  // A fresh load shows the home screen over the terminal (there is no
+  // session to look at). This gate drives the TERMINAL layer directly
+  // -- links painted into xterm, no session -- so lift the chrome out
+  // of the way; the home screen's own behavior is browser-mobile's
+  // subject.
+  await page.waitForFunction(() => !document.getElementById("chrome")?.hidden, null, { timeout: 15_000 });
+  await page.evaluate(() => {
+    document.getElementById("chrome").hidden = true;
+  });
 
   // [1] the diagnostics: everything wired.
   const addons = await page.evaluate(() => {

@@ -129,28 +129,33 @@ try {
   // persistence: if the identity failed to survive, publickey auth
   // against the installed line would fail.
   const installIdentity = async () => {
-    await page.click("text=show this browser's public key");
-    const line = (await page.locator("#panel .key code").first()
-      .textContent({ timeout: 120_000 }) ?? "").trim();
+    // Straight off the component: the identity UI (#identity) is
+    // browser-identity's subject; these legs only need the line.
+    const line = (await page.evaluate(async () => {
+      const { identity } = await import("./app.mjs");
+      return await identity();
+    })).trim();
     if (!/^ssh-ed25519 /.test(line)) throw new Error(`bad identity line: ${line}`);
     appendFileSync(AUTH_KEYS, line + "\n");
   };
 
   const fillAndConnect = async (connstring = CONNSTRING) => {
-    await page.fill("#panel input[placeholder*='connection string']", connstring);
-    await page.fill("#panel input[placeholder='user']", USER);
+    await page.fill("#home input.connstring", connstring);
+    await page.click("#home .pasterow button.go");
+    await page.waitForSelector("#sheet[data-ask='connect'] input[placeholder='user']", { timeout: 15_000 });
+    await page.fill("#sheet input[placeholder='user']", USER);
     // Deliberately no selectOption: this drives the DEFAULT method,
     // which must be auto -- the server steers, and against this sshd
     // (publickey-only) that must complete silently with the browser
     // key, prompting for nothing.
-    const method = await page.inputValue("#panel select");
+    const method = await page.inputValue("#sheet select.method");
     if (method !== "auto") fail(`default auth method is ${method}, expected auto`);
-    await page.click("#panel button:has-text('connect')");
+    await page.click("#sheet button:text-is('connect')");
   };
 
   const waitPrompt = async () => {
     try {
-      return (await page.locator("#panel .confirm code").first()
+      return (await page.locator("#sheet .confirm code.fp").first()
         .textContent({ timeout: 60_000 })).trim();
     } catch (e) {
       console.error("no host-key prompt appeared; page state:", await diag());
@@ -179,18 +184,15 @@ try {
     );
   };
 
-  // The panel collapses setup material (auth settings) into a
-  // <details> fold; this gate drives the flows inside them,
-  // not the collapse itself (browser-mobile covers that), so open
-  // everything whenever a fresh page load has reset it. Always AFTER
-  // the panel has rendered: on an empty DOM it is a silent no-op.
-  const openPanelSections = () =>
-    page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
-
   const reload = async () => {
     await page.reload({ waitUntil: "load" });
-    await page.waitForSelector("#panel button", { timeout: 15_000 });
-    await openPanelSections();
+    await page.waitForSelector("#home button.scan", { timeout: 15_000 });
+  };
+
+  // Detach lives in the session sheet: open it from the header, tap.
+  const detachViaSheet = async () => {
+    await page.click("#sessions-btn");
+    await page.click("#sheet button:has-text('detach')");
   };
 
   // The QR scan path, stubbed at its two edges: headless Chromium has
@@ -225,8 +227,7 @@ try {
   }, CONNSTRING);
 
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
-  await openPanelSections();
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   console.log("[1] page loaded");
 
   // The session fold's controls must be LIVE against the real
@@ -236,42 +237,46 @@ try {
   // stayed green, because the mobile gate stubs the component and
   // nothing else looked at the fold.
   {
+    await page.fill("#home input.connstring", CONNSTRING);
+    await page.click("#home .pasterow button.go");
+    await page.waitForSelector("#sheet[data-ask='connect']", { timeout: 15_000 });
     await page.evaluate(() => {
-      document.querySelector("#panel details.sessioncfg").open = true;
+      document.querySelector("#sheet details.options").open = true;
     });
     const dead = await page.evaluate(() =>
-      [...document.querySelectorAll("#panel details.sessioncfg select, #panel details.sessioncfg input")]
+      [...document.querySelectorAll("#sheet details.options select, #sheet details.options input")]
         .filter((n) => n.disabled).length);
-    if (dead) fail(`${dead} session-fold control(s) arrived disabled against the real component`);
-    await page.evaluate(() => {
-      document.querySelector("#panel details.sessioncfg").open = false;
-    });
-    console.log("[1s] session fold controls are live");
+    if (dead) fail(`${dead} option control(s) arrived disabled against the real component`);
+    await page.click("#sheet button:text-is('cancel')");
+    console.log("[1s] connect-sheet option controls are live");
   }
 
   // --- leg S: the scan button fills the field, then lets go -----------
   // The scan button is an icon now; its accessible name is the stable
   // handle, its class the cheap one.
-  await page.click("#panel button.scan");
-  await page.waitForSelector("#panel .scan-view video", { timeout: 10_000 });
+  await page.click("#home button.scan");
+  await page.waitForSelector("#sheet .scan-view video", { timeout: 10_000 });
   try {
+    // A decoded link opens the connect sheet for its target, reduced to
+    // the bare connstring (the sheet advertises what it would dial).
     await page.waitForFunction(
-      (cs) => document.querySelector("#panel input.connstring")?.value === cs,
+      (cs) => document.getElementById("sheet")?.dataset.connstring === cs,
       CONNSTRING,
       { timeout: 10_000 },
     );
-    console.log("[S] a scanned link landed in the field as the bare connstring");
+    console.log("[S] a scanned link opened the connect sheet for its bare connstring");
   } catch {
-    const got = await page.inputValue("#panel input.connstring");
-    fail(`scan did not fill the connstring field; field holds: ${got}`);
+    const got = await page.evaluate(() => document.getElementById("sheet")?.dataset.connstring);
+    fail(`scan did not open the connect sheet for the link; sheet holds: ${got}`);
   }
-  if (await page.locator("#panel .scan-view").count() !== 0) {
+  if (await page.locator("#sheet .scan-view").count() !== 0) {
     fail("the camera preview outlived the scan");
   }
   const released = await page.evaluate(() =>
     (window.__woshFakeStream?.getTracks() ?? []).every((t) => t.readyState === "ended"));
   if (!released) fail("the camera was left running after the scan");
   else console.log("[S] preview torn down and the camera released");
+  await page.click("#sheet button:text-is('cancel')");
 
   // --- leg A: the prompt appears; approval is interactive ------------
   await installIdentity();
@@ -288,13 +293,13 @@ try {
   if (parked.status !== "waiting for host key confirmation") {
     fail(`expected the session parked on the prompt, status is: ${parked.status}`);
   }
-  const box = page.locator("#panel .confirm input[type=checkbox]");
+  const box = page.locator("#sheet .confirm input[type=checkbox]");
   if (await box.count() !== 1) {
     fail("no remember checkbox on the prompt");
   } else if (await box.isChecked()) {
     fail("the remember checkbox must default to UNCHECKED (persistence is opt-in)");
   }
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.click("#sheet button:has-text('it matches')");
   await waitConnected();
   console.log(`[A] approved (without remembering); auto steered to publickey, connected as ${USER}`);
 
@@ -317,8 +322,7 @@ try {
     { timeout: 30_000 },
   );
   console.log("[A] shell round-trip through the tunnel painted in xterm");
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  await detachViaSheet();
 
   // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
   await reload();
@@ -327,14 +331,14 @@ try {
   // the dial must be indistinguishable from the bare-connstring legs.
   await fillAndConnect(`http://127.0.0.1:${PORT}/#${CONNSTRING}`);
   await waitPrompt();
-  const reduced = await page.inputValue("#panel input[placeholder*='connection string']");
+  const reduced = await page.evaluate(() => window.__woshDialed);
   if (reduced !== CONNSTRING) {
     fail(`a pasted link was not reduced to its fragment: ${reduced}`);
   } else {
     console.log("[B] a pasted QR link dials: its fragment is taken as the connstring");
   }
   console.log("[B] prompt appears again after reload: approval was not persisted");
-  await page.click("#panel .confirm button:has-text('no')");
+  await page.click(`#sheet button:has-text("don't connect")`);
   await waitStatus("host key rejected; nothing was sent");
   console.log("[B] rejected fingerprint ends the attempt: nothing was sent");
 
@@ -344,12 +348,11 @@ try {
   await reload();
   await fillAndConnect();
   await waitPrompt();
-  await page.check("#panel .confirm input[type=checkbox]");
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.check("#sheet .confirm input[type=checkbox]");
+  await page.click("#sheet button:has-text('it matches')");
   await waitConnected();
-  console.log("[C] approved with 'remember this approval' checked");
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  console.log("[C] approved with 'remember this key' checked");
+  await detachViaSheet();
 
   // --- leg D: the pin skips the prompt --------------------------------
   await reload();
@@ -357,7 +360,7 @@ try {
   {
     const deadline = Date.now() + 60_000;
     for (;;) {
-      if (await page.locator("#panel .confirm").count() > 0) {
+      if (await page.locator("#sheet .confirm").count() > 0) {
         fail("prompt appeared despite a matching pinned fingerprint");
         break;
       }
@@ -370,10 +373,9 @@ try {
       await new Promise((r) => setTimeout(r, 150));
     }
   }
-  const pinNote = await page.evaluate(() => document.querySelector("#panel .notice")?.textContent);
+  const pinNote = await page.evaluate(() => document.querySelector("#home .notice")?.textContent);
   console.log(`[D] pinned fingerprint connected with NO prompt (${pinNote})`);
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  await detachViaSheet();
 
   // --- leg E: a changed host key warns loudly -------------------------
   // Overwrite the pin for this listener's endpoint id with a bogus
@@ -393,18 +395,18 @@ try {
   await fillAndConnect();
   await waitPrompt();
   const warn = await page.evaluate(() =>
-    [...document.querySelectorAll("#panel .confirm .warn")].map((n) => n.textContent).join(" "));
+    [...document.querySelectorAll("#sheet .confirm .warn")].map((n) => n.textContent).join(" "));
   if (!/CHANGED/.test(warn)) {
     fail(`expected the changed-key warning, saw: ${warn || "(no warning)"}`);
   } else {
     console.log("[E] changed pinned key produces the loud warning");
   }
   const shown = await page.evaluate(() =>
-    [...document.querySelectorAll("#panel .confirm code")].map((n) => n.textContent));
+    [...document.querySelectorAll("#sheet .confirm code.fp")].map((n) => n.textContent));
   if (!(shown.some((s) => s.includes("SHA256:00000")) && shown.some((s) => s === promptFp))) {
     fail(`warning must show both fingerprints; saw: ${shown.join(", ")}`);
   }
-  await page.click("#panel .confirm button:has-text('no')");
+  await page.click(`#sheet button:has-text("don't connect")`);
   await waitStatus("host key rejected; nothing was sent");
   console.log("[E] rejected the changed key: nothing was sent");
 
@@ -417,49 +419,57 @@ try {
   // rides through the changed-key warning: history grants no security
   // shortcuts.)
   await reload();
-  const rows = await page.locator("#panel .histrow").count();
-  if (rows !== 1) fail(`expected exactly 1 history row, found ${rows}`);
-  const detail = await page.locator("#panel .histrow").first().getAttribute("title");
+  const rows = await page.locator("#home .histrow").count();
+  if (rows !== 1) fail(`expected exactly 1 connection card, found ${rows}`);
+  const detail = await page.locator("#home .histrow").first().getAttribute("title");
   if (!/relay http/.test(detail ?? "")) {
-    fail(`history hover detail must carry the relay; got: ${detail}`);
+    fail(`the card's hover detail must carry the relay; got: ${detail}`);
   }
-  await page.click("#panel .histrow");
+  await page.click("#home .histrow");
   await waitPrompt();
-  const filled = await page.inputValue("#panel input[placeholder*='connection string']");
-  if (filled === CONNSTRING) fail("history dialed the original connstring (token included?)");
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  const dialed = await page.evaluate(() => window.__woshDialed);
+  if (dialed === CONNSTRING) fail("the card dialed the original connstring (token included?)");
+  // The pin is still leg E's bogus one, so this rides the changed-key
+  // sheet: the dangerous choice arms on the first tap and acts on the
+  // second -- history grants no security shortcuts, and no one-tap
+  // approvals either.
+  await page.click("#sheet button:has-text('connect anyway')");
+  await page.click("#sheet button:has-text('really connect?')");
   await waitConnected();
-  console.log("[F] history row reconnected with a tokenless connstring (enrollment vouched)");
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  console.log("[F] card reconnected with a tokenless connstring (enrollment vouched)");
+  await detachViaSheet();
 
   // --- leg G: unchecked remember records nothing (and forgets nothing);
   // forgetting is the row's own two-step affordance ------------------
-  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
-  await page.uncheck("#panel #remember-connection");
-  await page.click("#panel .histrow");
+  await page.waitForSelector("#home .histrow", { timeout: 15_000 });
+  // "remember new connections" is a global preference on #prefs now.
+  await page.click("#home .topline button:has-text('settings')");
+  await page.uncheck("#prefs #pref-remember");
+  await page.click("#prefs .backrow .back");
+  await page.click("#home .histrow");
   await waitPrompt();
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.click("#sheet button:has-text('connect anyway')");
+  await page.click("#sheet button:has-text('really connect?')");
   await waitConnected();
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
-  await page.waitForSelector("#panel .histrow", { timeout: 15_000 });
-  let rowsAfter = await page.locator("#panel .histrow").count();
+  await detachViaSheet();
+  await page.waitForSelector("#home .histrow", { timeout: 15_000 });
+  let rowsAfter = await page.locator("#home .histrow").count();
   if (rowsAfter !== 1) {
-    fail(`unchecked remember must not forget; expected the row to survive, found ${rowsAfter}`);
+    fail(`remember off must not forget; expected the card to survive, found ${rowsAfter}`);
   }
-  console.log("[G] unchecked remember: nothing recorded, nothing forgotten");
+  console.log("[G] remember off: nothing recorded, nothing forgotten");
 
-  // The forget button arms on the first click and acts on the second.
-  await page.click("#panel .histline button.subtle");
-  rowsAfter = await page.locator("#panel .histrow").count();
-  if (rowsAfter !== 1) fail("one click must only ARM the forget, not perform it");
-  const armed = await page.locator("#panel .histline button.subtle").textContent();
-  if (!/forget\?/.test(armed ?? "")) fail(`expected an armed 'forget?' label, got: ${armed}`);
-  await page.click("#panel .histline button.subtle");
-  rowsAfter = await page.locator("#panel .histrow").count();
-  if (rowsAfter !== 0) fail(`confirmed forget should remove the entry; ${rowsAfter} rows remain`);
-  console.log("[G] forget is two-step: armed on the first click, done on the second");
+  // Forget lives in the card's menu, and arms on the first tap.
+  await page.click("#home .histrow .more");
+  await page.click("#sheet button:has-text('forget this connection')");
+  rowsAfter = await page.locator("#home .histrow").count();
+  if (rowsAfter !== 1) fail("one tap must only ARM the forget, not perform it");
+  const armed = await page.locator("#sheet button.menurow.danger").textContent();
+  if (!/forget it\?/.test(armed ?? "")) fail(`expected an armed 'forget it?' label, got: ${armed}`);
+  await page.click("#sheet button.menurow.danger");
+  rowsAfter = await page.locator("#home .histrow").count();
+  if (rowsAfter !== 0) fail(`confirmed forget should remove the card; ${rowsAfter} remain`);
+  console.log("[G] forget is two-step: armed on the first tap, done on the second");
 
   // Undo leg E's tampering before the flood leg. The store still
   // holds the bogus fingerprint -- legs F and G leaned on that (every
@@ -496,14 +506,16 @@ try {
   // first ran in this order). The fields get refilled either way, the
   // pin is the true one again (restored above), and remember goes
   // back to its checked default.
-  await page.check("#panel #remember-connection");
+  await page.click("#home .topline button:has-text('settings')");
+  await page.check("#prefs #pref-remember");
+  await page.click("#prefs .backrow .back");
   await fillAndConnect();
   // The true pin is back, so no prompt is EXPECTED and this connect is
   // silent; the short grace only covers a pin that failed to restore,
   // so that failure answers the ask instead of typing into a parked
   // host-key gate (waitPrompt here would stall its full 60s on every
   // healthy run, and log its no-prompt diagnostic as noise).
-  await page.click("#panel .confirm button:has-text('yes, connect')", { timeout: 3_000 })
+  await page.click("#sheet button:has-text('it matches')", { timeout: 3_000 })
     .catch(() => {});
   await waitConnected();
   await page.click(".xterm-screen");
@@ -573,8 +585,8 @@ try {
         return {
           status: document.getElementById("status")?.textContent,
           cursorTail: lines,
-          panelOpen: document.getElementById("panel")?.open,
-          ask: document.querySelector("#panel .confirm")?.innerText,
+          sheetOpen: document.getElementById("sheet")?.open,
+          ask: document.querySelector("#sheet .confirm")?.innerText,
           pins: localStorage.getItem("wosh.hostkeys.v1"),
         };
       }).catch(() => "(page unreadable)");
@@ -584,9 +596,9 @@ try {
       console.log("[L] a 300k-line flood with typing on top ends in a working shell (same or reborn)");
     }
   }
-  // Detach lives in the settings dialog now (#70): open, detach.
-  await page.click("#settings-btn").catch(() => {});
-  await page.click("#panel button:has-text('detach')").catch(() => {});
+  // Detach lives in the session sheet: open from the header, tap.
+  await page.click("#sessions-btn").catch(() => {});
+  await page.click("#sheet button:has-text('detach')").catch(() => {});
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
