@@ -133,27 +133,29 @@ try {
   }, 250);
 
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   log("page loaded");
 
-  // The panel collapses setup material into <details> (#65); these
-  // flows drive what is inside them, so open everything once the
-  // panel has rendered.
-  await page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
-  await page.click("text=show this browser's public key");
-  const line = (await page.locator("#panel .key code").first()
-    .textContent({ timeout: 120_000 }) ?? "").trim();
+  const line = (await page.evaluate(async () => {
+    const { identity } = await import("./app.mjs");
+    return await identity();
+  })).trim();
   if (!/^ssh-ed25519 /.test(line)) throw new Error(`bad identity line: ${line}`);
   appendFileSync(AUTH_KEYS, line + "\n");
   log("identity installed");
 
-  await page.fill("#panel input[placeholder*='connection string']", CONNSTRING);
-  await page.fill("#panel input[placeholder='user']", USER);
-  await page.selectOption("#panel select", "publickey");
-  await page.click("#panel button:has-text('connect')");
+  await page.fill("#home input.connstring", CONNSTRING);
+  await page.click("#home .pasterow button.go");
+  await page.waitForSelector("#sheet[data-ask='connect'] input[placeholder='user']", { timeout: 15_000 });
+  await page.fill("#sheet input[placeholder='user']", USER);
+  await page.evaluate(() => {
+    document.querySelector("#sheet details.options").open = true;
+  });
+  await page.selectOption("#sheet select.method", "publickey");
+  await page.click("#sheet button:text-is('connect')");
 
-  await page.locator("#panel .confirm code").first().textContent({ timeout: 60_000 });
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.locator("#sheet .confirm code.fp").first().textContent({ timeout: 60_000 });
+  await page.click("#sheet button:has-text('it matches')");
   await page.waitForFunction(
     (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
     USER,

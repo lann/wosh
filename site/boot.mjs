@@ -1,22 +1,34 @@
-// The connect panel: read the connection string, collect a user name,
-// show the host key for confirmation, and offer a credential.
+// The chrome outside the terminal: a home screen of connection cards,
+// one ask at a time in a bottom sheet, and two rare screens (identity,
+// settings). Mobile is the design priority; every surface answers one
+// question:
 //
-// Two durable things live behind this panel, both narrow on purpose.
+//   #home      which machine?           (cards; scan/paste to add one)
+//   #sheet     the current question     (host key, prompts, ceremony,
+//                                        the connect form, the session
+//                                        sheet, card menus)
+//   #identity  how do keys get installed?
+//   #prefs     the three global toggles
+//
+// The sheet is the load-bearing idea: every question the page can ask
+// rides ONE <dialog>, one at a time, with nothing else tappable behind
+// it. That is what makes the old failure modes unrepresentable -- a
+// prompt row could not be buried below the fold, could not survive its
+// session as an answerable zombie, and could not share the screen with
+// a history row that dials a different machine mid-auth. Superseding
+// an ask (a new one, a new attempt, the session ending) resolves the
+// old one with null, which every caller treats as its cancel path.
+//
+// Two durable things live behind this chrome, both narrow on purpose.
 // The browser's SSH identity lives behind the component's
 // `identity-store` import (site/identity-store.ts): a non-extractable
-// WebCrypto pair in IndexedDB, so the key line shown here keeps
-// working across visits. And this panel itself persists exactly one
-// thing, only with the user's explicit opt-in (a checkbox on the
-// fingerprint prompt): the host-key pin store -- approved SSH
-// fingerprints keyed by the listener's endpoint id, so a returning
-// visitor skips the prompt when the same listener presents the same
-// host key, and gets a loud warning when it presents a DIFFERENT one.
-// TOFU floor: an unrecognized fingerprint is always confirmed
-// interactively; the store can only ever suppress the prompt for a
-// fingerprint a human explicitly approved here before. main's
-// equivalent carried saved proxies, passkey registration, PRF-wrapped
-// key escrow and its own IndexedDB identity -- none of which applies
-// here: authentication is SSH's own.
+// WebCrypto pair in IndexedDB, so the key line shown on #identity
+// keeps working across visits. And the host-key pin store -- approved
+// SSH fingerprints keyed by the listener's endpoint id, written only
+// with the user's explicit opt-in on the confirmation sheet, listed
+// and revocable on #identity. TOFU floor: an unrecognized fingerprint
+// is always confirmed interactively; the store can only ever suppress
+// the prompt for a fingerprint a human explicitly approved before.
 
 import {
   identity,
@@ -107,15 +119,47 @@ export function connstringFrom(raw) {
 
 const PINS_KEY = "wosh.hostkeys.v1";
 
-// --- the scrollback toggle ---------------------------------------------
-//
+/** The pin map, `{ [endpointIdHex]: { fp, at } }`; {} when unavailable. */
+function loadPins() {
+  try {
+    const pins = JSON.parse(localStorage.getItem(PINS_KEY) ?? "{}");
+    return pins && typeof pins === "object" ? pins : {};
+  } catch {
+    return {}; // no storage (private mode) or corrupt JSON: stay stateless
+  }
+}
+
+function savePin(endpointId, fp) {
+  try {
+    const pins = loadPins();
+    pins[endpointId] = { fp, at: new Date().toISOString() };
+    localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+  } catch {
+    // Storage refused (private mode, quota): the approval still stands
+    // for this session; the user is simply prompted again next time.
+  }
+}
+
+/** Drop one approval; the next connect to it gets the TOFU prompt again. */
+function removePin(endpointId) {
+  try {
+    const pins = loadPins();
+    delete pins[endpointId];
+    localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+  } catch {
+    // Storage refused: nothing to remove from, or nothing sticks.
+  }
+}
+
+// --- global preferences -------------------------------------------------
+
 // A single global on/off, not per-connection: the same person either
 // wants this device keeping a local copy of what terminals showed, or
 // doesn't. DEFAULT ON, because the failure mode of "off" (a reattach
 // opens onto a blank screen while dtach or abduco has kept the actual
 // session running) is exactly the confusing-looking-broken state this
-// whole feature exists to avoid, and the toggle is right here with its
-// own explanation for the person who would rather not have it.
+// whole feature exists to avoid; #prefs carries the explanation and
+// the off switch.
 const SCROLLBACK_KEY = "wosh.scrollback.v1";
 
 function scrollbackEnabled() {
@@ -132,6 +176,49 @@ function setScrollbackEnabled(on) {
   } catch {
     // Storage refused: the checkbox still reflects the choice for this
     // visit; it just won't stick past a reload.
+  }
+}
+
+// The link-open policy. links.mjs owns the enforcement (and the value
+// convention: "open" means confirmed-once, open http(s) links without
+// asking); #prefs is the place the choice can be REVOKED -- the link
+// dialog can only ever turn it on.
+const LINKS_KEY = "wosh.links.v1";
+
+function linksDirect() {
+  try {
+    return localStorage.getItem(LINKS_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+function setLinksDirect(on) {
+  try {
+    if (on) localStorage.setItem(LINKS_KEY, "open");
+    else localStorage.removeItem(LINKS_KEY);
+  } catch {
+    // Storage refused: every link asks, which is the safe side.
+  }
+}
+
+// Whether successful connects are recorded as cards at all. Global,
+// default on; the per-card forget remains the surgical tool.
+const REMEMBER_KEY = "wosh.remember.v1";
+
+function rememberEnabled() {
+  try {
+    return localStorage.getItem(REMEMBER_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function setRememberEnabled(on) {
+  try {
+    localStorage.setItem(REMEMBER_KEY, on ? "on" : "off");
+  } catch {
+    // Storage refused: the toggle just does not stick.
   }
 }
 
@@ -154,27 +241,6 @@ export function endpointIdOf(connstring) {
     return hex;
   } catch {
     return null;
-  }
-}
-
-/** The pin map, `{ [endpointIdHex]: { fp, at } }`; {} when unavailable. */
-function loadPins() {
-  try {
-    const pins = JSON.parse(localStorage.getItem(PINS_KEY) ?? "{}");
-    return pins && typeof pins === "object" ? pins : {};
-  } catch {
-    return {}; // no storage (private mode) or corrupt JSON: stay stateless
-  }
-}
-
-function savePin(endpointId, fp) {
-  try {
-    const pins = loadPins();
-    pins[endpointId] = { fp, at: new Date().toISOString() };
-    localStorage.setItem(PINS_KEY, JSON.stringify(pins));
-  } catch {
-    // Storage refused (private mode, quota): the approval still stands
-    // for this session; the user is simply prompted again next time.
   }
 }
 
@@ -260,7 +326,7 @@ export function connstringDetails(connstring) {
  * A v3 connection string carrying NO pairing token: version byte,
  * pubkey, relay spelled out (`Url` variant -- the well-known-index
  * encoding is an optimization this producer skips), `none` token.
- * What a history entry dials with; enrollment stands in for the token.
+ * What a card dials with; enrollment stands in for the token.
  */
 export function tokenlessConnstring(idHex, relay) {
   const relayBytes = new TextEncoder().encode(relay);
@@ -282,24 +348,24 @@ export function tokenlessConnstring(idHex, relay) {
 
 /**
  * MRU list of `{ id, relay, user, at }`, each optionally carrying
- * `command` (the on-connect command last used for it) and
- * `autoResume`; [] when unavailable. Entries written before those
- * fields existed simply lack them, and an absent `command` means a
- * plain shell -- so old history keeps working untouched.
+ * `name` (a human nickname for the card), `command` (the on-connect
+ * command last used) and `autoResume`; [] when unavailable. Entries
+ * written before those fields existed simply lack them, and an absent
+ * `command` means a plain shell -- so old history keeps working
+ * untouched.
  */
 function loadHistory() {
   try {
     const h = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
     if (!Array.isArray(h)) return [];
-    // The new fields flow outward into an input value and a connect
-    // parameter, so a corrupted store (hand-edited, or an old bug's
+    // The optional fields flow outward into command lines and card
+    // labels, so a corrupted store (hand-edited, or an old bug's
     // leavings) is coerced here at the ONE reader instead of
-    // type-checked at every use: a non-string command is no command,
-    // a non-true autoResume is absent (never written as false, so an
-    // untouched entry round-trips byte-identical).
+    // type-checked at every use.
     const entries = h.filter((e) => e && typeof e === "object");
     for (const e of entries) {
       if (typeof e.command !== "string" || !e.command) delete e.command;
+      if (typeof e.name !== "string" || !e.name.trim()) delete e.name;
       if (e.autoResume !== true) delete e.autoResume;
       // `tools` drives which presets are offered and which are marked
       // "not installed here", so a store that says anything other than
@@ -332,13 +398,20 @@ function saveHistory(entries) {
 /**
  * Insert-or-bump, deduped by (endpoint id, user) -- deliberately NOT
  * by the command: the same account on the same target is one
- * connection whose on-connect command was changed, not two.
- * `command`/`autoResume` are left off the record entirely when unset,
- * so an entry for a plain shell looks exactly like a pre-command one.
+ * connection whose on-connect command was changed, not two. Fields the
+ * bump does not own -- the nickname, the detection results -- are
+ * PRESERVED from the old entry: reconnecting must never cost a card
+ * its name.
  */
 function recordConnection(id, relay, user, command, autoResume) {
+  const prior = loadHistory().find((e) => e.id === id && e.user === user);
   const rest = loadHistory().filter((e) => !(e.id === id && e.user === user));
   const entry = { id, relay, user, at: new Date().toISOString() };
+  if (prior?.name) entry.name = prior.name;
+  if (prior?.tools) {
+    entry.tools = prior.tools;
+    if (typeof prior.toolsAt === "number") entry.toolsAt = prior.toolsAt;
+  }
   if (command) entry.command = command;
   if (autoResume) entry.autoResume = true;
   saveHistory([entry, ...rest]);
@@ -348,9 +421,8 @@ function recordConnection(id, relay, user, command, autoResume) {
  * Merge `patch` into an EXISTING (id, user) entry, preserving every
  * other field. Deliberately does not create one: the writers here are
  * background observations about a connection (which session managers
- * the target has), and an observation must never resurrect a
- * connection the user chose not to remember -- or one they just
- * forgot from the history rows.
+ * the target has) and card-menu edits, and neither must resurrect a
+ * connection the user chose not to remember.
  */
 function updateConnection(id, user, patch) {
   const entries = loadHistory();
@@ -382,370 +454,86 @@ function relTime(iso) {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
-/// `panel` is a <dialog>: the connect form is a MODAL, so a live
-/// session gets the whole viewport. It opens itself whenever there is
-/// no session to look at (page load, session end, detach), stays open
-/// through the host-key prompt and any auth prompt batches, and closes
-/// on a successful connect. The always-visible #bar carries the status
-/// line, the detach button, and the button that reopens this dialog.
-export async function initBoot(panel, { onConnect }) {
-  const notice = el("div", { className: "notice" });
-  const keyRow = el("div", { className: "key" });
+/** The card label for an entry: the nickname, or the id prefix. */
+const labelOf = (entry) => entry?.name || `${entry?.id?.slice(0, 8) ?? "????????"}…`;
 
-  const csInput = el("input", {
-    className: "connstring",
-    placeholder: "connection string or link (from the listener's QR)",
-    value: connstringFromLocation(),
-  });
-  // Next to the field, because it fills the field: the listener's QR
-  // encodes the connect link, so a scan is just a paste that the
-  // camera performs. Always present, even where the camera cannot
-  // work: pressing it then explains why (the usual reason is a page
-  // served over plain http, which is exactly how someone ends up
-  // trying to scan from a phone), and that beats a button that
-  // silently is not there.
-  // An icon, not a label: the button sits beside the field it fills
-  // and the glyph says QR better than the words did. The words remain
-  // for assistive tech and for anyone hovering.
-  const scanBtn = el("button", {
-    className: "scan",
-    title: "scan the listener's QR code with this device's camera",
-  });
-  scanBtn.setAttribute("aria-label", "scan QR");
-  scanBtn.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/></svg>';
-  const scanRow = el("div", { className: "csrow" }, csInput, scanBtn);
-  // The camera preview lands here, directly under the field it fills.
-  const scanHost = el("div");
-  const userInput = el("input", {
-    size: 16,
-    placeholder: "user",
-    value: "",
-  });
-  const method = el("select");
-  method.append(
-    el("option", { value: "auto", textContent: "automatic (server chooses)" }),
-    el("option", { value: "publickey", textContent: "publickey (this browser's key)" }),
-    el("option", { value: "passkey", textContent: "passkey" }),
-    el("option", { value: "password", textContent: "password" }),
-    el("option", { value: "keyboard-interactive", textContent: "keyboard-interactive (OTP/2FA)" }),
-  );
+/// `chrome` is the overlay root (index.html's #chrome) holding the
+/// three screens; the ask dialog (#sheet) and the header live outside
+/// it and are looked up here. Returns `{ connect, ui }` for the page
+/// and the gates.
+export async function initBoot(chrome, { onConnect }) {
+  const homeEl = chrome.querySelector("#home");
+  const identityEl = chrome.querySelector("#identity");
+  const prefsEl = chrome.querySelector("#prefs");
+  const sheet = document.getElementById("sheet");
+  const dot = document.getElementById("dot");
+  const who = document.getElementById("who");
+  const sessionsBtn = document.getElementById("sessions-btn");
 
-  const connectBtn = el("button", { textContent: "connect" });
-  const showKeyBtn = el("button", { textContent: "show this browser's public key" });
-  const closeBtn = el("button", { className: "close", textContent: "×", title: "close" });
-
-  // --- passkey section: enrol / adopt / forget ---------------------------
+  // --- the sheet: one ask at a time --------------------------------------
   //
-  // Offered only once capabilities() confirms both the component build
-  // and the platform support it (see below). What is shown is always
-  // an ordinary `authorized_keys` line -- the same kind already
-  // displayed above for the browser's own WebCrypto key -- because
-  // that is the whole truth here: nothing is installed on the target
-  // beyond that line. OpenSSH has verified these since 8.4, though
-  // only 10.3 and later accept the algorithm without an sshd_config
-  // line -- which is why the enrolled view says so rather than
-  // promising it always just works.
-  const passkeySection = el("div", { className: "passkey" });
-  const passkeyStatus = el("div", { className: "sub" });
-  const enrollBtn = el("button", { textContent: "enrol" });
-  const forgetBtn = el("button", { textContent: "forget" });
-  const adoptInput = el("input", {
-    size: 40,
-    placeholder: "paste the authorized_keys line from another device",
-  });
-  const adoptBtn = el("button", { textContent: "adopt" });
-  const recoverBtn = el("button", { textContent: "recover" });
-  // adopt needs a paste first, so its button REVEALS the field rather
-  // than acting: the ellipsis is that promise. Wired once; the row is
-  // re-appended by every render with its hidden state intact.
-  const adoptRevealBtn = el("button", { textContent: "adopt…" });
-  const adoptRow = el("div", { className: "row", hidden: true }, adoptInput, adoptBtn);
-  adoptRevealBtn.addEventListener("click", () => {
-    adoptRow.hidden = !adoptRow.hidden;
-    if (!adoptRow.hidden) adoptInput.focus();
-  });
+  // showSheet(builder) opens the dialog with the builder's content and
+  // resolves with whatever the content passes to done(). Every way out
+  // that is not an explicit done() -- Esc, a tap on the backdrop, a new
+  // ask superseding this one, the session ending -- resolves null,
+  // which every caller treats as its cancel path. One ask at a time is
+  // the invariant that retired the old panel's failure modes (buried
+  // prompts, zombie prompt rows, mid-auth taps on unrelated controls).
+  let sheetResolve = null;
 
-  /// A "?" that reveals its explanation inline, on demand. Touch has
-  /// no hover, so a title attribute reaches nobody there; and rendering
-  /// guidance permanently is how this panel got crowded to begin with.
-  const helpToggle = (text) => {
-    const body = el("div", { className: "sub help-body", textContent: text, hidden: true });
-    const btn = el("button", { className: "help", textContent: "?", title: "explain" });
-    btn.setAttribute("aria-label", "explain");
-    btn.addEventListener("click", () => {
-      body.hidden = !body.hidden;
+  const settleSheet = (value) => {
+    const resolve = sheetResolve;
+    sheetResolve = null;
+    if (sheet.open) sheet.close();
+    delete sheet.dataset.ask;
+    delete sheet.dataset.connstring;
+    resolve?.(value);
+  };
+  const withdrawSheet = () => {
+    if (sheetResolve) settleSheet(null);
+    else if (sheet.open) sheet.close();
+  };
+  const showSheet = (ask, build) => {
+    withdrawSheet(); // supersede: the old ask resolves null first
+    return new Promise((resolve) => {
+      sheetResolve = resolve;
+      sheet.replaceChildren(el("div", { className: "handle" }));
+      sheet.dataset.ask = ask;
+      build({
+        append: (...nodes) => sheet.append(...nodes),
+        done: (value) => settleSheet(value),
+      });
+      if (!sheet.open) sheet.showModal();
     });
-    return { btn, body };
   };
-
-  // --- the session fold: what to run on connect --------------------------
-  //
-  // An SSH exec request instead of a plain shell. The point is not
-  // "run a command" in the abstract -- it is create-or-attach session
-  // managers, where the SAME command both starts the session the first
-  // time and reattaches to it afterwards, so the work on the target
-  // outlives this tab rather than only this transport. (Transport
-  // deaths were already invisible: the component redials underneath a
-  // live session. A closed tab is a different loss, and only the
-  // target can survive it.)
-  //
-  // Presets, not magic: each is an ordinary command line the target's
-  // shell parses (site/sessions.mjs owns them, so the picker below and
-  // the parser gate see exactly the same lines), shown in full in the
-  // field so nothing is hidden from the person who has to debug it on
-  // the other side.
-  const presetSelect = el("select", { className: "preset" });
-  // Held by id, because the availability annotation below rewrites
-  // their labels per host.
-  const presetOptions = new Map(
-    PRESETS.map((p) => [p.id, el("option", { value: p.id, textContent: p.label })]),
-  );
-  presetSelect.append(
-    el("option", { value: "", textContent: "plain shell" }),
-    ...presetOptions.values(),
-    el("option", { value: "custom", textContent: "custom…" }),
-  );
-  // The session NAME, next to the preset: one target routinely carries
-  // several sessions (one per task), and the name is the only thing
-  // that distinguishes them -- for dtach it is the socket file, for the
-  // other three the manager's own session name. "main" is the default
-  // because it is what phase 1's fixed dtach socket was called, so an
-  // existing dtach session keeps being found by the same line.
-  const nameInput = el("input", {
-    className: "sessname",
-    size: 10,
-    placeholder: "main",
+  // Esc routes through the same settle as everything else. Cancelling
+  // an ask is always meaningful and always legible: a host-key ask
+  // treats it as "don't connect", a prompt batch as cancelling the
+  // attempt -- there is no state where dismissal must be refused, so
+  // there is no blocked-Esc special case to look like a hang.
+  sheet.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    settleSheet(null);
   });
-  const commandInput = el("input", {
-    className: "command",
-    size: 40,
-    placeholder: "command to run instead of a shell",
-  });
-  const nameOr = () => nameInput.value.trim() || "main";
-  // preset + name -> the field. Refuses rather than quotes: the name
-  // goes into a shell command line on the target, and sessions.mjs's
-  // whitelist is what makes that safe (see validName there).
-  const templateCommand = () => {
-    const preset = presetById(presetSelect.value);
-    if (!preset) return; // plain shell / custom: nothing to template
-    const name = nameOr();
-    if (!validName(name)) {
-      notice.textContent =
-        "a session name may only use letters, digits, - and _ (up to 32 characters)";
-      return;
-    }
-    notice.textContent = "";
-    commandInput.value = preset.command(name);
-  };
-  // The field is the truth; the select and the name are a view of it.
-  // Anything that writes the field (a preset, a history tap, a resume)
-  // calls this, so a hand-edited preset line honestly reads back as
-  // "custom…" instead of still claiming to be the preset it no longer
-  // is -- and a recognizable one fills the name back in, which is what
-  // lets a history tap land in the right row of the picker.
-  const syncPresetFromCommand = () => {
-    const value = commandInput.value.trim();
-    if (!value) return void (presetSelect.value = "");
-    const hit = matchCommand(value);
-    presetSelect.value = hit ? hit.preset.id : "custom";
-    if (hit) nameInput.value = hit.name;
-  };
-  presetSelect.addEventListener("change", () => {
-    const v = presetSelect.value;
-    if (v === "custom") return; // the field is already whatever it was
-    if (!v) return void (commandInput.value = ""); // "" == plain shell
-    templateCommand();
-  });
-  nameInput.addEventListener("input", () => {
-    // Only while a preset is selected: retyping the name must not
-    // rewrite a custom line the user is composing by hand.
-    if (presetById(presetSelect.value)) templateCommand();
-  });
-  commandInput.addEventListener("input", syncPresetFromCommand);
-
-  /**
-   * Mark the presets a host is known NOT to have. `tools` is the
-   * detection result recorded for that connection (see detectTools);
-   * absent -- a host never probed, or an older history entry -- leaves
-   * every option with its plain label and enabled, because "we never
-   * looked" must not read as "not installed".
-   */
-  const annotatePresets = (tools) => {
-    for (const p of PRESETS) {
-      const opt = presetOptions.get(p.id);
-      const missing = !!tools && tools[p.id] === false;
-      opt.textContent = missing ? `${p.label} — not installed here` : p.label;
-      opt.disabled = missing;
-    }
-  };
-
-  const commandHelp = helpToggle(
-    "This runs on the target instead of a login shell. With a create-or-attach " +
-      "session manager the same line both starts the session and reattaches to it, " +
-      "so a later connect lands in the SAME session and the work survives closing " +
-      "this tab. The tool has to be installed on the target already -- nothing is " +
-      "installed for you. dtach and abduco keep no copy of the screen contents, so a " +
-      "reattach starts blank until the program running inside redraws (tmux and " +
-      "screen do keep one). And on a systemd host configured with " +
-      "KillUserProcesses=yes, a detached session is killed when you log out unless " +
-      "`loginctl enable-linger <user>` has been run for that account.",
-  );
-
-  // Escape hatch that does NOT cost the setting: one connect without
-  // the command (to fix a session manager that is now refusing to
-  // start, say), with the remembered line still there afterwards.
-  const onceShell = el("input", { type: "checkbox", id: "plain-shell-once" });
-  const autoResumeBox = el("input", { type: "checkbox", id: "auto-resume" });
-
-  // "keep scrollback on this device": a local copy of what the
-  // terminal showed, restored on the next load or reattach so a
-  // session manager that keeps no screen state of its own (dtach,
-  // abduco) -- or one that keeps only the visible screen (tmux,
-  // screen) -- doesn't hand back a blank terminal for work that is
-  // still running. Unticking calls wipe() immediately: the setting and
-  // the data leave together, rather than the data quietly outliving
-  // the toggle that was supposed to govern it.
-  const scrollbackBox = el("input", {
-    type: "checkbox",
-    id: "keep-scrollback",
-    checked: scrollbackEnabled(),
-  });
-  scrollbackBox.addEventListener("change", () => {
-    setScrollbackEnabled(scrollbackBox.checked);
-    if (!scrollbackBox.checked) {
-      bufferStore.wipe().catch((e) => console.warn("wosh: could not wipe scrollback", e));
-    }
-  });
-  const scrollbackHelp = helpToggle(
-    "This device keeps a local copy of what the terminal showed (the actual " +
-      "contents, not just that a session existed), so a reattach can put it back " +
-      "on screen right away instead of starting blank -- dtach and abduco keep no " +
-      "screen state of their own, and even tmux and screen only keep what was " +
-      "visible, not the scrollback above it. Stored only in this browser, only for " +
-      "this site, same as the host-key approvals above. Turning this off deletes " +
-      "what is stored.",
-  );
-
-  // Connection history: tap to reconnect. Rendered only when there is
-  // something to show; the whole section disappears otherwise.
-  const historySection = el("div", { className: "history" });
-  // The session picker (renderSessions, further down): what is ALREADY
-  // running on the target, asked for over a probe channel while a
-  // session is live. Empty at every other moment -- there is nobody to
-  // ask.
-  const sessionsSection = el("div", { className: "sessions" });
-  const rememberConn = el("input", {
-    type: "checkbox",
-    id: "remember-connection",
-    checked: true,
+  // A tap outside the sheet's box is the backdrop, and means dismiss.
+  sheet.addEventListener("pointerdown", (e) => {
+    const r = sheet.getBoundingClientRect();
+    const inside = e.clientX >= r.left && e.clientX <= r.right &&
+      e.clientY >= r.top && e.clientY <= r.bottom;
+    if (!inside) settleSheet(null);
   });
 
-  // The always-visible bar (index.html) keeps only the status line
-  // and the button that opens this dialog; everything that ACTS on
-  // the session lives in the dialog itself. Detach in particular is
-  // destructive-adjacent -- one stray tap on a phone's cramped bar
-  // ended sessions people meant to keep -- so it sits behind the
-  // deliberate step of opening settings, next to connect: the two
-  // session verbs in one place.
-  const settingsBtn = document.getElementById("settings-btn");
-  const detachBtn = el("button", { textContent: "detach", hidden: true });
+  // --- small shared widgets ----------------------------------------------
 
-  // Transient asks -- the host-key confirmation, prompt batches, the
-  // passkey ceremony button -- and the notice line land HERE, directly
-  // under the connect button. They used to append to the panel's END,
-  // below the passkey material: on a phone that put the one row that
-  // needed an answer below the fold, and the page looked hung on
-  // "authenticating…" while its question sat unseen.
-  const promptArea = el("div", { className: "prompts" });
-  promptArea.append(notice);
-  const ask = (row) => promptArea.prepend(row);
-
-  // Everything about HOW to authenticate -- the method override, the
-  // browser key, the passkey -- lives behind one fold. It is all
-  // setup: needed when installing a key on a new target or forcing a
-  // method while debugging, and not at all on the ordinary connect.
-  // One fold rather than two, because the previous pair earned its
-  // keep badly: a "method" fold whose summary repeated the select's
-  // own label was the same content twice, once static.
-  const authDetails = el("details", { className: "auth" },
-    el("summary", { textContent: "auth settings" }),
-    el("div", { className: "row" },
-      el("label", { textContent: "method" }), method),
-    el("div", { className: "field" }, el("span", { textContent: "browser key" })),
-    el("div", { className: "row" }, showKeyBtn),
-    keyRow,
-    passkeySection);
-
-  // The session fold: everything about WHAT the connect runs, kept out
-  // of the ordinary path for the same reason auth settings are -- the
-  // common connect answers none of these questions, and the answers
-  // persist per connection in history anyway.
-  const sessionDetails = el("details", { className: "sessioncfg" },
-    el("summary", { textContent: "session" }),
-    el("div", { className: "row" },
-      el("label", { textContent: "run on connect" }), presetSelect,
-      el("label", { textContent: "name" }), nameInput, commandHelp.btn),
-    el("div", { className: "row" }, commandInput),
-    commandHelp.body,
-    sessionsSection,
-    el("div", { className: "row" },
-      onceShell,
-      el("label", {
-        htmlFor: "plain-shell-once",
-        textContent: " plain shell just this once",
-        title: "the next connect sends no command; the remembered one stays",
-      })),
-    el("div", { className: "row" },
-      autoResumeBox,
-      el("label", {
-        htmlFor: "auto-resume",
-        textContent: " reconnect automatically when this page opens",
-      })),
-    el("div", { className: "row" },
-      scrollbackBox,
-      el("label", {
-        htmlFor: "keep-scrollback",
-        textContent: " keep scrollback on this device",
-      }),
-      scrollbackHelp.btn),
-    scrollbackHelp.body);
-
-  panel.append(
-    el("div", { className: "title" }, el("span", { textContent: "wosh" }), closeBtn),
-    historySection,
-    el("div", { className: "field", textContent: "connection string" }),
-    scanRow,
-    scanHost,
-    el("div", { className: "row" },
-      el("label", { textContent: "user" }), userInput),
-    el("div", { className: "row" }, connectBtn, detachBtn),
-    promptArea,
-    el("div", { className: "row remember" },
-      rememberConn,
-      el("label", {
-        htmlFor: "remember-connection",
-        textContent: " remember this connection",
-        title: "history keeps the endpoint id, relay and user name -- the pairing token is never saved",
-      })),
-    authDetails,
-    sessionDetails,
-  );
-
-  /// Destructive history buttons arm on the first click (label turns
-  /// into a question, briefly) and act on the second: a same-size
-  /// in-place confirmation, instead of a native confirm() breaking the
-  /// dialog's flow. Disarms itself after a beat.
+  /// Destructive buttons arm on the first tap (label turns into a
+  /// question, briefly) and act on the second. Disarms itself after a
+  /// beat.
   const armTwoStep = (btn, armedLabel, act) => {
     const idle = btn.textContent;
     let timer = null;
     btn.addEventListener("click", () => {
       if (btn.classList.contains("armed")) {
         clearTimeout(timer);
-        // Disarm BEFORE acting: these buttons outlive their renders
-        // (forget is re-appended after enrol), and a button that acted
-        // while still wearing the armed state would fire again on one
-        // accidental tap the next time it appears.
         btn.classList.remove("armed");
         btn.textContent = idle;
         act();
@@ -760,974 +548,913 @@ export async function initBoot(panel, { onConnect }) {
     });
   };
 
-  /// Rebuild the recent-connections section from storage. Each row is
-  /// a button (tap = fill the form with a TOKENLESS connstring and
-  /// connect); the relay and full endpoint id deliberately live in the
-  /// hover detail (title), not the row text -- they are diagnostics,
-  /// not identity. The pin badge marks the taps that will be
-  /// promptless.
-  const renderHistory = () => {
-    historySection.replaceChildren();
-    const entries = loadHistory();
-    if (entries.length === 0) return;
-    const pins = loadPins();
-    const clearBtn = el("button", { className: "subtle", textContent: "clear" });
-    armTwoStep(clearBtn, "forget all?", () => {
-      saveHistory([]);
-      renderHistory();
+  /// A "?" that reveals its explanation inline, on demand. Touch has
+  /// no hover, so a title attribute reaches nobody there.
+  const helpToggle = (text) => {
+    const body = el("div", { className: "help-body", textContent: text, hidden: true });
+    const btn = el("button", { className: "help", textContent: "?", title: "explain" });
+    btn.setAttribute("aria-label", "explain");
+    btn.addEventListener("click", () => {
+      body.hidden = !body.hidden;
     });
-    historySection.append(
-      el("div", { className: "field histhead" },
-        el("span", { textContent: "recent" }), clearBtn),
-    );
-    for (const entry of entries) {
-      const detail = `relay ${entry.relay}\nendpoint ${entry.id}\nlast connected ${entry.at}`;
-      const row = el("button", { className: "histrow", title: detail });
-      const sub = [relTime(entry.at)];
-      if (pins[entry.id]?.fp) sub.push("key pinned");
-      if (entry.command) sub.push("runs a command");
-      row.append(
-        el("div", { textContent: `${entry.user}@${entry.id.slice(0, 8)}…` }),
-        el("div", { className: "sub", textContent: sub.join(" · ") }),
-      );
-      row.addEventListener("click", () => {
-        csInput.value = tokenlessConnstring(entry.id, entry.relay);
-        userInput.value = entry.user;
-        // The session fold follows the entry, so a tap replays what
-        // this connection actually ran last time -- including the
-        // absence of a command, which is why this assigns
-        // unconditionally rather than only when one is present.
-        commandInput.value = entry.command ?? "";
-        syncPresetFromCommand();
-        // Whatever was detected on this host the last time, so the
-        // preset labels tell the truth about THIS target before the
-        // connect rather than after it.
-        annotatePresets(entry.tools);
-        autoResumeBox.checked = !!entry.autoResume;
-        doConnect();
-      });
-      const del = el("button", {
-        className: "subtle",
-        textContent: "×",
-        title: "forget this connection (host-key pins are separate)",
-      });
-      armTwoStep(del, "forget?", () => {
-        removeConnection(entry.id, entry.user);
-        renderHistory();
-      });
-      historySection.append(el("div", { className: "histline" }, row, del));
-    }
+    return { btn, body };
   };
 
-  // --- the session picker ------------------------------------------------
-  //
-  // What is ALREADY running on the target, for the one preset this
-  // connection is using. Everything here is asked over a probe channel
-  // of the live connection (app.probeSession): a second SSH channel
-  // with no pty, so nothing is typed into whatever the user is looking
-  // at, and the answer comes back unmangled by tty cooking.
-  //
-  // Best-effort throughout, and it says so: a failed probe renders one
-  // dim line rather than a spinner that never resolves, and the list
-  // itself is whatever four different tools' human-facing output could
-  // be parsed into (site/sessions.mjs).
-
-  // Whether a session is live right now -- the picker asks the live
-  // connection, so with nothing connected there is nothing to show and
-  // nobody to ask. Tracks the same fact the detach button's visibility
-  // does.
-  let sessionLive = false;
-  // One render owns the section: opening the panel and a connect
-  // finishing can both trigger one, and the slower probe must not
-  // paint its rows over the newer answer.
-  let sessionsToken = 0;
-
-  const renderSessions = async () => {
-    const token = ++sessionsToken;
-    sessionsSection.replaceChildren();
-    if (!sessionLive) return;
-    // The EFFECTIVE command of the live session, not the field: the
-    // field may already have been edited towards the next connect.
-    const current = matchCommand(lastConnected?.command ?? "");
-    if (!current) return; // a plain shell, or a custom line nothing here can list
-    const { preset } = current;
-    const result = await probeSession(preset.listCommand);
-    if (token !== sessionsToken) return; // superseded by a newer render
-    sessionsSection.append(
-      el("div", { className: "field" },
-        el("span", { textContent: `${preset.label} sessions on this host` })),
-    );
-    if (!result) {
-      // Truthful and terminal: no probe support in this component
-      // build, a refused channel, a target that never answered. None
-      // of them is worth a retry loop the user did not ask for.
-      sessionsSection.append(
-        el("div", { className: "sub", textContent: "session list unavailable" }),
-      );
-      return;
-    }
-    const rows = preset.parseList(result.text);
-
-    /// Switching sessions IS a reconnect: the same dial, the same
-    /// pinned host key, a different create-or-attach line -- and the
-    /// manager parks the session being left exactly as it would on any
-    /// other disconnect. Cheap, and it goes through doConnect so the
-    /// new choice is recorded (per "remember this connection") like
-    /// any other connect.
-    const attachTo = (name) => {
-      presetSelect.value = preset.id;
-      nameInput.value = name;
-      commandInput.value = preset.command(name);
-      doConnect();
-    };
-
-    if (rows.length === 0) {
-      sessionsSection.append(
-        el("div", { className: "sub", textContent: "no other sessions listed" }),
-      );
-    }
-    for (const row of rows) {
-      const isCurrent = row.name === current.name;
-      const bits = [];
-      if (isCurrent) bits.push("this session");
-      else if (row.attached === true) bits.push("attached elsewhere");
-      if (row.at) bits.push(relTime(new Date(row.at).toISOString()));
-      const line = el("div", { className: "row sessrow" },
-        el("span", { textContent: row.name }),
-        el("span", { className: "sub", textContent: bits.join(" · ") }));
-      if (!isCurrent) {
-        const btn = el("button", { className: "subtle", textContent: "attach" });
-        btn.addEventListener("click", () => attachTo(row.name));
-        line.append(btn);
+  /// Copy-to-clipboard with inline feedback: these lines exist to
+  /// leave the device, and long-press selection of an 80-character
+  /// token is a phone's worst input mode.
+  const copyBtn = (text) => {
+    const b = el("button", { className: "small", textContent: "copy" });
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
+        b.textContent = "copied";
+      } catch {
+        b.textContent = "copy failed";
       }
-      sessionsSection.append(line);
-    }
-    if (preset.id === "dtach") {
-      // The one place the list is weaker than it looks, said plainly
-      // rather than papered over with a badge that would be a guess.
-      sessionsSection.append(el("div", {
-        className: "sub",
-        textContent:
-          "these are the sockets in ~/.wosh: a socket does not say whether anyone " +
-          "is attached, or whether the session behind it is still running",
-      }));
-    }
-
-    const newName = el("input", { size: 10, placeholder: "name" });
-    const newBtn = el("button", { className: "subtle", textContent: "new session" });
-    const startNew = () => {
-      const name = newName.value.trim();
-      if (!validName(name)) {
-        notice.textContent =
-          "a session name may only use letters, digits, - and _ (up to 32 characters)";
-        return;
-      }
-      attachTo(name);
-    };
-    newBtn.addEventListener("click", startNew);
-    newName.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") startNew();
+      setTimeout(() => (b.textContent = "copy"), 1500);
     });
-    sessionsSection.append(el("div", { className: "row sessrow" }, newName, newBtn));
+    return b;
   };
 
-  /**
-   * Ask the target, once per connect, which session managers it
-   * actually has, and remember the answer against this connection.
-   * Fire-and-forget: nothing the user asked for waits on it, and a
-   * target that cannot answer simply keeps a fold with plain labels.
-   */
-  const detectTools = (id, user) => {
-    if (!id) return Promise.resolve();
-    return probeSession(detectCommand).then((r) => {
-      if (!r) return;
-      const tools = parseDetect(r.text);
-      // Only patches an entry that already exists -- an unremembered
-      // connection is not resurrected by an observation about it.
-      updateConnection(id, user, { tools, toolsAt: Date.now() });
-      annotatePresets(tools);
-      renderHistory();
-    }).catch(() => {
-      // A probe is a question; an unanswered one costs the annotation
-      // and nothing else.
-    });
-  };
-
-  /**
-   * The history entry for the connection currently (or most recently)
-   * dialed, or null -- for the detection data hung off it. Null is
-   * ordinary: a connection the user chose not to remember has no entry
-   * to carry observations.
-   */
-  const currentHistoryEntry = () => {
-    if (!lastConnected) return null;
-    const details = connstringDetails(lastConnected.connstring);
-    if (!details) return null;
-    return loadHistory().find(
-      (e) => e.id === details.id && e.user === lastConnected.user,
-    ) ?? null;
-  };
-
-  const openPanel = () => {
-    if (!panel.open) panel.showModal();
-    // The list is a snapshot of the other side, so it is re-asked every
-    // time the panel comes back rather than kept warm: sessions come
-    // and go on the target while this page is not looking.
-    renderSessions().catch(() => {});
-    // Focus what the user actually has to type: the QR link prefills
-    // the connstring, so usually that is the user field.
-    (csInput.value.trim() ? userInput : csInput).focus();
-  };
-  // Esc (and the × button) close the dialog -- fine with a session to
-  // return to, and harmless without one (#bar's button reopens it) --
-  // but NOT mid-connect: a hidden host-key or OTP prompt looks exactly
-  // like a hang.
-  panel.addEventListener("cancel", (e) => {
-    if (connectBtn.disabled) e.preventDefault();
-  });
-  closeBtn.addEventListener("click", () => {
-    if (!connectBtn.disabled) panel.close();
-  });
-  settingsBtn.addEventListener("click", openPanel);
-
-  // Scanning: the QR carries the connect LINK, so a successful scan is
-  // a paste the camera performed -- connstringFrom reduces it to the
-  // fragment exactly as a hand-pasted link would be. The preview owns
-  // the only cancel button (the scan button stays disabled meanwhile),
-  // and the panel closing under a live scan aborts it: a camera left
-  // running behind a closed dialog is a light with no explanation.
-  let scanAbort = null;
-  panel.addEventListener("close", () => scanAbort?.abort());
-  scanBtn.addEventListener("click", async () => {
-    if (scanAbort) return;
-    notice.textContent = "";
-    scanAbort = new AbortController();
-    scanBtn.disabled = true;
-    try {
-      const text = await scanQr(scanHost, { signal: scanAbort.signal });
-      if (text !== null) {
-        csInput.value = connstringFrom(text);
-        (userInput.value.trim() ? connectBtn : userInput).focus();
-      }
-    } catch (e) {
-      notice.textContent = `${e.message ?? e}`;
-    } finally {
-      scanAbort = null;
-      scanBtn.disabled = false;
+  /// The fingerprint block. The textContent is the EXACT fingerprint
+  /// string -- humans compare it against what the listener printed and
+  /// the gates compare it against what the component reported -- while
+  /// the 4-character grouping that makes the comparison tractable is
+  /// purely visual (margins on spans, no whitespace in the text).
+  const fpBlock = (fingerprint, { old = false } = {}) => {
+    const code = el("code", { className: `fp${old ? " old" : ""}` });
+    const m = /^([A-Za-z0-9-]+:)(.*)$/.exec(fingerprint ?? "");
+    const [prefix, rest] = m ? [m[1], m[2]] : ["", fingerprint ?? ""];
+    if (prefix) code.append(el("span", { className: "g", textContent: prefix }));
+    for (let i = 0; i < rest.length; i += 4) {
+      code.append(el("span", { className: "g", textContent: rest.slice(i, i + 4) }));
     }
-  });
-
-  // The session is gone: surface why, restore the bar to its idle
-  // shape, and bring the connect form back.
-  const sessionOver = (why) => {
-    detachBtn.hidden = true;
-    // Nothing live means nobody to ask: the picker's rows would be a
-    // list this page can no longer act on, and openPanel below clears
-    // them.
-    sessionLive = false;
-    settingsBtn.textContent = "connect…";
-    if (why) notice.textContent = why;
-    openPanel();
+    return code;
   };
+
+  // --- session state ------------------------------------------------------
 
   // In-memory only (never the pin/history store): the last endpoint
   // and user actually dialed, so a `lost` session can be redialed
-  // without asking the user to retype anything. Set unconditionally in
-  // doConnect -- independent of the "remember this connection"
-  // checkbox, which governs persistent history, not this.
+  // without asking the user to retype anything.
   let lastConnected = null;
-  // One silent reconnect per minute: a session that keeps dying gets a
-  // human decision instead of silently churning fresh shells. Each
-  // automatic reconnect is a NEW session (a new shell), so silent
-  // churn is invisible lost work, not a convenience.
+  // The method of the attempt in flight / most recent, for
+  // ui.getCredential and the auto-reconnect eligibility check.
+  let attemptMethod = "auto";
+  // One dial at a time: a card tap landing while a connect is in
+  // flight must not start a second, concurrent attempt.
+  let dialing = false;
+  // One silent reconnect per minute (15s when a command reattaches):
+  // a session that keeps dying gets a human decision instead of
+  // silently churning fresh shells.
   let lastAutoAt = 0;
-  // When the detach button last asked a session manager to park the
-  // session with its own keystroke. The pump notices that channel
-  // closing a moment later and fires an ordinary `ended` event -- which
-  // must not turn into the "reattach?" offer below, because the user
-  // just deliberately left and the panel already says "detached".
+  // When the session sheet last asked a manager to park the session
+  // with its own keystroke; the pump notices the channel closing a
+  // moment later and fires an ordinary `ended` event, which must not
+  // turn into the reattach offer.
   let politeDetachAt = 0;
+  // A transient line for #home (errors, "host key rejected…"),
+  // re-rendered with the screen.
+  let homeNotice = "";
+  // Component capabilities, probed once; null until known.
+  let caps = null;
 
-  /**
-   * Attempt a silent, same-parameters reconnect after a session was
-   * lost (terminal.wit's `close-kind` -- `lost` is the one kind the
-   * WIT enum exists to mark as reasonable to retry automatically,
-   * precisely so this decision needs no reason-string parsing).
-   * Returns whether a new session was actually established.
-   */
-  const autoReconnect = async (why) => {
-    if (!lastConnected) return false;
-    // password / keyboard-interactive need a human to type something;
-    // those fall through to the dialog like any other reconnect.
-    if (!["auto", "publickey", "passkey"].includes(method.value)) return false;
-    // An unpinned host key would render the confirm prompt into a
-    // CLOSED dialog -- indistinguishable from a hang. Only reconnect
-    // silently onto a key this browser has already pinned.
-    const id = endpointIdOf(lastConnected.connstring);
-    if (!id || !loadPins()[id]?.fp) return false;
-    // With an on-connect command the reconnect REATTACHES: the shell
-    // and its work are on the target, so a redial costs nothing but a
-    // dial. The rate limit is then only a guard against battery-burning
-    // churn, not against silently losing a shell -- so it can be much
-    // shorter. Without a command every automatic reconnect is a NEW
-    // shell, and the minute stands.
-    const command = lastConnected.command;
-    if (Date.now() - lastAutoAt < (command ? 15_000 : 60_000)) return false;
-    lastAutoAt = Date.now();
-    // EXACT copy on the no-command path: host-test/browser-fallthrough
-    // greps the scrollback for "starting a new session".
-    note(command ? `${why} — reattaching…` : `${why} — starting a new session…`);
-    csInput.value = lastConnected.connstring;
-    userInput.value = lastConnected.user;
-    // A passkey (or auto steered to one) may trigger an authenticator
-    // ceremony here, with the dialog CLOSED: the ceremony gate below
-    // opens it for the ask and closes it after -- a reconnect that
-    // needs a human is not the silent kind.
-    // The command travels as an OVERRIDE rather than through the
-    // field: replaying "no command" (a "just this once" connect) must
-    // not erase the line the user still has remembered.
-    const s = await doConnect({ command: command ?? "" });
-    return !!s;
+  const setLive = (user, label) => {
+    document.body.classList.add("live");
+    dot.className = "ok";
+    who.textContent = `${user}@${label}`;
+  };
+  const setIdle = () => {
+    document.body.classList.remove("live");
+    dot.className = "";
+    who.textContent = "";
+  };
+  // The transport dot: green attached, amber while the component
+  // silently redials (app.mjs relays link-state from its output pump).
+  window.addEventListener("wosh:link-state", (e) => {
+    if (!document.body.classList.contains("live")) return;
+    const kind = e.detail?.kind;
+    if (kind === "reconnecting" || kind === "stalled") dot.className = "warn";
+    else if (kind === "attached") dot.className = "ok";
+  });
+
+  // --- screens -------------------------------------------------------------
+
+  const showChrome = (which) => {
+    chrome.hidden = false;
+    for (const s of [homeEl, identityEl, prefsEl]) s.classList.toggle("on", s.id === which);
+    if (which === "home") renderHome();
+    if (which === "identity") renderIdentity();
+    if (which === "prefs") renderPrefs();
+  };
+  const hideChrome = () => {
+    chrome.hidden = true;
   };
 
-  /// The two things that can be said about an `ended` session that ran
-  /// a command, rendered as offers rather than actions: `ended` is a
-  /// deliberate act on the other side (a typed exit, a detach
-  /// keystroke), so redialing automatically would fight the human who
-  /// just left. Both paths go through sessionOver, so the panel is
-  /// open and nobody is stranded on a dead screen either way.
-  const commandSessionEnded = ({ why, code, uptimeMs }) => {
-    const command = lastConnected.command;
-    // The program 127 is about is almost never the FIRST word of the
-    // command: the presets open with `mkdir -p … && exec dtach …`, and
-    // "command not found" is the shell failing on the program it was
-    // finally asked to run. So: last `&&`/`||`/`;` segment, minus a
-    // leading `exec` and any VAR=value prefixes. A heuristic, but one
-    // that names dtach for the dtach preset instead of blaming mkdir.
-    const lastSegment = command.split(/&&|\|\||;/).pop() ?? "";
-    const tool =
-      lastSegment
-        .trim()
-        .split(/\s+/)
-        .filter((w) => w !== "exec" && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))[0] ??
-      command.trim().split(/\s+/)[0];
-    const reconnect = (row, opts) => () => {
-      row.remove();
-      doConnect(opts);
+  /// Back to #home with a line explaining why (a failed dial, a
+  /// rejected host key, "detached"). The single idle-state funnel:
+  /// every way a session ends and every way an attempt fails lands
+  /// here, so the page can never strand a dead screen.
+  const idleHome = (msg) => {
+    setIdle();
+    withdrawSheet();
+    homeNotice = msg ?? "";
+    showChrome("home");
+  };
+
+  const QR_GLYPH =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/></svg>';
+
+  // The auto-resume countdown ticker, so a re-render or a cancel can
+  // stop it. Armed once per page load (resumePending), and only when
+  // the top card qualifies; any interaction elsewhere on the screen
+  // cancels it -- the countdown is consent, and consent needs an easy
+  // exit.
+  let resumeTimer = null;
+  let resumePending = !connstringFromLocation();
+  const cancelResume = () => {
+    if (resumeTimer !== null) clearInterval(resumeTimer);
+    resumeTimer = null;
+    resumePending = false;
+  };
+
+  /// Update #home's transient line in place (and remember it for the
+  /// next render): notes like the pin-match line land while the screen
+  /// may or may not be showing.
+  const setHomeNotice = (text) => {
+    homeNotice = text ?? "";
+    const n = homeEl.querySelector(".notice");
+    if (n) n.textContent = homeNotice;
+  };
+
+  // --- #home ---------------------------------------------------------------
+
+  function renderHome() {
+    if (resumeTimer !== null) {
+      clearInterval(resumeTimer);
+      resumeTimer = null;
+    }
+    homeEl.replaceChildren();
+    const live = document.body.classList.contains("live");
+    const entries = loadHistory();
+    const pins = loadPins();
+
+    const settingsLink = el("button", { className: "applink", textContent: "settings" });
+    settingsLink.addEventListener("click", () => {
+      cancelResume();
+      showChrome("prefs");
+    });
+    homeEl.append(el("div", { className: "pad" },
+      el("div", { className: "topline" },
+        el("span", { className: "wordmark", textContent: "wosh" }), settingsLink)));
+
+    const pad = el("div", { className: "pad", style: "padding-top: 0" });
+    homeEl.append(pad);
+
+    if (live) {
+      // Reached mid-session (session sheet → "new connection…"): the
+      // way back must be as plain as the way here.
+      const back = el("button", { className: "secondary", textContent: "back to the session" });
+      back.addEventListener("click", () => hideChrome());
+      pad.append(back);
+    }
+
+    // The scan/paste pair: how a machine is added. Scan is the primary
+    // -- the QR is the product's bootstrap -- and paste is the fallback
+    // right under it.
+    const addBlock = () => {
+      const scan = el("button", { className: "primary scan" });
+      scan.innerHTML = `${QR_GLYPH} scan the listener's QR`;
+      scan.addEventListener("click", () => {
+        cancelResume();
+        scanFlow();
+      });
+      const paste = el("input", {
+        type: "text",
+        className: "connstring",
+        placeholder: "or paste a wosh link",
+      });
+      const go = el("button", { className: "go", textContent: "→", title: "connect to the pasted link" });
+      go.setAttribute("aria-label", "connect to the pasted link");
+      const submit = () => {
+        const cs = connstringFrom(paste.value);
+        if (!cs) return;
+        cancelResume();
+        dialWithSheet(cs);
+      };
+      go.addEventListener("click", submit);
+      paste.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      paste.addEventListener("focus", cancelResume);
+      return el("div", {},
+        el("div", { className: "scanrow" }, scan),
+        el("div", { className: "pasterow" }, paste, go));
     };
 
-    if (code === 127 && uptimeMs < 5000) {
-      // 127 within seconds of starting is the shell saying "command
-      // not found" and nothing else happening: the session manager is
-      // simply not on the target. Naming the likely cause beats an
-      // "exited (127)" the user has to decode, and both ways out are
-      // one tap.
-      //
-      // When a previous connect to this host managed to ASK it what it
-      // has (detectTools), the advice can be specific instead of
-      // generic: name the managers that are actually installed, and
-      // offer each as one tap. Without detection data nothing is
-      // claimed -- the original copy stands, because "install one of
-      // these four" is still true and a guess would not be.
-      const entry = currentHistoryEntry();
-      const alternatives = entry?.tools
-        ? PRESETS.filter((p) => p.id !== tool && entry.tools[p.id] === true)
-        : [];
-      const missingKnown = !!entry?.tools && entry.tools[tool] === false;
-      sessionOver(
-        missingKnown && alternatives.length
-          ? `${why}: \`${tool}\` is not installed on the target (the command exited 127 ` +
-            `immediately), but ${alternatives.map((p) => p.label).join(", ")} ` +
-            `${alternatives.length === 1 ? "is" : "are"} — or connect with a plain shell.`
-          : `${why}: \`${tool}\` does not seem to be installed on the target ` +
-            "(the command exited 127 immediately). install it there -- the dtach, " +
-            "abduco, tmux and screen packages are named after the tools -- or connect " +
-            "with a plain shell.",
-      );
-      const row = el("div", { className: "confirm" });
-      for (const p of alternatives) {
-        const swap = el("button", { textContent: `use ${p.label} instead` });
-        swap.addEventListener("click", () => {
-          // The name the user was already working with, so a swap of
-          // TOOL is not also a silent rename of the session.
-          const name = nameOr();
-          presetSelect.value = p.id;
-          commandInput.value = p.command(validName(name) ? name : "main");
-          row.remove();
-          doConnect();
-        });
-        row.append(swap, " ");
-      }
-      const once = el("button", { textContent: "connect with a plain shell" });
-      const always = el("button", { textContent: "always use a plain shell here" });
-      row.append(once, " ", always);
-      // once: this connect only; the remembered command is untouched.
-      once.addEventListener("click", reconnect(row, { command: "" }));
-      always.addEventListener("click", () => {
-        const details = connstringDetails(lastConnected.connstring);
-        if (details) clearStoredCommand(details.id, lastConnected.user);
-        commandInput.value = "";
-        syncPresetFromCommand();
-        renderHistory();
-        row.remove();
-        doConnect();
-      });
-      ask(row);
-      return;
-    }
-
-    // Anything else: the command is gone from THIS connection, but a
-    // session manager it started is very likely still running on the
-    // target -- which is the entire point of running one. Truthful
-    // hedge ("may"): a plain `exit` inside the manager ends it for
-    // good, and this side cannot tell the two apart.
-    sessionOver(
-      `${why} — session ended or detached; the session manager may still be ` +
-        "running on the target.",
-    );
-    const row = el("div", { className: "confirm" });
-    const again = el("button", { textContent: "reattach" });
-    row.append(again);
-    again.addEventListener("click", reconnect(row, { command }));
-    ask(row);
-  };
-
-  window.addEventListener("wosh:session-ended", async (e) => {
-    const { why, kind, code, uptimeMs } = e.detail ?? {};
-    // A detach the user just performed, arriving as the session end it
-    // is: already told, already handled.
-    if (Date.now() - politeDetachAt < 10_000) {
-      politeDetachAt = 0;
-      return void sessionOver("detached");
-    }
-    if (kind === "lost") {
-      try {
-        if (await autoReconnect(why ?? "connection lost")) return;
-      } catch {
-        // fall through to the dialog
-      }
-      return void sessionOver(why);
-    }
-    // Only when this page actually asked for a command: without one
-    // there is nothing to reattach to and nothing 127 could be about.
-    if (kind === "ended" && lastConnected?.command) {
-      return void commandSessionEnded({ why: why ?? "session ended", code, uptimeMs });
-    }
-    sessionOver(why);
-  });
-
-  // Method support depends on the loaded component; ask it rather
-  // than assume. Probing also forces the component to load, so the
-  // panel reflects reality before the user commits to anything.
-  // Removing the first option promotes the next one to selected, so an
-  // older component degrades to the best explicit method it has.
-  (async () => {
-    try {
-      const caps = await capabilities();
-      const drop = (v) => {
-        for (const opt of [...method.options]) {
-          if (opt.value === v) opt.remove();
-        }
-      };
-      if (!caps.auto) drop("auto");
-      if (!caps.publickey) {
-        drop("publickey");
-        showKeyBtn.disabled = true;
-        notice.textContent =
-          "this build of the client component has no publickey (WebCrypto) " +
-          "auth yet; password and keyboard-interactive still work";
-      }
-      if (!caps.keyboardInteractive) drop("keyboard-interactive");
-      if (!caps.passkey) {
-        drop("passkey");
-      } else {
-        passkeySection.hidden = false;
-        renderPasskey();
-      }
-    } catch (e) {
-      notice.textContent = `could not load the client component: ${e.message ?? e}`;
-    }
-  })();
-
-  // The public half is safe to show and is what the user installs on
-  // the target host -- once: it persists across visits. The private
-  // half never leaves the authenticator.
-  showKeyBtn.addEventListener("click", async () => {
-    keyRow.textContent = "loading…";
-    try {
-      const line = await identity();
-      keyRow.textContent = "";
-      keyRow.append(
-        el("div", { textContent: "add this to ~/.ssh/authorized_keys on the target host:" }),
-        el("code", { textContent: line }),
-      );
-    } catch (e) {
-      keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
-    }
-  });
-
-  // The passkey section: hidden until capabilities() confirms support
-  // (see above), then kept in sync with whatever is currently
-  // enrolled. Truthful copy throughout: this is an ordinary
-  // authorized_keys line, nothing more is installed on the target.
-  passkeySection.hidden = true;
-  const renderPasskey = async () => {
-    passkeySection.replaceChildren();
-    let line = null;
-    try {
-      line = await passkeyIdentity();
-    } catch (e) {
-      passkeyStatus.textContent = `could not read the passkey identity: ${e.message ?? e}`;
-    }
-    passkeySection.append(
-      el("div", { className: "field" }, el("span", { textContent: "passkey" })),
-    );
-    if (line) {
-      const help = helpToggle(
-        "Nothing else is installed on the target. OpenSSH 10.3 and later accept " +
-          "this line as-is; on 8.4 through 10.2 the server also needs " +
-          "PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com " +
-          "in sshd_config, or it refuses the key before ever checking a signature.",
-      );
-      passkeySection.append(
-        el("div", {
-          textContent:
-            "enrolled -- add this line to ~/.ssh/authorized_keys on the target host:",
-        }),
-        el("code", { textContent: line }),
-        el("div", { className: "row" }, forgetBtn, help.btn),
-        help.body,
-      );
+    if (entries.length === 0 && !live) {
+      // First run: one line of what this is, then the two ways in.
+      const hero = el("div", { className: "hero" });
+      const inner = el("div", { className: "inner" });
+      hero.append(inner);
+      inner.append(el("div", {
+        className: "pitch",
+        textContent: "a real SSH session in this browser, reaching a machine with no open ports.",
+      }));
+      inner.append(addBlock());
+      inner.append(el("div", { className: "hint", textContent: "the listener prints both when it starts" }));
+      inner.append(el("div", { className: "notice", textContent: homeNotice }));
+      homeEl.append(hero);
     } else {
-      // Three verbs side by side; the guidance for choosing between
-      // them behind the "?". adopt… reveals its paste field on demand.
-      const help = helpToggle(
-        "enrol asks your platform authenticator to create a passkey, then prints an " +
-          "ordinary authorized_keys line to install on the target. adopt brings in a " +
-          "passkey already enrolled on another device, from the line it printed there " +
-          "(one touch). recover works the public key back out of the passkey itself -- " +
-          "no line, no target, no other device -- but asks for two touches of the same " +
-          "passkey. Prefer adopt when the line is to hand.",
-      );
-      adoptRow.hidden = true; // fresh render, folded reveal
-      passkeySection.append(
-        el("div", { className: "sub", textContent: "no passkey enrolled" }),
-        el("div", { className: "row" }, enrollBtn, adoptRevealBtn, recoverBtn, help.btn),
-        adoptRow,
-        help.body,
-      );
-    }
-    passkeySection.append(passkeyStatus);
-  };
+      if (entries.length) pad.append(el("div", { className: "label", textContent: "connections" }));
+      let firstCard = null;
+      for (const entry of entries) {
+        const row = el("button", {
+          className: "histrow",
+          title: `relay ${entry.relay}\nendpoint ${entry.id}\nlast connected ${entry.at}`,
+        });
+        const sub = el("span", { className: "sub" });
+        if (pins[entry.id]?.fp) sub.append(el("span", { className: "pill ok", textContent: "key pinned" }));
+        if (entry.command) {
+          const m = matchCommand(entry.command);
+          sub.append(el("span", {
+            className: "pill",
+            textContent: m ? `${m.preset.id}: ${m.name}` : "runs a command",
+          }));
+        }
+        sub.append(relTime(entry.at));
+        const body = el("span", { className: "body" },
+          el("span", { className: "title", textContent: `${entry.user}@${labelOf(entry)}` }), sub);
+        // A span, not a nested button (invalid HTML that Chromium
+        // hoists out of the card): the card is the button, the ⋯ is a
+        // click target inside it.
+        const more = el("span", { className: "more", textContent: "⋯", title: "connection options" });
+        more.setAttribute("role", "button");
+        more.addEventListener("click", (e) => {
+          e.stopPropagation();
+          cancelResume();
+          cardMenu(entry);
+        });
+        row.append(body, more);
+        row.addEventListener("click", () => {
+          cancelResume();
+          dialFromEntry(entry);
+        });
+        pad.append(row);
+        firstCard ??= row;
+      }
+      pad.append(el("div", { className: "label", textContent: "add a machine" }));
+      pad.append(addBlock());
+      pad.append(el("div", { className: "notice", textContent: homeNotice }));
 
-  enrollBtn.addEventListener("click", async () => {
-    passkeyStatus.textContent = "touch your passkey to create it…";
-    try {
-      await enrollPasskey();
-      passkeyStatus.textContent = "";
-      await renderPasskey();
-    } catch (e) {
-      passkeyStatus.textContent = `enrol failed: ${e.message ?? e}`;
+      // One-tap resume, ON the card it resumes, with a REAL countdown:
+      // visible seconds, a cancel beside it, and any interaction
+      // elsewhere on the screen calls it off. Offered only where it can
+      // be kept silently: the most recent connection asked for it
+      // (autoResume), it runs a command (so the reconnect reattaches to
+      // work that is still there), and its host key is pinned (an
+      // unpinned key needs the TOFU ask, which is never auto-answered).
+      const entry = entries[0];
+      if (resumePending && !live && entry?.autoResume && entry.command && pins[entry.id]?.fp) {
+        firstCard.classList.add("resuming");
+        const t = el("span", { className: "t" });
+        const fill = el("span", { className: "resume-fill" });
+        const cancelB = el("button", { textContent: "cancel" });
+        const rr = el("span", { className: "resume-row" },
+          t, el("span", { className: "resume-track" }, fill), cancelB);
+        firstCard.querySelector(".body").append(rr);
+        let secs = 4;
+        const paint = () => {
+          t.textContent = `resuming in ${secs}s`;
+          fill.style.width = `${((4 - secs) / 4) * 100}%`;
+        };
+        paint();
+        resumeTimer = setInterval(() => {
+          secs -= 1;
+          if (secs > 0) return paint();
+          cancelResume();
+          dialFromEntry(entry);
+        }, 1000);
+        cancelB.addEventListener("click", (e) => {
+          e.stopPropagation();
+          cancelResume();
+          firstCard.classList.remove("resuming");
+          rr.remove();
+        });
+      }
     }
-  });
 
-  adoptBtn.addEventListener("click", async () => {
-    const line = adoptInput.value.trim();
-    if (!line) {
-      passkeyStatus.textContent = "paste an authorized_keys line first";
-      return;
-    }
-    passkeyStatus.textContent = "touch the passkey to confirm…";
-    try {
-      await adoptPasskey(line);
-      passkeyStatus.textContent = "";
-      await renderPasskey();
-    } catch (e) {
-      passkeyStatus.textContent = `adopt failed: ${e.message ?? e}`;
-    }
-  });
+    const idLink = el("button", { className: "applink", textContent: "identity & keys" });
+    idLink.addEventListener("click", () => {
+      cancelResume();
+      showChrome("identity");
+    });
+    homeEl.append(el("div", { className: "footer" }, idLink));
+  }
 
-  // recover-passkey runs from a real button press, so it already has
-  // user activation of its own -- it does NOT go through the
-  // installPasskeyCeremonyGate below, which exists for
-  // authenticate-passkey's server-triggered ceremony instead.
-  recoverBtn.addEventListener("click", async () => {
-    passkeyStatus.textContent = "touch the passkey twice to recover it…";
-    try {
-      await recoverPasskey();
-      passkeyStatus.textContent = "";
-      await renderPasskey();
-    } catch (e) {
-      passkeyStatus.textContent = `recover failed: ${e.message ?? e}`;
-    }
-  });
+  // --- #identity -------------------------------------------------------------
 
-  // Two-step, same idiom as the history rows' forget button: the
-  // credential survives in the authenticator either way, but this
-  // client will stop offering it, so a confirming tap guards against
-  // an accidental click locking someone out mid-session.
-  armTwoStep(forgetBtn, "forget?", async () => {
-    try {
-      await forgetPasskey();
-      await renderPasskey();
-    } catch (e) {
-      passkeyStatus.textContent = `forget failed: ${e.message ?? e}`;
+  function renderIdentity() {
+    identityEl.replaceChildren();
+    const back = el("button", { className: "back", textContent: "‹" });
+    back.setAttribute("aria-label", "back");
+    back.addEventListener("click", () => showChrome("home"));
+    identityEl.append(el("div", { className: "backrow" }, back,
+      el("h1", { textContent: "identity & keys" })));
+
+    // The browser's key: rendered on demand (the first press loads the
+    // component), then shown with a copy button -- the line's entire
+    // purpose is to leave this device.
+    const keyCard = el("div", { className: "idcard" });
+    keyCard.append(
+      el("h3", { textContent: "this browser's key" }),
+      el("p", {
+        textContent: "a sign-in key minted in this browser. the private half is " +
+          "non-extractable — wosh can sign with it, nothing can read it. install " +
+          "the line once on each target:",
+      }),
+    );
+    const keyRow = el("div", { className: "key" });
+    const showBtn = el("button", { className: "small", textContent: "show this browser's public key" });
+    showBtn.addEventListener("click", async () => {
+      keyRow.textContent = "loading…";
+      try {
+        const line = await identity();
+        keyRow.replaceChildren(
+          el("code", { textContent: line }),
+          el("div", { className: "row" }, copyBtn(line)),
+        );
+      } catch (e) {
+        keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
+      }
+    });
+    keyCard.append(el("div", { className: "row" }, showBtn), keyRow);
+    if (caps && !caps.publickey) {
+      showBtn.disabled = true;
+      keyCard.append(el("p", {
+        textContent: "this build of the client component has no publickey (WebCrypto) " +
+          "auth yet; password and keyboard-interactive still work",
+      }));
     }
-  });
+    identityEl.append(keyCard);
+
+    // The passkey: same visual register (an ordinary authorized_keys
+    // line), plus its own enrol/adopt/recover/forget verbs. Hidden
+    // until capabilities() confirms both the component build and the
+    // platform support it.
+    const passkeyCard = el("div", { className: "idcard passkey", hidden: true });
+    identityEl.append(passkeyCard);
+    const renderPasskey = async () => {
+      if (!caps?.passkey) return;
+      passkeyCard.hidden = false;
+      passkeyCard.replaceChildren(el("h3", { textContent: "passkey" }));
+      const status = el("div", { className: "sub" });
+      let line = null;
+      try {
+        line = await passkeyIdentity();
+      } catch (e) {
+        status.textContent = `could not read the passkey identity: ${e.message ?? e}`;
+      }
+      if (line) {
+        const help = helpToggle(
+          "Nothing else is installed on the target. OpenSSH 10.3 and later accept " +
+            "this line as-is; on 8.4 through 10.2 the server also needs " +
+            "PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com " +
+            "in sshd_config, or it refuses the key before ever checking a signature.",
+        );
+        const forgetBtn = el("button", { className: "small danger", textContent: "forget…" });
+        armTwoStep(forgetBtn, "forget it?", async () => {
+          try {
+            await forgetPasskey();
+            await renderPasskey();
+          } catch (e) {
+            status.textContent = `forget failed: ${e.message ?? e}`;
+          }
+        });
+        passkeyCard.append(
+          el("p", { textContent: "enrolled — add this line to ~/.ssh/authorized_keys on the target host:" }),
+          el("code", { textContent: line }),
+          el("div", { className: "row" }, copyBtn(line), forgetBtn, help.btn),
+          help.body,
+          status,
+        );
+      } else {
+        const help = helpToggle(
+          "enrol asks your platform authenticator to create a passkey, then prints an " +
+            "ordinary authorized_keys line to install on the target. adopt brings in a " +
+            "passkey already enrolled on another device, from the line it printed there " +
+            "(one touch). recover works the public key back out of the passkey itself -- " +
+            "no line, no target, no other device -- but asks for two touches of the same " +
+            "passkey. Prefer adopt when the line is to hand.",
+        );
+        const enrollBtn = el("button", { className: "small", textContent: "enrol" });
+        enrollBtn.addEventListener("click", async () => {
+          status.textContent = "touch your passkey to create it…";
+          try {
+            await enrollPasskey();
+            await renderPasskey();
+          } catch (e) {
+            status.textContent = `enrol failed: ${e.message ?? e}`;
+          }
+        });
+        const adoptInput = el("input", {
+          type: "text",
+          placeholder: "paste the authorized_keys line from another device",
+        });
+        const adoptGo = el("button", { className: "small", textContent: "adopt" });
+        adoptGo.addEventListener("click", async () => {
+          const pasted = adoptInput.value.trim();
+          if (!pasted) return void (status.textContent = "paste an authorized_keys line first");
+          status.textContent = "touch the passkey to confirm…";
+          try {
+            await adoptPasskey(pasted);
+            await renderPasskey();
+          } catch (e) {
+            status.textContent = `adopt failed: ${e.message ?? e}`;
+          }
+        });
+        const adoptRow = el("div", { className: "row", hidden: true }, adoptInput, adoptGo);
+        const adoptReveal = el("button", { className: "small", textContent: "adopt…" });
+        adoptReveal.addEventListener("click", () => {
+          adoptRow.hidden = !adoptRow.hidden;
+          if (!adoptRow.hidden) adoptInput.focus();
+        });
+        const recoverBtn = el("button", { className: "small", textContent: "recover" });
+        recoverBtn.addEventListener("click", async () => {
+          status.textContent = "touch the passkey twice to recover it…";
+          try {
+            await recoverPasskey();
+            await renderPasskey();
+          } catch (e) {
+            status.textContent = `recover failed: ${e.message ?? e}`;
+          }
+        });
+        passkeyCard.append(
+          el("div", { className: "sub", textContent: "no passkey enrolled" }),
+          el("div", { className: "row" }, enrollBtn, adoptReveal, recoverBtn, help.btn),
+          adoptRow,
+          help.body,
+          status,
+        );
+      }
+    };
+    renderPasskey().catch(() => {});
+
+    // The pin store, finally visible: which machine keys this browser
+    // would connect to without asking, and the way to take one back.
+    const pinsCard = el("div", { className: "idcard pins" });
+    pinsCard.append(
+      el("h3", { textContent: "approved machine keys" }),
+      el("p", {
+        textContent: "host keys you told this browser to remember. forgetting one " +
+          "brings the confirmation back on the next connect.",
+      }),
+    );
+    const pins = loadPins();
+    const names = new Map(loadHistory().map((e) => [e.id, e.name]));
+    const ids = Object.keys(pins);
+    if (ids.length === 0) {
+      pinsCard.append(el("div", { className: "sub", textContent: "none yet" }));
+    }
+    for (const id of ids) {
+      const nick = names.get(id);
+      const label = `${nick ? `${nick} · ` : ""}${id.slice(0, 8)}…`;
+      const forget = el("button", { className: "small danger", textContent: "forget…" });
+      armTwoStep(forget, "forget it?", () => {
+        removePin(id);
+        renderIdentity();
+      });
+      pinsCard.append(el("div", { className: "pinrow" },
+        el("span", { className: "id", textContent: label }),
+        el("span", { className: "at", textContent: `approved ${String(pins[id].at).slice(0, 10)}` }),
+        el("span", { className: "spacer" }),
+        forget));
+    }
+    identityEl.append(pinsCard);
+  }
+
+  // --- #prefs ---------------------------------------------------------------
+
+  function renderPrefs() {
+    prefsEl.replaceChildren();
+    const back = el("button", { className: "back", textContent: "‹" });
+    back.setAttribute("aria-label", "back");
+    back.addEventListener("click", () => showChrome("home"));
+    prefsEl.append(el("div", { className: "backrow" }, back, el("h1", { textContent: "settings" })));
+
+    const prefRow = (id, checked, title, desc, onChange) => {
+      const box = el("input", { type: "checkbox", id, checked });
+      box.addEventListener("change", () => onChange(box.checked));
+      return el("label", { className: "prefrow" }, box,
+        el("span", { className: "body" },
+          el("span", { className: "t", textContent: title }),
+          el("div", { className: "d", textContent: desc })));
+    };
+    const card = el("div", { className: "idcard" });
+    card.append(
+      prefRow("pref-scrollback", scrollbackEnabled(), "keep scrollback on this device",
+        "a local copy of what each terminal showed, so a reattach doesn't start " +
+          "blank — dtach and abduco keep no screen state of their own, and tmux and " +
+          "screen keep only the visible screen. stored only in this browser; " +
+          "turning it off deletes what is stored.",
+        (on) => {
+          setScrollbackEnabled(on);
+          if (!on) bufferStore.wipe().catch((e) => console.warn("wosh: could not wipe scrollback", e));
+        }),
+      prefRow("pref-links", linksDirect(), "open links without asking",
+        "http(s) links painted in the terminal open on one tap instead of showing " +
+          "a confirmation first.",
+        setLinksDirect),
+      prefRow("pref-remember", rememberEnabled(), "remember new connections",
+        "endpoint id, relay and user name only — the pairing token is never saved.",
+        setRememberEnabled),
+    );
+    prefsEl.append(card);
+
+    const wipeCard = el("div", { className: "idcard" });
+    const forgetAll = el("button", { className: "small danger", textContent: "forget all connections…" });
+    armTwoStep(forgetAll, "forget all?", () => {
+      saveHistory([]);
+      renderPrefs();
+    });
+    wipeCard.append(el("div", { className: "row" }, forgetAll));
+    prefsEl.append(wipeCard);
+  }
+
+  // --- the asks --------------------------------------------------------------
+
+  /// The host-key gate's sheet. Resolves `{ ok, remember }`; dismissal
+  /// is `{ ok: false }`. The changed-key variant inverts the ordinary
+  /// emphasis -- the SAFE choice is the primary and the dangerous one
+  /// is quiet, red, and takes two taps -- and never writes a pin: on
+  /// the one alarming screen, re-approving a key is a deliberate
+  /// follow-up (forget the old approval on #identity), not a ride-along
+  /// checkbox.
+  function hostKeyAsk(fingerprint, { pinned, target }) {
+    return showSheet("hostkey", ({ append, done }) => {
+      const wrap = el("div", { className: "confirm" });
+      if (pinned) {
+        wrap.append(
+          el("h2", { className: "warn", textContent: "this machine's SSH host key has CHANGED" }),
+          el("p", {
+            textContent: "a reinstall looks like this — but so does an interception. " +
+              "do not approve unless the operator confirms the new fingerprint.",
+          }),
+          el("div", { className: "fieldlabel", textContent: "approved before" }),
+          fpBlock(pinned.fp, { old: true }),
+          el("div", { className: "fieldlabel", textContent: "presented now" }),
+          fpBlock(fingerprint),
+        );
+        const no = el("button", { className: "primary", textContent: "don't connect" });
+        const yes = el("button", { className: "danger", textContent: "connect anyway" });
+        no.addEventListener("click", () => done({ ok: false }));
+        armTwoStep(yes, "really connect?", () => done({ ok: true, remember: false }));
+        wrap.append(el("div", { className: "stack" }, no, yes));
+      } else {
+        wrap.append(
+          el("h2", { textContent: "confirm this machine's key" }),
+          el("p", {
+            textContent: `first connection to ${target} — compare with what the ` +
+              "listener printed next to its QR:",
+          }),
+          fpBlock(fingerprint),
+        );
+        // Opt-in (default off): approving never writes anything unless
+        // this is checked.
+        const remember = el("input", { type: "checkbox", id: "remember-hostkey" });
+        wrap.append(el("label", { className: "check" }, remember, " remember this key in this browser"));
+        const yes = el("button", { className: "primary", textContent: "it matches — connect" });
+        const no = el("button", { className: "quiet", textContent: "don't connect" });
+        yes.addEventListener("click", () => done({ ok: true, remember: remember.checked }));
+        no.addEventListener("click", () => done({ ok: false }));
+        wrap.append(el("div", { className: "stack" }, yes, no));
+      }
+      append(wrap);
+    });
+  }
+
+  /// One keyboard-interactive batch: instruction text, then an input
+  /// per prompt -- masked unless the server said echo. Resolves the
+  /// answers in order, or null when cancelled (the caller tears the
+  /// attempt down rather than leaving authentication parked forever).
+  function promptsAsk(batch) {
+    return showSheet("prompts", ({ append, done }) => {
+      const wrap = el("div", { className: "confirm" });
+      wrap.append(el("h2", { textContent: "the server asks" }));
+      if (batch.instruction) wrap.append(el("p", { textContent: batch.instruction }));
+      const inputs = (batch.prompts ?? []).map((p) => {
+        const input = el("input", { type: p.echo ? "text" : "password" });
+        wrap.append(el("div", { className: "fieldlabel", textContent: p.text }), input);
+        return input;
+      });
+      const answer = el("button", { className: "primary", textContent: "answer" });
+      const cancel = el("button", { className: "quiet", textContent: "cancel" });
+      const submit = () => done(inputs.map((i) => i.value));
+      answer.addEventListener("click", submit);
+      cancel.addEventListener("click", () => done(null));
+      wrap.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && e.target !== cancel) submit();
+      });
+      wrap.append(el("div", { className: "stack" }, answer, cancel));
+      append(wrap);
+      setTimeout(() => inputs[0]?.focus(), 0);
+    });
+  }
 
   // The ceremony gate: authenticate-passkey needs a live user gesture
-  // to run its WebAuthn assertion, but the server's demand for a
-  // signature arrives while this page is polling status in the
-  // background, with none in scope. This small in-panel prompt is
-  // that gesture -- installed once, used by every passkey attempt.
-  //
-  // At most one prompt exists at a time, and a superseded one is
-  // withdrawn rather than left on screen: the attempt that asked for it
-  // is already gone, so a stale "the server is asking" row would be
-  // inviting a tap that resolves nothing.
-  let pendingCeremony = null;
-  const withdrawCeremony = () => {
-    pendingCeremony?.remove();
-    pendingCeremony = null;
-  };
+  // for its WebAuthn assertion, but the server's demand for a signature
+  // arrives while the page is polling in the background, with none in
+  // scope. This sheet is that gesture. Cancelling (or the sheet being
+  // superseded -- its attempt is gone) rejects, which fails the
+  // assertion, which fails the attempt, legibly.
   installPasskeyCeremonyGate(() =>
     new Promise((resolve, reject) => {
-      withdrawCeremony();
-      // The ask can arrive with the dialog CLOSED: auto-reconnect
-      // after a lost session redials without opening it, and a passkey
-      // (or auto steering to one) then needs a gesture mid-connect. A
-      // row appended into a closed <dialog> is not rendered at all, so
-      // the attempt would park forever behind a question nobody could
-      // see. Open the dialog for the ask, and put it back once the
-      // tap answers it -- a reconnect that needs a human is not the
-      // silent kind, and pretending otherwise looks like a hang.
-      const openedForThis = !panel.open;
-      if (openedForThis) panel.showModal();
-      const row = el("div", { className: "confirm" });
-      const btn = el("button", { textContent: "touch your passkey to sign in" });
-      const cancelBtn = el("button", { textContent: "cancel" });
-      row.append(el("div", { textContent: "the server is asking for your passkey:" }), btn, " ", cancelBtn);
-      ask(row);
-      pendingCeremony = row;
-      btn.addEventListener("click", () => {
-        withdrawCeremony();
-        // Only the door this ask opened: a ceremony raised into an
-        // already-open panel (a manual connect) leaves it exactly as
-        // it found it.
-        if (openedForThis && panel.open) panel.close();
-        resolve();
-      });
-      // The way out. Esc is deliberately blocked mid-connect (a hidden
-      // prompt looks like a hang), so without this a seized screen
-      // could only be answered with a touch. Rejecting fails the
-      // assertion, which fails the attempt, legibly -- and the panel
-      // stays open, because that is where the failure will be told.
-      cancelBtn.addEventListener("click", () => {
-        withdrawCeremony();
-        reject(new Error("passkey sign-in declined"));
-      });
+      showSheet("ceremony", ({ append, done }) => {
+        const wrap = el("div", { className: "confirm" });
+        wrap.append(
+          el("h2", { textContent: "passkey sign-in" }),
+          el("p", { textContent: "the server is asking for your passkey:" }),
+        );
+        const go = el("button", { className: "primary", textContent: "touch your passkey to sign in" });
+        const cancel = el("button", { className: "quiet", textContent: "cancel" });
+        go.addEventListener("click", () => done(true));
+        cancel.addEventListener("click", () => done(false));
+        wrap.append(el("div", { className: "stack" }, go, cancel));
+        append(wrap);
+      }).then((v) => (v ? resolve() : reject(new Error("passkey sign-in declined"))));
     })
   ).catch((e) => console.warn("wosh: could not install the passkey ceremony gate", e));
 
-  // The human decisions, rendered inline in the panel.
-  const ui = {
-    confirmHostKey(fingerprint, connstring = csInput.value) {
-      const endpointId = endpointIdOf(connstringFrom(connstring));
-      const pinned = endpointId ? loadPins()[endpointId] : undefined;
+  /// The connect form, as a sheet: who are you on that machine, plus
+  /// the folded auth/session options. Resolves `{ user, method,
+  /// command }` or null.
+  function connectSheet({ connstring, error, prefill } = {}) {
+    const details = connstringDetails(connstring);
+    const id = endpointIdOf(connstring);
+    const entry = id ? loadHistory().find((e) => e.id === id) : null;
+    return showSheet("connect", ({ append, done }) => {
+      // For the gates and the curious: what this sheet would dial.
+      sheet.dataset.connstring = connstring;
+      append(el("h2", { textContent: entry?.name ? `connect to ${entry.name}` : "new connection" }));
+      append(el("div", {
+        className: "target",
+        textContent: details
+          ? `${details.id.slice(0, 16)}… via ${details.relay}`
+          : `${connstring.slice(0, 40)}${connstring.length > 40 ? "…" : ""}`,
+      }));
+      const notice = el("div", { className: "notice", textContent: error ?? "" });
+      append(el("div", { className: "fieldlabel", textContent: "user on that machine" }));
+      const user = el("input", { type: "text", placeholder: "user", value: prefill?.user ?? entry?.user ?? "" });
+      append(user);
 
-      // The pinning payoff: this listener presented exactly the
-      // fingerprint the user approved-and-saved before. Note it and
-      // proceed without a prompt.
-      if (pinned && pinned.fp === fingerprint) {
-        notice.textContent =
-          `host key matches the approval saved in this browser on ${String(pinned.at).slice(0, 10)}`;
-        return Promise.resolve(true);
+      // Everything about HOW to authenticate and WHAT to run, behind
+      // one fold: needed when installing a key or setting up a session
+      // manager, and not at all on the ordinary connect.
+      const method = el("select", { className: "method" });
+      for (const [v, label] of [
+        ["auto", "automatic (server chooses)"],
+        ["publickey", "publickey (this browser's key)"],
+        ["passkey", "passkey"],
+        ["password", "password"],
+        ["keyboard-interactive", "keyboard-interactive (OTP/2FA)"],
+      ]) {
+        if (caps) {
+          if (v === "auto" && !caps.auto) continue;
+          if (v === "publickey" && !caps.publickey) continue;
+          if (v === "passkey" && !caps.passkey) continue;
+          if (v === "keyboard-interactive" && !caps.keyboardInteractive) continue;
+        }
+        method.append(el("option", { value: v, textContent: label }));
       }
+      if (prefill?.method) method.value = prefill.method;
 
-      return new Promise((resolve) => {
-        // A question nobody can see is a hang: the auto-reconnect path
-        // dials with the dialog CLOSED, betting on the pin matching.
-        // When the bet loses -- a stale pin, a reinstalled target, an
-        // interception -- the ask must bring its own window, exactly
-        // as the passkey ceremony ask does (#66). Guarded so the
-        // ordinary first-connect prompt (panel already open) keeps its
-        // focus untouched.
-        if (!panel.open) openPanel();
-        const row = el("div", { className: "confirm" });
-        if (pinned) {
-          // Same listener identity, different SSH host key: the one
-          // situation that deserves alarm, and the reason the store
-          // is keyed by endpoint id rather than being a bare
-          // fingerprint set.
-          row.append(
-            el("div", {
-              className: "warn",
-              textContent:
-                "WARNING: this listener's SSH host key has CHANGED from the one you approved here.",
-            }),
-            el("div", {
-              className: "warn",
-              textContent:
-                "That can mean the target machine was reinstalled -- or that the connection " +
-                "is being intercepted. Do not approve unless the operator confirms the new fingerprint.",
-            }),
-            el("div", {}, "approved before: ", el("code", { textContent: pinned.fp })),
-            el("div", {}, "presented now: ", el("code", { textContent: fingerprint })),
-          );
-        } else {
-          row.append(
-            el("div", { textContent: "the server presented this host key:" }),
-            el("code", { textContent: fingerprint }),
-            el("div", { textContent: "does it match what the operator published?" }),
-          );
-        }
-        const yes = el("button", { textContent: "yes, connect" });
-        const no = el("button", { textContent: "no" });
-        // Opt-in (default off): approving never writes anything unless
-        // this is checked. Offered only when the connstring yielded a
-        // usable endpoint id to key the pin on.
-        const remember = el("input", { type: "checkbox", id: "remember-hostkey" });
-        if (endpointId) {
-          row.append(
-            el("div", {},
-              remember,
-              el("label", {
-                htmlFor: "remember-hostkey",
-                textContent: " remember this approval in this browser",
-              })),
-          );
-        }
-        row.append(yes, " ", no);
-        ask(row);
-        const done = (accepted) => {
-          if (accepted && endpointId && remember.checked) savePin(endpointId, fingerprint);
-          row.remove();
-          resolve(accepted);
-        };
-        yes.addEventListener("click", () => done(true));
-        no.addEventListener("click", () => done(false));
+      const preset = el("select", { className: "preset" });
+      preset.append(el("option", { value: "", textContent: "plain shell" }));
+      for (const p of PRESETS) {
+        // Detection results recorded for this connection mark the
+        // presets the host is known NOT to have; absent data leaves
+        // plain labels ("we never looked" must not read as "not
+        // installed").
+        const missing = !!entry?.tools && entry.tools[p.id] === false;
+        preset.append(el("option", {
+          value: p.id,
+          textContent: missing ? `${p.label} — not installed here` : p.label,
+          disabled: missing,
+        }));
+      }
+      preset.append(el("option", { value: "custom", textContent: "custom…" }));
+      const name = el("input", { type: "text", className: "sessname", placeholder: "main" });
+      const command = el("input", {
+        type: "text",
+        className: "command",
+        placeholder: "command to run instead of a shell",
+        value: prefill?.command ?? entry?.command ?? "",
       });
-    },
-    getCredential() {
-      // No password here: the password method collects it through
-      // `collectPrompts` at the moment auth runs -- after the host key
-      // is confirmed, in the same inline UI keyboard-interactive uses,
-      // and never parked in a long-lived DOM input. Auto carries no
-      // secret either: the component asks (through the same UI) only
-      // if the server steers somewhere that needs typing.
-      if (method.value === "auto") {
-        return { kind: "auto" };
-      }
-      if (method.value === "password") {
-        return { kind: "password" };
-      }
-      if (method.value === "keyboard-interactive") {
-        return { kind: "keyboard-interactive" };
-      }
-      if (method.value === "passkey") {
-        return { kind: "passkey" };
-      }
-      return { kind: "publickey" };
-    },
-    // One keyboard-interactive batch: instruction text, then an input
-    // per prompt -- masked unless the server said echo. Resolves with
-    // the answers, in order -- or null if the user cancels (no OTP to
-    // give, wrong account): the caller tears the attempt down rather
-    // than leaving authentication parked forever.
-    collectPrompts(batch) {
-      return new Promise((resolve) => {
-        const row = el("div", { className: "confirm" });
-        if (batch.instruction) {
-          row.append(el("div", { textContent: batch.instruction }));
+      const cmdHelp = helpToggle(
+        "This runs on the target instead of a login shell. With a create-or-attach " +
+          "session manager the same line both starts the session and reattaches to it, " +
+          "so a later connect lands in the SAME session and the work survives closing " +
+          "this tab. The tool has to be installed on the target already -- nothing is " +
+          "installed for you. dtach and abduco keep no copy of the screen contents; " +
+          "tmux and screen keep the visible screen. On a systemd host with " +
+          "KillUserProcesses=yes, run `loginctl enable-linger <user>` or a detached " +
+          "session dies with the logout.",
+      );
+      const nameOr = () => name.value.trim() || "main";
+      // preset + name -> the field. Refuses rather than quotes: the
+      // name goes into a shell command line on the target, and
+      // sessions.mjs's whitelist is what makes that safe.
+      const templateCommand = () => {
+        const p = presetById(preset.value);
+        if (!p) return;
+        if (!validName(nameOr())) {
+          notice.textContent = "a session name may only use letters, digits, - and _ (up to 32 characters)";
+          return;
         }
-        const inputs = (batch.prompts ?? []).map((p) => {
-          const input = el("input", {
-            size: 24,
-            type: p.echo ? "text" : "password",
-          });
-          row.append(el("div", { className: "row" },
-            el("label", { textContent: p.text }), input));
-          return input;
-        });
-        const answerBtn = el("button", { textContent: "answer" });
-        const cancelBtn = el("button", { textContent: "cancel" });
-        row.append(el("div", { className: "row" }, answerBtn, cancelBtn));
-        ask(row);
-        inputs[0]?.focus();
-        const done = (answers) => {
-          row.remove();
-          resolve(answers);
-        };
-        answerBtn.addEventListener("click", () => done(inputs.map((i) => i.value)));
-        cancelBtn.addEventListener("click", () => done(null));
-        row.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") done(inputs.map((i) => i.value));
-        });
+        notice.textContent = "";
+        command.value = p.command(nameOr());
+      };
+      // The field is the truth; the select and the name are a view of
+      // it, so a hand-edited preset line honestly reads back as
+      // "custom…".
+      const syncFromCommand = () => {
+        const v = command.value.trim();
+        if (!v) return void (preset.value = "");
+        const hit = matchCommand(v);
+        preset.value = hit ? hit.preset.id : "custom";
+        if (hit) name.value = hit.name;
+      };
+      preset.addEventListener("change", () => {
+        if (preset.value === "custom") return;
+        if (!preset.value) return void (command.value = "");
+        templateCommand();
       });
-    },
-  };
-
-  /**
-   * Dial what the form says. `opts.command` OVERRIDES the field for
-   * this attempt only (an automatic reattach replaying exactly what
-   * ran, a "plain shell" offer after a failure): `""` means explicitly
-   * no command, and leaving it out means "whatever the fold says".
-   */
-  const doConnect = async (opts = {}) => {
-    notice.textContent = "";
-    // A new connect supersedes any pending polite-detach context: the
-    // latch below exists to translate ONE deliberate detach's ended
-    // event, and left armed it would swallow a genuinely dead NEW
-    // session's ended event as "detached" if that death landed inside
-    // the latch's window.
-    politeDetachAt = 0;
-    // A pasted QR link becomes its fragment here, and the field is
-    // rewritten to match: what the user sees is what gets dialed (and
-    // what the host-key prompt keys its pin on).
-    const connstring = connstringFrom(csInput.value);
-    if (connstring !== csInput.value) csInput.value = connstring;
-    const user = userInput.value.trim();
-    if (!connstring) return void (notice.textContent = "a connection string is required");
-    if (!user) return void (notice.textContent = "a user name is required");
-    // What the connection REMEMBERS (the field) and what this attempt
-    // RUNS can differ: that difference is exactly what "just this
-    // once" and the plain-shell offers are.
-    const persistentCommand = commandInput.value.trim();
-    const effectiveCommand =
-      opts.command !== undefined ? opts.command : (onceShell.checked ? "" : persistentCommand);
-    connectBtn.disabled = true;
-
-    // Scrollback restore + persistence key, best-effort: this is a
-    // nicety on top of connecting, and the connect path owns the
-    // user's patience -- nothing here may turn into a reason a session
-    // fails to open. `endpointIdOf` returning null (an unrecognized
-    // connstring version) simply means no key, so no restore and no
-    // persistence for this attempt, same as the toggle being off.
-    // The dump is only PREFETCHED here; app.mjs paints it once the
-    // session is actually up. Painting it before the dial stranded
-    // another host's scrollback on screen whenever the attempt failed,
-    // and spent the one-shot restore latch on nothing.
-    let scrollbackKey;
-    let scrollbackRestore;
-    try {
-      if (scrollbackEnabled()) {
-        const id = endpointIdOf(connstring);
-        if (id) {
-          scrollbackKey = `${id} ${user}`;
-          const saved = await bufferStore.get(scrollbackKey);
-          if (saved?.buf) {
-            scrollbackRestore = {
-              buf: saved.buf,
-              label: relTime(new Date(saved.at).toISOString()),
-            };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("wosh: scrollback restore skipped", e);
-    }
-
-    try {
-      const session = await onConnect({
-        connstring,
-        user,
-        command: effectiveCommand || undefined,
-        ui,
-        persistKey: scrollbackKey,
-        restore: scrollbackRestore,
+      name.addEventListener("input", () => {
+        if (presetById(preset.value)) templateCommand();
       });
-      if (session) {
-        // In-memory, unconditional (not gated on rememberConn): the
-        // one thing autoReconnect needs to redial these exact
-        // parameters after a `lost` close-kind. The EFFECTIVE command,
-        // so a redial replays what actually ran rather than what is
-        // merely remembered.
-        lastConnected = { connstring, user, command: effectiveCommand || undefined };
-        // History bookkeeping, only for connects that actually reached
-        // a session: failed dials and rejected host keys are not
-        // "connections". Checked (the default) records or bumps the
-        // entry; unchecked records nothing and touches nothing --
-        // forgetting is the history rows' own, confirmed, affordance.
-        const details = connstringDetails(connstring);
-        if (details && rememberConn.checked) {
-          // The PERSISTENT command here: a one-off plain shell must
-          // not quietly become the new setting.
-          recordConnection(details.id, details.relay, user,
-            persistentCommand, autoResumeBox.checked);
-          renderHistory();
+      command.addEventListener("input", syncFromCommand);
+      syncFromCommand();
+
+      append(el("details", { className: "options" },
+        el("summary", { textContent: "auth & session options" }),
+        el("div", { className: "fieldlabel", textContent: "auth method" }), method,
+        el("div", { className: "fieldlabel", textContent: "run on connect" }), preset,
+        el("div", { className: "fieldlabel", textContent: "session name" }), name,
+        el("div", { className: "fieldlabel" }, "command ", cmdHelp.btn), command,
+        cmdHelp.body));
+      append(notice);
+
+      const submit = () => {
+        const u = user.value.trim();
+        if (!u) return void (notice.textContent = "a user name is required");
+        if (presetById(preset.value) && !validName(nameOr())) {
+          return void (notice.textContent =
+            "a session name may only use letters, digits, - and _ (up to 32 characters)");
         }
-        // The fold now describes a host we are actually talking to:
-        // annotate it with whatever was detected last time (so the
-        // labels are right immediately), then ask again in the
-        // background, and refresh the picker with the session that
-        // just came up.
-        sessionLive = true;
-        const entry = details
-          ? loadHistory().find((e) => e.id === details.id && e.user === user)
-          : null;
-        annotatePresets(entry?.tools);
-        // Sequenced, not raced: the core answers ONE probe at a time,
-        // and firing detection and the session list together made the
-        // list's first paint lose deterministically ("already in
-        // flight"). Detection answers first, then the list asks.
-        (details ? detectTools(details.id, user) : Promise.resolve())
-          .then(() => renderSessions())
-          .catch(() => {});
-        // Out of the way: the session owns the screen now. The bar's
-        // buttons take over (detach, and reopening this dialog).
-        detachBtn.hidden = false;
-        settingsBtn.textContent = "settings";
-        panel.close();
-      } else if (!notice.textContent) {
-        // connect() resolved null without throwing (the user rejected
-        // the host key): the status line has the story; mirror it here
-        // where the user is looking.
-        notice.textContent = document.getElementById("status")?.textContent ?? "not connected";
-      }
-      return session ?? null;
-    } catch (e) {
-      notice.textContent = `${e.message ?? e}`;
-      return null;
-    } finally {
-      connectBtn.disabled = false;
-      // "just this once" spends itself on the attempt, not on the
-      // success: a failed one-off plain shell that stayed armed would
-      // silently suppress the command on the NEXT connect too.
-      onceShell.checked = false;
-      // An attempt that died mid-ceremony leaves nothing to tap: the
-      // signature it was asking for belongs to a session that is gone.
-      withdrawCeremony();
-    }
-  };
-
-  // The click handler drops its event: doConnect's first argument is
-  // an options object, and a MouseEvent has no `command`, but passing
-  // one is the kind of accident worth not leaving available.
-  connectBtn.addEventListener("click", () => doConnect());
-
-  // Enter in either field connects -- scoped to THESE fields: the
-  // prompt-batch rows manage their own Enter.
-  for (const input of [csInput, userInput]) {
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !connectBtn.disabled) doConnect();
+        done({ user: u, method: method.value, command: command.value.trim() });
+      };
+      user.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") submit();
+      });
+      const go = el("button", { className: "primary", textContent: "connect" });
+      const cancel = el("button", { className: "quiet", textContent: "cancel" });
+      go.addEventListener("click", submit);
+      cancel.addEventListener("click", () => done(null));
+      append(el("div", { className: "stack" }, go, cancel));
+      setTimeout(() => (user.value ? go : user).focus(), 0);
     });
   }
-  detachBtn.addEventListener("click", async () => {
-    // The polite way first, when this connection runs a session
-    // manager: send that manager's DEFAULT detach keys and see whether
-    // the session actually goes away. A clean manager detach closes
-    // the channel, which is the only evidence available that the keys
-    // meant anything -- the binding is remappable in all four tools
-    // and a remapped target simply receives the sequence as junk typed
-    // into whatever is running, so the hard detach below stays as the
-    // fallback and is what makes trying this safe.
-    //
-    // The difference is small but real: a manager detach parks the
-    // session on the target (that is the whole point of running one),
-    // while the hard detach only tears down this SSH channel. With the
-    // -A create-or-attach lines this page writes, the two look
-    // identical on the next connect -- which is precisely why asking
-    // nicely first costs nothing.
+
+  /// Camera scan in a sheet. Every way the sheet closes releases the
+  /// camera; a decoded link flows into the connect sheet exactly as a
+  /// paste would.
+  async function scanFlow() {
+    const controller = new AbortController();
+    const text = await showSheet("scan", ({ append, done }) => {
+      append(el("h2", { textContent: "scan the listener's QR" }));
+      const host = el("div");
+      append(host);
+      scanQr(host, { signal: controller.signal }).then(
+        (t) => done(t),
+        (e) => {
+          // Scanning could not start (no https, no camera, permission
+          // denied): the sheet stays to say why -- a button that
+          // silently does nothing teaches nobody.
+          host.replaceChildren(el("p", { textContent: `${e.message ?? e}` }));
+        },
+      );
+    });
+    controller.abort();
+    if (text) dialWithSheet(connstringFrom(text));
+  }
+
+  /// Mid-session actions, in thumb reach: what is running on this host
+  /// (the picker), detach, and the way to the home screen.
+  async function sessionSheet() {
+    const lc = lastConnected;
+    if (!lc) return;
+    const details = connstringDetails(lc.connstring);
+    const entry = details ? loadHistory().find((e) => e.id === details.id && e.user === lc.user) : null;
+    const label = entry ? labelOf(entry) : `${details?.id.slice(0, 8) ?? "????????"}…`;
+    const m = matchCommand(lc.command ?? "");
+    const action = await showSheet("session", ({ append, done }) => {
+      append(el("div", { className: "sheet-title" },
+        el("span", { className: "who", textContent: `${lc.user}@${label}` }),
+        el("span", { className: "t", textContent: "connected" })));
+      if (m) {
+        append(el("div", { className: "fieldlabel", textContent: `${m.preset.label} sessions on ${label}` }));
+        const rowsHost = el("div", { className: "hedge", textContent: "listing sessions…" });
+        append(rowsHost);
+        // The list is a snapshot of the other side, asked over the
+        // probe channel; best-effort, and it says so.
+        (async () => {
+          const result = await probeSession(m.preset.listCommand);
+          if (sheet.dataset.ask !== "session") return; // superseded
+          rowsHost.replaceChildren();
+          rowsHost.className = "";
+          if (!result) {
+            rowsHost.append(el("div", { className: "hedge", textContent: "session list unavailable" }));
+            return;
+          }
+          const rows = m.preset.parseList(result.text);
+          if (rows.length === 0) {
+            rowsHost.append(el("div", { className: "hedge", textContent: "no other sessions listed" }));
+          }
+          for (const row of rows) {
+            const isCurrent = row.name === m.name;
+            const bits = [];
+            if (isCurrent) bits.push("this session");
+            else if (row.attached === true) bits.push("attached elsewhere");
+            if (row.at) bits.push(relTime(new Date(row.at).toISOString()));
+            const line = el("div", { className: "sessrow" },
+              el("span", { className: "name", textContent: row.name }),
+              el("span", { className: "meta", textContent: bits.join(" · ") }),
+              el("span", { className: "spacer" }));
+            if (!isCurrent) {
+              const b = el("button", { className: "small", textContent: "attach" });
+              b.addEventListener("click", () => done({ kind: "attach", name: row.name }));
+              line.append(b);
+            }
+            rowsHost.append(line);
+          }
+          if (m.preset.id === "dtach") {
+            rowsHost.append(el("div", {
+              className: "hedge",
+              textContent: "these are the sockets in ~/.wosh: a socket does not say " +
+                "whether anyone is attached, or whether the session behind it is still running",
+            }));
+          }
+          const newName = el("input", { type: "text", placeholder: "name" });
+          const newBtn = el("button", { className: "small", textContent: "new session" });
+          const startNew = () => {
+            const n = newName.value.trim();
+            if (!validName(n)) {
+              newName.setCustomValidity?.("letters, digits, - and _ only");
+              return;
+            }
+            done({ kind: "attach", name: n });
+          };
+          newBtn.addEventListener("click", startNew);
+          newName.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") startNew();
+          });
+          rowsHost.append(el("div", { className: "newrow" }, newName, newBtn));
+        })();
+      }
+      const det = el("button", {
+        className: "secondary",
+        textContent: m ? `detach — keep it running on ${label}` : "detach",
+      });
+      det.addEventListener("click", () => done({ kind: "detach" }));
+      const nc = el("button", { className: "quiet", textContent: "new connection…" });
+      nc.addEventListener("click", () => done({ kind: "home" }));
+      append(el("div", { className: "stack" }, det, nc));
+    });
+    if (!action) return;
+    if (action.kind === "attach") {
+      // Switching sessions IS a reconnect: same dial, same pinned host
+      // key, a different create-or-attach line; the manager parks the
+      // session being left exactly as on any other disconnect.
+      doConnect({
+        connstring: lc.connstring,
+        user: lc.user,
+        method: lc.method ?? "auto",
+        command: m.preset.command(action.name),
+      });
+    } else if (action.kind === "detach") {
+      politeDetach();
+    } else if (action.kind === "home") {
+      showChrome("home");
+    }
+  }
+
+  /// Detach, the polite way first: send the session manager's DEFAULT
+  /// detach keys and see whether the session actually parks (the
+  /// binding is remappable in all four tools, and a remapped target
+  /// just receives junk -- so the hard detach stays as the fallback and
+  /// is what makes trying this safe).
+  async function politeDetach() {
     const m = matchCommand(lastConnected?.command ?? "");
     if (m) {
       politeDetachAt = Date.now();
@@ -1737,64 +1464,431 @@ export async function initBoot(panel, { onConnect }) {
       } catch {
         parked = false;
       }
-      if (parked) return void sessionOver("detached");
+      if (parked) return void idleHome("detached");
       politeDetachAt = 0;
     }
     await detach();
-    sessionOver("detached");
+    idleHome("detached");
+  }
+
+  /// The card's ⋯ menu: everything per-connection that used to be a
+  /// global checkbox lives on the thing it configures.
+  async function cardMenu(entry) {
+    const action = await showSheet("menu", ({ append, done }) => {
+      append(el("div", { className: "sheet-title" },
+        el("span", { className: "who", textContent: `${entry.user}@${labelOf(entry)}` })));
+      const item = (label, value) => {
+        const b = el("button", { className: "menurow", textContent: label });
+        b.addEventListener("click", () => done(value));
+        return b;
+      };
+      append(item("rename…", "rename"));
+      append(item("edit run-on-connect…", "command"));
+      append(item("connect with a plain shell", "plain"));
+      append(item(`reconnect automatically when this page opens ${entry.autoResume ? "✓" : "✗"}`, "auto"));
+      const forget = el("button", { className: "menurow danger", textContent: "forget this connection…" });
+      armTwoStep(forget, "forget it?", () => done("forget"));
+      append(forget);
+    });
+    if (!action) return;
+    if (action === "rename") {
+      const name = await textSheet({
+        title: "rename",
+        label: `a nickname for ${entry.user}@${entry.id.slice(0, 8)}… (empty clears it)`,
+        value: entry.name ?? "",
+        placeholder: "nickname",
+      });
+      if (name === null) return;
+      // Assigning undefined and JSON round-tripping drops the field.
+      updateConnection(entry.id, entry.user, { name: name.trim() || undefined });
+      renderHome();
+    } else if (action === "command") {
+      const cmd = await textSheet({
+        title: "run on connect",
+        label: "the command a connect runs instead of a shell (empty = plain shell)",
+        value: entry.command ?? "",
+        placeholder: "command",
+        mono: true,
+      });
+      if (cmd === null) return;
+      if (cmd.trim()) updateConnection(entry.id, entry.user, { command: cmd.trim() });
+      else clearStoredCommand(entry.id, entry.user);
+      renderHome();
+    } else if (action === "plain") {
+      // One connect without the command; the remembered line stays.
+      dialFromEntry(entry, { command: "" });
+    } else if (action === "auto") {
+      updateConnection(entry.id, entry.user, { autoResume: entry.autoResume ? undefined : true });
+      renderHome();
+    } else if (action === "forget") {
+      removeConnection(entry.id, entry.user);
+      renderHome();
+    }
+  }
+
+  /// One text field in a sheet; resolves the string, or null.
+  function textSheet({ title, label, value = "", placeholder = "", mono = false }) {
+    return showSheet("text", ({ append, done }) => {
+      append(el("h2", { textContent: title }));
+      append(el("div", { className: "fieldlabel", textContent: label }));
+      const input = el("input", { type: "text", value, placeholder });
+      if (!mono) input.style.fontFamily = "var(--sans)";
+      append(input);
+      const save = el("button", { className: "primary", textContent: "save" });
+      const cancel = el("button", { className: "quiet", textContent: "cancel" });
+      save.addEventListener("click", () => done(input.value));
+      cancel.addEventListener("click", () => done(null));
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") done(input.value);
+      });
+      append(el("div", { className: "stack" }, save, cancel));
+      setTimeout(() => input.focus(), 0);
+    });
+  }
+
+  // --- connecting -------------------------------------------------------------
+
+  /**
+   * Dial. Returns `{ session }` on success, `{ error }` on a thrown
+   * failure, `{}` when nothing was dialed (already dialing, or the
+   * user rejected the host key -- #home tells that story). One dial at
+   * a time; a new dial withdraws whatever ask is on screen.
+   */
+  async function doConnect({ connstring, user, method = "auto", command = "", quiet = false }) {
+    if (dialing) return {};
+    dialing = true;
+    // A new connect supersedes any pending polite-detach context: the
+    // latch exists to translate ONE deliberate detach's ended event.
+    politeDetachAt = 0;
+    withdrawSheet();
+    hideChrome();
+    attemptMethod = method;
+    attemptUser = user;
+    // Test hook (host-test/browser-e2e.mjs leg F): the connstring a
+    // dial actually used -- how the gate proves a card dialed a
+    // TOKENLESS rebuild rather than the original QR string.
+    window.__woshDialed = connstring;
+    try {
+      // Scrollback restore + persistence key, best-effort: a nicety on
+      // top of connecting; nothing here may become a reason a session
+      // fails to open. The dump is only PREFETCHED here; app.mjs paints
+      // it once the session is actually up.
+      let scrollbackKey;
+      let scrollbackRestore;
+      try {
+        if (scrollbackEnabled()) {
+          const id = endpointIdOf(connstring);
+          if (id) {
+            scrollbackKey = `${id} ${user}`;
+            const saved = await bufferStore.get(scrollbackKey);
+            if (saved?.buf) {
+              scrollbackRestore = {
+                buf: saved.buf,
+                label: relTime(new Date(saved.at).toISOString()),
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("wosh: scrollback restore skipped", e);
+      }
+
+      const session = await onConnect({
+        connstring,
+        user,
+        command: command || undefined,
+        ui,
+        persistKey: scrollbackKey,
+        restore: scrollbackRestore,
+      });
+      if (!session) {
+        // connect() resolved null without throwing: the user rejected
+        // the host key. The status line has the story; home mirrors it.
+        if (!quiet) idleHome(document.getElementById("status")?.textContent ?? "not connected");
+        return {};
+      }
+      lastConnected = { connstring, user, command: command || undefined, method };
+      const details = connstringDetails(connstring);
+      // History bookkeeping, only for connects that actually reached a
+      // session, and only while the global remember toggle says so.
+      // Fields the bump does not own (nickname, detection results,
+      // autoResume) are preserved by recordConnection.
+      if (details && rememberEnabled()) {
+        recordConnection(details.id, details.relay, user, command, undefined);
+      }
+      const entry = details
+        ? loadHistory().find((e) => e.id === details.id && e.user === user)
+        : null;
+      setLive(user, entry ? labelOf(entry) : (details ? `${details.id.slice(0, 8)}…` : "?"));
+      hideChrome();
+      setHomeNotice("");
+      // Ask the target, in the background, which session managers it
+      // has; the answer annotates this connection's presets and the
+      // trouble sheet's recommendations.
+      if (details) detectTools(details.id, user);
+      return { session };
+    } catch (e) {
+      const msg = `${e.message ?? e}`;
+      if (!quiet) idleHome(msg);
+      return { error: msg };
+    } finally {
+      dialing = false;
+    }
+  }
+
+  /// The sheet-driven dial loop: connect form -> dial -> on failure the
+  /// form returns with the error and the previous answers.
+  async function dialWithSheet(connstring, prefill, error) {
+    let params = await connectSheet({ connstring, prefill, error });
+    while (params) {
+      const outcome = await doConnect({ connstring, ...params });
+      if (outcome.session) return outcome.session;
+      if (!outcome.error) return null; // rejected host key or cancelled: home has the story
+      params = await connectSheet({ connstring, error: outcome.error, prefill: params });
+    }
+    return null;
+  }
+
+  /// A card tap: dial with the card's remembered parameters, no form.
+  /// On failure the connect sheet opens WITH the error -- that is the
+  /// retry surface.
+  async function dialFromEntry(entry, { command } = {}) {
+    const cs = tokenlessConnstring(entry.id, entry.relay);
+    const cmd = command !== undefined ? command : (entry.command ?? "");
+    const outcome = await doConnect({ connstring: cs, user: entry.user, method: "auto", command: cmd });
+    if (outcome.error) {
+      dialWithSheet(cs, { user: entry.user, method: "auto", command: cmd }, outcome.error);
+    }
+  }
+
+  /**
+   * Ask the target, once per connect, which session managers it
+   * actually has, and remember the answer against this connection.
+   * Fire-and-forget: nothing the user asked for waits on it.
+   */
+  function detectTools(id, user) {
+    probeSession(detectCommand).then((r) => {
+      if (!r) return;
+      // Only patches an entry that already exists -- an unremembered
+      // connection is not resurrected by an observation about it.
+      updateConnection(id, user, { tools: parseDetect(r.text), toolsAt: Date.now() });
+    }).catch(() => {
+      // A probe is a question; an unanswered one costs the annotation
+      // and nothing else.
+    });
+  }
+
+  /**
+   * Attempt a silent, same-parameters reconnect after a session was
+   * lost (terminal.wit's `close-kind` -- `lost` is the one kind the
+   * WIT enum exists to mark as reasonable to retry automatically).
+   */
+  async function autoReconnect(why) {
+    if (!lastConnected) return false;
+    // password / keyboard-interactive need a human to type something;
+    // those fall through to the home screen like any other end.
+    if (!["auto", "publickey", "passkey"].includes(lastConnected.method ?? "auto")) return false;
+    // An unpinned host key would need the TOFU ask; only reconnect
+    // silently onto a key this browser has already pinned.
+    const id = endpointIdOf(lastConnected.connstring);
+    if (!id || !loadPins()[id]?.fp) return false;
+    // With an on-connect command the reconnect REATTACHES (the shell
+    // and its work are on the target), so the rate limit is only a
+    // battery guard and can be short. Without one every automatic
+    // reconnect is a NEW shell, and the minute stands.
+    const command = lastConnected.command;
+    if (Date.now() - lastAutoAt < (command ? 15_000 : 60_000)) return false;
+    lastAutoAt = Date.now();
+    // EXACT copy on the no-command path: host-test/browser-fallthrough
+    // greps the scrollback for "starting a new session".
+    note(command ? `${why} — reattaching…` : `${why} — starting a new session…`);
+    const outcome = await doConnect({
+      connstring: lastConnected.connstring,
+      user: lastConnected.user,
+      method: lastConnected.method ?? "auto",
+      command: command ?? "",
+      quiet: true,
+    });
+    return !!outcome.session;
+  }
+
+  /// The two things that can be said about an `ended` session that ran
+  /// a command, rendered as offers rather than actions: `ended` is a
+  /// deliberate act on the other side, so redialing automatically would
+  /// fight the human who just left.
+  async function commandSessionEnded({ why, code, uptimeMs }) {
+    const lc = lastConnected;
+    const command = lc.command;
+    // The program 127 is about is almost never the FIRST word of the
+    // command: the presets open with `mkdir -p … && exec dtach …`, and
+    // "command not found" is the shell failing on the program it was
+    // finally asked to run.
+    const lastSegment = command.split(/&&|\|\||;/).pop() ?? "";
+    const tool =
+      lastSegment
+        .trim()
+        .split(/\s+/)
+        .filter((w) => w !== "exec" && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))[0] ??
+      command.trim().split(/\s+/)[0];
+    const details = connstringDetails(lc.connstring);
+    const entry = details
+      ? loadHistory().find((en) => en.id === details.id && en.user === lc.user)
+      : null;
+    idleHome(why);
+
+    const redial = (cmd) =>
+      doConnect({ connstring: lc.connstring, user: lc.user, method: lc.method ?? "auto", command: cmd });
+
+    if (code === 127 && uptimeMs < 5000) {
+      // 127 within seconds of starting is the shell saying "command
+      // not found" and nothing else happening: the session manager is
+      // simply not on the target. When a previous connect managed to
+      // ASK the host what it has (detectTools), the offer can be
+      // specific; without data nothing is claimed.
+      const alternatives = entry?.tools
+        ? PRESETS.filter((p) => p.id !== tool && entry.tools[p.id] === true)
+        : [];
+      const action = await showSheet("trouble", ({ append, done }) => {
+        append(el("h2", { textContent: `\`${tool}\` isn't on that machine` }));
+        append(el("p", {
+          textContent: 'the command exited 127 right away — the shell saying "command not ' +
+            'found". install it there (the dtach, abduco, tmux and screen packages are ' +
+            "named after the tools), or:",
+        }));
+        const stack = el("div", { className: "stack" });
+        for (const p of alternatives) {
+          const b = el("button", { className: "primary", textContent: `use ${p.label} instead` });
+          b.addEventListener("click", () => done({ kind: "swap", preset: p }));
+          stack.append(b);
+        }
+        const once = el("button", { className: "secondary", textContent: "connect with a plain shell" });
+        once.addEventListener("click", () => done({ kind: "once" }));
+        const always = el("button", { className: "quiet", textContent: "always use a plain shell here" });
+        always.addEventListener("click", () => done({ kind: "always" }));
+        stack.append(once, always);
+        append(stack);
+      });
+      if (!action) return;
+      if (action.kind === "swap") {
+        // The name the user was already working with, so a swap of
+        // TOOL is not also a silent rename of the session.
+        const name = matchCommand(command)?.name ?? "main";
+        redial(action.preset.command(validName(name) ? name : "main"));
+      } else if (action.kind === "once") {
+        redial("");
+      } else {
+        if (details) clearStoredCommand(details.id, lc.user);
+        redial("");
+      }
+      return;
+    }
+
+    // Anything else: the command is gone from THIS connection, but a
+    // session manager it started is very likely still running on the
+    // target. Truthful hedge ("may"): a plain `exit` inside the manager
+    // ends it for good, and this side cannot tell the two apart.
+    const again = await showSheet("ended", ({ append, done }) => {
+      append(el("h2", { textContent: "session ended or detached" }));
+      append(el("p", {
+        textContent: "the session manager may still be running on the target — " +
+          "reattaching lands back in it.",
+      }));
+      const re = el("button", { className: "primary", textContent: "reattach" });
+      re.addEventListener("click", () => done(true));
+      const back = el("button", { className: "quiet", textContent: "back to connections" });
+      back.addEventListener("click", () => done(false));
+      append(el("div", { className: "stack" }, re, back));
+    });
+    if (again) redial(command);
+  }
+
+  // The session is gone: route by HOW (terminal.wit's close-kind,
+  // carried on the event so nothing parses reason strings).
+  window.addEventListener("wosh:session-ended", async (e) => {
+    const { why, kind, code, uptimeMs } = e.detail ?? {};
+    // A detach the user just performed, arriving as the session end it
+    // is: already told, already handled.
+    if (Date.now() - politeDetachAt < 10_000) {
+      politeDetachAt = 0;
+      return void idleHome("detached");
+    }
+    if (kind === "lost") {
+      try {
+        if (await autoReconnect(why ?? "connection lost")) return;
+      } catch {
+        // fall through to the home screen
+      }
+      return void idleHome(why);
+    }
+    // Only when this page actually asked for a command: without one
+    // there is nothing to reattach to and nothing 127 could be about.
+    if (kind === "ended" && lastConnected?.command) {
+      return void commandSessionEnded({ why: why ?? "session ended", code, uptimeMs });
+    }
+    idleHome(why);
   });
 
-  renderHistory();
-  openPanel();
+  // --- the ui contract app.mjs drives ----------------------------------------
 
-  // One-tap resume on load. The offer is only made where it can be
-  // KEPT silently and where landing back is worth something: no
-  // connstring in the URL (a link is a deliberate destination and wins
-  // over history), the most recent connection asked for it, it runs a
-  // command (so the reconnect reattaches to work that is still there
-  // -- resuming into a brand-new shell is not a resume), and its host
-  // key is pinned (an unpinned key needs the TOFU prompt, which is
-  // never auto-answered).
-  //
-  // Gesture safety: nothing here implies the connect will be
-  // non-interactive. The method select defaults to `auto`, which is
-  // non-interactive when the browser key or a pinned passkey suffices;
-  // a passkey may still raise its authenticator ceremony, and that is
-  // the ceremony gate's business (it opens the dialog for the ask and
-  // puts it back) -- not a reason to refuse to start. The countdown
-  // itself is the consent: it is visible, it is cancellable, and
-  // cancelling leaves the panel exactly as it is today.
-  try {
-    const entry = connstringFromLocation() ? null : loadHistory()[0];
-    if (entry?.autoResume && entry.command && loadPins()[entry.id]?.fp) {
-      const row = el("div", { className: "confirm" });
-      const cancelBtn = el("button", { textContent: "cancel" });
-      row.append(
-        el("div", { textContent: `resuming ${entry.user}@${entry.id.slice(0, 8)}…` }),
-        cancelBtn,
-      );
-      ask(row);
-      const timer = setTimeout(() => {
-        row.remove();
-        csInput.value = tokenlessConnstring(entry.id, entry.relay);
-        userInput.value = entry.user;
-        commandInput.value = entry.command;
-        syncPresetFromCommand();
-        annotatePresets(entry.tools);
-        autoResumeBox.checked = true;
-        // Errors are already the panel's story (doConnect writes the
-        // notice and stays open): never a dead end.
-        doConnect();
-      }, 1500);
-      cancelBtn.addEventListener("click", () => {
-        clearTimeout(timer);
-        row.remove();
+  // The user of the attempt in flight, for the host-key ask's copy.
+  let attemptUser = "";
+
+  const ui = {
+    confirmHostKey(fingerprint, connstring) {
+      const endpointId = endpointIdOf(connstringFrom(connstring ?? ""));
+      const pinned = endpointId ? loadPins()[endpointId] : undefined;
+      // The pinning payoff: this listener presented exactly the
+      // fingerprint the user approved-and-saved before. Note it and
+      // proceed without a prompt.
+      if (pinned && pinned.fp === fingerprint) {
+        setHomeNotice(
+          `host key matches the approval saved in this browser on ${String(pinned.at).slice(0, 10)}`,
+        );
+        return Promise.resolve(true);
+      }
+      const target = `${attemptUser || "?"}@${endpointId ? `${endpointId.slice(0, 8)}…` : "this machine"}`;
+      return hostKeyAsk(fingerprint, { pinned, target }).then((r) => {
+        if (!r?.ok) return false;
+        if (endpointId && r.remember) savePin(endpointId, fingerprint);
+        return true;
       });
+    },
+    getCredential() {
+      // No password here: the password method collects it through
+      // `collectPrompts` at the moment auth runs, in the same sheet
+      // keyboard-interactive uses, never parked in a long-lived input.
+      return { kind: attemptMethod || "auto" };
+    },
+    collectPrompts(batch) {
+      return promptsAsk(batch);
+    },
+  };
+
+  // --- wiring ------------------------------------------------------------------
+
+  sessionsBtn.addEventListener("click", () => {
+    if (document.body.classList.contains("live")) sessionSheet();
+    else showChrome("home");
+  });
+
+  // Method support depends on the loaded component; ask it rather than
+  // assume. Probing also forces the component to load, so the connect
+  // sheet reflects reality before the user commits to anything.
+  (async () => {
+    try {
+      caps = await capabilities();
+    } catch (e) {
+      setHomeNotice(`could not load the client component: ${e.message ?? e}`);
     }
-  } catch {
-    // Unreadable storage, an entry that cannot be re-encoded: the
-    // ordinary panel is the fallback, and it is already on screen.
-  }
+  })();
+
+  // Boot: home first. A fragment link is a deliberate destination and
+  // goes straight to its connect sheet (and wins over auto-resume,
+  // which renderHome only arms when there is no fragment).
+  showChrome("home");
+  const frag = connstringFromLocation();
+  if (frag) dialWithSheet(frag);
 
   return { connect: doConnect, ui };
 }
+

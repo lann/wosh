@@ -159,7 +159,7 @@ try {
 
   const waitPrompt = async () => {
     try {
-      return (await page.locator("#panel .confirm code").first()
+      return (await page.locator("#sheet .confirm code.fp").first()
         .textContent({ timeout: 60_000 })).trim();
     } catch (e) {
       console.error("no host-key prompt appeared; page state:", await diag());
@@ -181,29 +181,27 @@ try {
   };
 
   const fillAndConnect = async (method) => {
-    await page.fill("#panel input[placeholder*='connection string']", CONNSTRING);
-    await page.fill("#panel input[placeholder='user']", USER);
-    await page.selectOption("#panel select", method);
-    await page.click("#panel button:has-text('connect')");
+    await page.fill("#home input.connstring", CONNSTRING);
+    await page.click("#home .pasterow button.go");
+    await page.waitForSelector("#sheet[data-ask='connect'] input[placeholder='user']", { timeout: 15_000 });
+    await page.fill("#sheet input[placeholder='user']", USER);
+    await page.evaluate(() => {
+      document.querySelector("#sheet details.options").open = true;
+    });
+    await page.selectOption("#sheet select.method", method);
+    await page.click("#sheet button:text-is('connect')");
   };
 
   // localhost, not 127.0.0.1: see the file header. RP ID must be a
   // domain, or credentials.create/.get throw a SecurityError before
   // the virtual authenticator is ever asked anything.
-  // The panel collapses setup material (auth settings) into a
-  // <details> fold; this gate drives the flows inside them,
-  // not the collapse itself (browser-mobile covers that), so open
-  // everything after each page load (a load resets the open state).
-  const openPanelSections = () =>
-    page.evaluate(() => document.querySelectorAll("#panel details").forEach((d) => { d.open = true; }));
-
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
-  await openPanelSections();
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   console.log("[1] page loaded on http://localhost -- a valid WebAuthn RP ID");
 
-  // --- enrol -----------------------------------------------------------
-  const enrollBtn = page.locator("#panel .passkey button", { hasText: /^enrol$/ });
+  // --- enrol (on the identity screen, which owns the passkey UI) ------
+  await page.click("#home .footer button:has-text('identity')");
+  const enrollBtn = page.locator("#identity .passkey button", { hasText: /^enrol$/ });
   await enrollBtn.waitFor({ timeout: 15_000 });
   await enrollBtn.click();
   // A ceremony that never completes is the most likely failure here
@@ -211,11 +209,11 @@ try {
   // rather than only that a selector timed out.
   let line;
   try {
-    line = (await page.locator("#panel .passkey code").first()
+    line = (await page.locator("#identity .passkey code").first()
       .textContent({ timeout: 30_000 }) ?? "").trim();
   } catch (e) {
     console.error("enrolment produced no line; passkey section said:",
-      await page.locator("#panel .passkey").first().innerText().catch(() => "(absent)"));
+      await page.locator("#identity .passkey").first().innerText().catch(() => "(absent)"));
     console.error("console errors:", consoleErrors);
     throw e;
   }
@@ -252,13 +250,14 @@ try {
   }
 
   // --- connect, confirm the host key, authenticate with the passkey ---
+  await page.click("#identity .backrow .back");
   await fillAndConnect("passkey");
   const promptFp = await waitPrompt();
   console.log(`[3] host-key prompt shown: ${promptFp}`);
   if (EXPECT_FP && promptFp !== EXPECT_FP) {
     fail(`prompt fingerprint ${promptFp} != sshd's ${EXPECT_FP}`);
   }
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.click("#sheet button:has-text('it matches')");
 
   // The ceremony gate's "touch your passkey" prompt is CONDITIONAL by
   // design: `authenticate-passkey` needs the human during
@@ -268,7 +267,7 @@ try {
   // one, so on this gate the ceremony usually runs straight through.
   // Both outcomes are correct, and racing them is the only honest
   // assertion: what must happen is that authentication completes.
-  const gateBtn = page.locator("#panel .confirm button:has-text('touch your passkey to sign in')");
+  const gateBtn = page.locator("#sheet .confirm button:has-text('touch your passkey to sign in')");
   const gated = await Promise.race([
     gateBtn.waitFor({ timeout: 30_000 }).then(() => true, () => false),
     page.waitForFunction(
@@ -321,8 +320,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[6] shell round-trip through the tunnel painted in xterm");
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  await page.click("#sessions-btn");
+  await page.click("#sheet button:has-text('detach')");
 
   // --- recovery: the credential survives an evicted browser store ----
   //
@@ -346,8 +345,7 @@ try {
   console.log("[7] simulated IndexedDB eviction: deleted the wosh-passkey database");
 
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
-  await openPanelSections();
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   // Empirically: a CDP virtual authenticator is bound to the page's
   // CDP session, which a same-page navigation does not tear down, so
   // it survives the reload with no re-attach needed. Asserted here
@@ -357,10 +355,10 @@ try {
   console.log("[8] reloaded; virtual authenticator still attached (see below if not)");
 
   // Confirm the identity really is gone -- not merely that recovery
-  // happens to work anyway. The panel opens itself on load (boot.mjs)
-  // whenever there is no live session, which is the case right after
-  // this reload.
-  const notEnrolledText = await page.locator("#panel .passkey .sub").first()
+  // happens to work anyway. The passkey card lives on the identity
+  // screen.
+  await page.click("#home .footer button:has-text('identity')");
+  const notEnrolledText = await page.locator("#identity .passkey .sub").first()
     .textContent({ timeout: 15_000 });
   if (!/no passkey enrolled/.test(notEnrolledText ?? "")) {
     fail(`expected the not-enrolled passkey state after simulated eviction, got: ${notEnrolledText}`);
@@ -368,16 +366,16 @@ try {
     console.log("[9] confirmed not-enrolled state: the identity is really gone from this page");
   }
 
-  const recoverBtn = page.locator("#panel .passkey button", { hasText: /^recover$/ });
+  const recoverBtn = page.locator("#identity .passkey button", { hasText: /^recover$/ });
   await recoverBtn.waitFor({ timeout: 15_000 });
   await recoverBtn.click();
   let recoveredLine;
   try {
-    recoveredLine = (await page.locator("#panel .passkey code").first()
+    recoveredLine = (await page.locator("#identity .passkey code").first()
       .textContent({ timeout: 30_000 }) ?? "").trim();
   } catch (e) {
     console.error("recovery produced no line; passkey section said:",
-      await page.locator("#panel .passkey").first().innerText().catch(() => "(absent)"));
+      await page.locator("#identity .passkey").first().innerText().catch(() => "(absent)"));
     console.error("console errors:", consoleErrors);
     throw e;
   }
@@ -397,13 +395,14 @@ try {
   // rather than appending again: proving the SAME line still
   // authenticates is exactly what proves recovery reconstructed the
   // same identity, not merely produced a new working one.
+  await page.click("#identity .backrow .back");
   await fillAndConnect("passkey");
   await waitPrompt();
-  await page.click("#panel .confirm button:has-text('yes, connect')");
+  await page.click("#sheet button:has-text('it matches')");
   await Promise.race([
-    page.locator("#panel .confirm button:has-text('touch your passkey to sign in')")
+    page.locator("#sheet .confirm button:has-text('touch your passkey to sign in')")
       .waitFor({ timeout: 30_000 }).then(() => page.click(
-        "#panel .confirm button:has-text('touch your passkey to sign in')",
+        "#sheet .confirm button:has-text('touch your passkey to sign in')",
       )).catch(() => {}),
     page.waitForFunction(
       (u) => document.getElementById("status")?.textContent === `connected as ${u}`,
@@ -455,8 +454,8 @@ try {
     { timeout: 30_000 },
   );
   console.log("[12] shell round-trip through the recovered identity painted in xterm");
-  await page.click("#settings-btn");
-  await page.click("#panel button:has-text('detach')");
+  await page.click("#sessions-btn");
+  await page.click("#sheet button:has-text('detach')");
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

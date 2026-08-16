@@ -331,16 +331,16 @@ initLifecycle(() => currentSession, () => {
 function api() {
   clientLoad ??= (async () => {
     const { loadClient } = await import(new URL("./dist/deltic.js", import.meta.url));
-    status("loading the client component…");
+    status("loading the client…");
     try {
       const t = await loadClient(DIST.client, DIST.translator);
-      status("client component ready");
+      status("ready");
       return t;
     } catch (e) {
       // Leave the cache empty so a later call retries (a transient
       // fetch failure should not brick the page until a reload).
       clientLoad = null;
-      status("failed to load the client component");
+      status("failed to load the client");
       throw e;
     }
   })();
@@ -1021,6 +1021,10 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
               } else if (ls === "attached") {
                 status(`connected as ${user}`);
               }
+              // For the chrome around the terminal (boot.mjs): the
+              // header's transport dot tracks this without parsing the
+              // status line's prose.
+              window.dispatchEvent(new CustomEvent("wosh:link-state", { detail: { kind: ls } }));
             }
           } catch {
             // A torn-down session mid-poll is not a pump failure --

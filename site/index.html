@@ -13,169 +13,56 @@
   <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <link rel="stylesheet" href="./xterm/xterm.css" />
   <style>
-    html, body { height: 100%; margin: 0; background: #000; }
-    /* The one always-visible strip: status + session controls. The
-       connect form lives in the #panel dialog so a live session gets
-       the whole viewport. */
-    #bar {
-      display: flex; align-items: center; gap: 8px;
-      font: 12px system-ui, sans-serif; color: #9a9a9a; background: #111;
-      padding: 4px 8px; border-bottom: 1px solid #222;
+    /* The chrome outside the terminal, mobile-first. One design rule
+       generates most of the structure: every surface answers exactly
+       one question. #home answers "which machine?"; the #sheet dialog
+       hosts one ask at a time (host key, prompts, session actions);
+       #identity and #prefs are the rare setup surfaces. The terminal
+       itself (xterm under #term) is untouched. */
+    :root {
+      --bg: #000;
+      --surface: #131313;
+      --surface2: #1c1c1c;
+      --line: #292929;
+      --line2: #333;
+      --text: #d6d6d6;
+      --bright: #f2f2f2;
+      --dim: #8a8a8a;
+      --accent: #2d5e9e;
+      --accent-line: #4a7ec0;
+      --ok: #6fbf87;
+      --warn: #d99a20;
+      --danger: #f55;
+      --fp: #fd5;
+      --keyline: #8c8;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, sans-serif;
     }
-    #status {
-      flex: 1; min-width: 0;
+    html, body { height: 100%; margin: 0; background: var(--bg); }
+    body { font: 15px/1.45 var(--sans); color: var(--text); }
+
+    /* ---- the session frame: header, terminal, extra keys ---- */
+    #wrap { display: flex; flex-direction: column; height: 100%; }
+    #bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 10px; background: #0d0d0d; border-bottom: 1px solid #222;
+    }
+    #dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex: none; }
+    #dot.ok { background: var(--ok); }
+    #dot.warn { background: var(--warn); }
+    #bar .sess-id { flex: 1; min-width: 0; }
+    #who {
+      display: block; font: 600 14px var(--mono); color: var(--bright);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    #bar button {
-      flex: none; font: 11px system-ui, sans-serif;
-      color: #ccc; background: #1c1c1c; border: 1px solid #333;
-      border-radius: 4px; padding: 2px 8px;
+    #status {
+      display: block; font: 12px var(--sans); color: var(--dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    #wrap { display: flex; flex-direction: column; height: 100%; }
-    #panel {
-      font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
-      border: 1px solid #333; border-radius: 8px;
-      padding: 10px 12px; margin: auto;
-      width: min(560px, 92vw); box-sizing: border-box;
-    }
-    #panel::backdrop { background: rgba(0, 0, 0, 0.65); }
-    /* The link confirmation (links.mjs): same family as #panel, sized
-       for one URL and two buttons. The URL gets the full width and
-       breaks anywhere -- it is the thing being confirmed, so it must
-       be readable in full, not ellipsized. */
-    #linkdialog {
-      font: 12px system-ui, sans-serif; color: #bbb; background: #161616;
-      border: 1px solid #333; border-radius: 8px;
-      padding: 12px 14px; margin: auto;
-      width: min(480px, 92vw); box-sizing: border-box;
-    }
-    #linkdialog::backdrop { background: rgba(0, 0, 0, 0.65); }
-    #linkdialog code {
-      display: block; margin: 8px 0; padding: 6px;
-      background: #000; color: #9ecbff;
-      font: 12px monospace; word-break: break-all;
-    }
-    #linkdialog .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-    #linkdialog .row .spacer { flex: 1; }
-    #linkdialog label { display: flex; align-items: center; gap: 4px; }
-    #linkdialog button { font-size: 13px; min-height: 30px; }
-    /* The session bookends (separator.mjs): xterm decorations
-       overlaying their own blank buffer lines, styled as page chrome
-       -- a colored rule with a label -- so they cannot be mistaken
-       for remote output. Green opens a session, red closes one; read
-       top to bottom they are the timeline of connects and
-       disconnects. */
-    .session-separator {
-      display: flex; align-items: center; gap: 8px;
-      font: 600 11px system-ui, sans-serif; letter-spacing: 0.4px;
-      white-space: nowrap; overflow: hidden;
-    }
-    .session-separator::before, .session-separator::after {
-      content: ""; flex: 1; border-top: 2px solid currentColor;
-      opacity: 0.4;
-    }
-    .session-separator.start { color: #6fbf87; }
-    .session-separator.end { color: #c9847d; }
-    #panel .title {
-      display: flex; align-items: center; margin-bottom: 6px;
-      color: #ddd; font-weight: 600;
-    }
-    #panel .title span { flex: 1; }
-    #panel button { font-size: 11px; }
-    #panel input, #panel select {
-      background: #000; color: #ddd; border: 1px solid #333;
-      font: 12px monospace; padding: 3px 4px;
-    }
-    #panel .connstring { width: 100%; box-sizing: border-box; }
-    /* the field and its scan button share one line */
-    #panel .csrow { display: flex; gap: 6px; align-items: stretch; }
-    #panel .csrow .connstring { flex: 1; min-width: 0; }
-    #panel .csrow .scan { flex: none; }
-    /* the camera preview, while a scan is running */
-    #panel .scan-view { margin-top: 8px; }
-    #panel .scan-view video {
-      display: block; width: 100%; max-height: 46vh;
-      background: #000; border: 1px solid #333; border-radius: 4px;
-      object-fit: contain;
-    }
-    #panel .scan-view .hint { color: #888; margin: 4px 0; }
-    #panel .field { color: #888; margin-top: 8px; margin-bottom: 2px; }
-    /* The collapsed auth-settings section: a one-line control styled
-       like a .field label. The expand indicator is drawn explicitly --
-       display:flex (used for the tap target below) removes the native
-       disclosure marker in Chromium and WebKit, which left the row
-       with no visible sign that it expands at all. */
-    /* `hidden` must mean hidden even on elements whose display an
-       author rule sets (the .row flex rule was silently overriding it,
-       which is the standard [hidden] trap). */
-    #panel [hidden] { display: none !important; }
-    #panel details { margin-top: 8px; }
-    #panel summary { color: #888; cursor: pointer; user-select: none; padding: 4px 0; list-style: none; }
-    #panel summary::-webkit-details-marker { display: none; }
-    #panel summary::before { content: "▸"; display: inline-block; margin-right: 7px; font-size: 11px; }
-    #panel details[open] > summary::before { content: "▾"; }
-    #panel summary:hover { color: #bbb; }
-    /* The dialog's close: needed rarely (Esc works, and the panel
-       closes itself on connect), so it carries no chrome -- a quiet
-       glyph that brightens under the pointer. */
-    #panel .title .close {
-      background: none; border: none; color: #555;
-      font-size: 18px; line-height: 1; padding: 2px 8px; cursor: pointer;
-    }
-    #panel .title .close:hover { color: #ccc; }
-    /* Inline help: a small "?" that reveals its explanation on demand.
-       Touch has no hover, so this is the only honest way to keep
-       guidance reachable without rendering it permanently. */
-    #panel button.help {
-      background: none; border: 1px solid #444; border-radius: 50%;
-      color: #888; width: 24px; height: 24px; min-height: 24px;
-      padding: 0; line-height: 1; flex: none;
-    }
-    #panel button.help:hover { color: #ddd; border-color: #666; }
-    #panel .help-body { border-left: 2px solid #333; padding-left: 8px; }
-    /* The scan button is an icon; size the glyph, centre it. */
-    #panel button.scan svg { display: block; width: 20px; height: 20px; }
-    #panel button.scan { display: flex; align-items: center; justify-content: center; }
-    #panel .row { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    #panel .notice { color: #d90; margin-top: 8px; }
-    /* connection history: tap a row to reconnect (tokenless; pairing
-       enrollment stands in for the QR's token) */
-    #panel .history { margin-bottom: 4px; }
-    #panel .histhead { display: flex; align-items: center; }
-    #panel .histhead span { flex: 1; }
-    #panel .histline { display: flex; gap: 4px; align-items: stretch; margin-top: 4px; }
-    #panel .histrow {
-      flex: 1; text-align: left; font: 12px monospace;
-      color: #ddd; background: #1c1c1c; border: 1px solid #333;
-      border-radius: 4px; padding: 4px 8px; cursor: pointer;
-    }
-    #panel .histrow:hover { background: #242424; }
-    #panel .histrow .sub { color: #8a8a8a; font-size: 11px; margin-top: 1px; }
-    #panel button.subtle {
-      color: #888; background: transparent; border: 1px solid #2a2a2a;
-      border-radius: 4px;
-    }
-    /* an armed (click-again-to-confirm) destructive button */
-    #panel button.subtle.armed { color: #f55; border-color: #f55; }
-    #panel .confirm { color: #d90; margin-top: 8px; }
-    #panel .confirm code, #panel .key code { color: #fd5; }
-    /* a changed pinned host key: the one alarming state on this page */
-    #panel .confirm .warn { color: #f55; font-weight: bold; }
-    #panel .key {
-      margin-top: 8px; font: 11px monospace; color: #8c8;
-      word-break: break-all;
-    }
-    #panel .key code { user-select: all; }
-    /* the passkey section: same visual register as .key (a public
-       authorized_keys line), plus its own enrol/adopt/forget controls */
-    #panel .passkey { margin-top: 8px; }
-    #panel .passkey code {
-      display: block; font: 11px monospace; color: #8c8;
-      word-break: break-all; user-select: all; margin: 4px 0;
-    }
-    #panel .passkey .row { margin-top: 6px; }
-    #panel .passkey input {
-      width: 100%; box-sizing: border-box;
+    #sessions-btn {
+      flex: none; min-width: 44px; min-height: 40px; border-radius: 8px;
+      background: var(--surface2); border: 1px solid var(--line2);
+      color: var(--text); font-size: 17px;
     }
     #term { flex: 1; min-height: 0; padding: 2px; }
     /* Vertical drags in the terminal belong to mobile.mjs, which scrolls
@@ -184,11 +71,14 @@
        pans the page. Pinch-zoom and horizontal panning stay the
        browser's; touch-action is inert for mouse input. */
     #term { touch-action: pan-x pinch-zoom; }
-    /* extra-keys bar (mobile.mjs): coarse-pointer devices only — soft
-       keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. */
+    /* extra-keys bar (mobile.mjs): coarse-pointer devices only -- soft
+       keyboards have no Esc/Tab/Ctrl/arrows. Hidden ⇒ inert. Shown only
+       WITH a live session (body.live, toggled by boot.mjs): on a
+       sessionless page every key would be a no-op, which reads as
+       breakage. */
     #keys { display: none; }
     @media (pointer: coarse) {
-      #keys {
+      body.live #keys {
         display: flex; align-items: stretch; flex: none; gap: 4px;
         padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
         background: #111; border-top: 1px solid #222;
@@ -200,24 +90,279 @@
       }
       #keys button {
         flex: none; min-width: 44px; height: 38px; touch-action: manipulation;
-        font: 14px system-ui, sans-serif; color: #ccc; background: #1c1c1c;
-        border: 1px solid #333; border-radius: 6px; padding: 0 10px;
+        font: 14px var(--sans); color: #ccc; background: var(--surface2);
+        border: 1px solid var(--line2); border-radius: 6px; padding: 0 10px;
       }
       /* held, not yet fired: the key lands on release, so this is the
-         only feedback during the press — and it drops away when the
+         only feedback during the press -- and it drops away when the
          finger drags off, showing that the key will NOT fire. */
       #keys button.pressed { background: #333; border-color: #666; }
       #keys button.armed { color: #fff; background: #2d5e9e; border-color: #4a7ec0; }
-      /* 16px stops the iOS focus auto-zoom on the connect panel */
-      #panel input, #panel select { font-size: 16px; }
-      /* The two folded summaries are primary tap targets here: give
-         them the same comfortable height the buttons get. */
-      #panel summary { min-height: 32px; display: flex; align-items: center; font-size: 14px; }
-      #panel button { font-size: 14px; min-height: 32px; }
-      /* the "?" is round: growing it keeps it round */
-      #panel button.help { width: 32px; height: 32px; }
-      #bar button { font-size: 13px; min-height: 28px; }
     }
+
+    /* ---- session bookends (separator.mjs): unchanged ---- */
+    .session-separator {
+      display: flex; align-items: center; gap: 8px;
+      font: 600 11px var(--sans); letter-spacing: 0.4px;
+      white-space: nowrap; overflow: hidden;
+    }
+    .session-separator::before, .session-separator::after {
+      content: ""; flex: 1; border-top: 2px solid currentColor;
+      opacity: 0.4;
+    }
+    .session-separator.start { color: #6fbf87; }
+    .session-separator.end { color: #c9847d; }
+
+    /* ---- the chrome overlay: home / identity / prefs ---- */
+    /* Opaque and full-viewport: with no session there is nothing under
+       it worth seeing, and with one there is a "back to session" row. */
+    #chrome {
+      position: fixed; inset: 0; z-index: 20; overflow-y: auto;
+      background: var(--bg);
+    }
+    #chrome[hidden] { display: none; }
+    .screen { display: none; min-height: 100%; flex-direction: column; }
+    .screen.on { display: flex; }
+    .screen .pad { padding: 16px; }
+    .wordmark { font: 600 13px var(--sans); letter-spacing: 2px; color: var(--dim); }
+    .topline { display: flex; align-items: center; justify-content: space-between; }
+    .applink {
+      background: none; border: none; color: var(--dim);
+      font: 13px var(--sans); padding: 8px; cursor: pointer;
+    }
+    .label {
+      font: 600 12px var(--sans); letter-spacing: 1px; color: var(--dim);
+      text-transform: uppercase; margin: 20px 0 8px;
+    }
+    .footer {
+      margin-top: auto; display: flex; gap: 8px; justify-content: center;
+      padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    }
+    .backrow {
+      display: flex; align-items: center; gap: 8px; padding: 14px 16px 0;
+    }
+    .backrow .back {
+      background: none; border: none; color: var(--dim);
+      font-size: 22px; padding: 0 8px 0 0; cursor: pointer;
+    }
+    .backrow h1 { font: 600 17px var(--sans); color: var(--bright); margin: 0; }
+
+    /* ---- buttons ---- */
+    button { font: 16px var(--sans); color: var(--text); border-radius: 10px; cursor: pointer; }
+    button.primary {
+      background: var(--accent); border: 1px solid var(--accent-line); color: #fff;
+      min-height: 48px; width: 100%; font-weight: 600;
+    }
+    button.secondary {
+      background: var(--surface2); border: 1px solid var(--line2);
+      min-height: 48px; width: 100%;
+    }
+    button.quiet { background: none; border: none; color: var(--dim); min-height: 44px; }
+    /* the dangerous choice: quiet until armed, never the biggest target */
+    button.danger { background: none; border: 1px solid #a33; color: var(--danger); min-height: 48px; width: 100%; }
+    button.danger.armed { background: #802020; border-color: var(--danger); color: #fff; font-weight: 600; }
+    button.small {
+      min-height: 40px; padding: 0 14px; font-size: 14px;
+      background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px;
+    }
+    button.small.danger { background: none; width: auto; min-height: 40px; }
+
+    /* ---- inputs ---- */
+    input[type="text"], input[type="password"], select {
+      width: 100%; min-height: 48px; padding: 0 12px; box-sizing: border-box;
+      background: #0a0a0a; color: var(--bright); border: 1px solid var(--line2);
+      border-radius: 10px; font: 16px var(--mono);
+    }
+    input::placeholder { color: #666; }
+    input[type="checkbox"] {
+      width: 22px; height: 22px; accent-color: var(--accent); margin: 0; flex: none;
+    }
+    /* a checkbox and its words are ONE tap target and wrap as one unit */
+    label.check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 15px; }
+    .fieldlabel { font: 13px var(--sans); color: var(--dim); margin: 12px 0 6px; }
+
+    /* ---- home: connection cards ---- */
+    .histrow {
+      background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; margin-bottom: 10px; width: 100%; text-align: left;
+      display: flex; align-items: center; gap: 12px; box-sizing: border-box;
+    }
+    .histrow .body { flex: 1; min-width: 0; }
+    .histrow .title {
+      display: block; font: 600 16px var(--mono); color: var(--bright);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .histrow .sub {
+      font: 13px var(--sans); color: var(--dim); margin-top: 4px;
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    }
+    .pill {
+      font: 11px var(--sans); border: 1px solid var(--line2); border-radius: 99px;
+      padding: 1px 8px; color: var(--dim); white-space: nowrap;
+    }
+    .pill.ok { color: var(--ok); border-color: #2e4a38; }
+    .histrow .more {
+      flex: none; width: 44px; height: 44px; border-radius: 8px;
+      background: none; border: none; color: var(--dim); font-size: 20px; line-height: 1;
+    }
+    /* the auto-resume countdown, ON the card it resumes */
+    .histrow.resuming { border-color: #3a4a5e; }
+    .resume-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .resume-row .t { font: 13px var(--sans); color: var(--dim); white-space: nowrap; }
+    .resume-track { flex: 1; height: 3px; background: var(--surface2); border-radius: 2px; overflow: hidden; }
+    .resume-fill { display: block; height: 100%; background: var(--accent-line); transition: width 1s linear; }
+    .resume-row button { min-height: 36px; padding: 0 12px; font-size: 14px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; }
+
+    /* the scan + paste pair */
+    .scanrow button.scan { display: flex; align-items: center; justify-content: center; gap: 10px; }
+    button.scan svg { width: 20px; height: 20px; }
+    .pasterow { display: flex; gap: 8px; margin-top: 10px; }
+    .pasterow input { flex: 1; min-width: 0; }
+    .pasterow button {
+      flex: none; width: 48px; min-height: 48px; font-size: 18px;
+      background: var(--surface2); border: 1px solid var(--line2); border-radius: 10px;
+    }
+    .hero { margin: auto 0; text-align: center; padding: 0 16px; }
+    .hero .pitch { color: var(--dim); font-size: 15px; margin-bottom: 24px; }
+    .hero .inner { max-width: 340px; margin: 0 auto; }
+    .hero .hint { color: #666; font-size: 13px; margin-top: 14px; }
+    .notice { color: var(--warn); margin: 10px 0 0; font-size: 14px; }
+
+    /* ---- the sheet: every ask, one at a time ---- */
+    #sheet {
+      width: 100%; max-width: 640px; box-sizing: border-box;
+      margin: auto auto 0; padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--line2); border-bottom: none;
+      border-radius: 16px 16px 0 0;
+      max-height: calc(100dvh - 40px); overflow-y: auto;
+    }
+    #sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
+    #sheet .handle { width: 36px; height: 4px; border-radius: 2px; background: #333; margin: 0 auto 14px; }
+    #sheet h2 { font: 600 17px var(--sans); color: var(--bright); margin: 0 0 8px; }
+    #sheet h2.warn { color: var(--danger); }
+    #sheet p { margin: 0 0 12px; color: var(--dim); font-size: 14px; }
+    #sheet .target { font: 13px var(--mono); color: var(--dim); margin-bottom: 8px; word-break: break-all; }
+    #sheet .stack { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+    #sheet .notice { margin: 8px 0 0; }
+    #sheet details { margin-top: 8px; }
+    #sheet summary {
+      color: var(--dim); cursor: pointer; user-select: none;
+      min-height: 40px; display: flex; align-items: center; list-style: none; font-size: 15px;
+    }
+    #sheet summary::-webkit-details-marker { display: none; }
+    #sheet summary::before { content: "▸"; display: inline-block; margin-right: 7px; font-size: 11px; }
+    #sheet details[open] > summary::before { content: "▾"; }
+    /* `hidden` must mean hidden even on elements whose display an
+       author rule sets (.row's flex was silently overriding it, which
+       is the standard [hidden] trap). */
+    #sheet [hidden], #chrome [hidden] { display: none !important; }
+
+    /* the fingerprint: the thing being confirmed. textContent stays the
+       EXACT string (gates and humans compare it); the 4-char grouping is
+       purely visual, margins on spans, so copying or reading the DOM
+       yields the unbroken fingerprint. */
+    #sheet .confirm code.fp {
+      display: block; background: #0a0a0a; border: 1px solid var(--line);
+      border-radius: 10px; padding: 12px; margin: 0 0 12px;
+      font: 15px/1.9 var(--mono); color: var(--fp);
+      word-break: break-all; user-select: all;
+    }
+    #sheet .confirm code.fp.old { color: #a89040; }
+    #sheet .confirm code.fp .algo {
+      display: block; color: var(--dim); font: 12px var(--sans);
+      margin-bottom: 4px; user-select: none;
+    }
+    #sheet .confirm code.fp span.g {
+      display: inline-block; /* wrap at group boundaries, never inside one */
+      background: #1a1a1a; border-radius: 4px; padding: 1px 2px; margin-right: 5px;
+    }
+
+    /* session rows in the session sheet */
+    .sessrow {
+      display: flex; align-items: center; gap: 10px; min-height: 52px;
+      border-bottom: 1px solid var(--line);
+    }
+    .sessrow:last-of-type { border-bottom: none; }
+    .sessrow .name { font: 15px var(--mono); color: var(--bright); }
+    .sessrow .meta { font: 12px var(--sans); color: var(--dim); }
+    .sessrow .spacer { flex: 1; }
+    .sheet-title { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .sheet-title .who { font: 600 15px var(--mono); color: var(--bright); }
+    .sheet-title .t { margin-left: auto; font: 12px var(--sans); color: var(--dim); }
+    .hedge { font: 12px var(--sans); color: #666; margin: 8px 0 0; }
+    .newrow { display: flex; gap: 8px; margin-top: 10px; }
+    .newrow input { flex: 1; min-height: 44px; }
+    .newrow button { flex: none; }
+
+    /* menu sheets: one action per row */
+    .menurow {
+      display: block; width: 100%; text-align: left; padding: 13px 4px;
+      background: none; border: none; border-bottom: 1px solid var(--line);
+      font-size: 15px; color: var(--text); border-radius: 0;
+    }
+    .menurow:last-of-type { border-bottom: none; }
+    .menurow.danger { color: var(--danger); }
+    .menurow.danger.armed { background: #802020; color: #fff; border-radius: 8px; }
+
+    /* ---- identity & prefs cards ---- */
+    .idcard {
+      background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; margin: 12px 16px 0;
+    }
+    .idcard h3 { margin: 0 0 6px; font: 600 15px var(--sans); color: var(--bright); }
+    .idcard p, .idcard .sub { margin: 0 0 10px; font: 13px var(--sans); color: var(--dim); }
+    .idcard .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+    .keyblock, .idcard code {
+      display: block; background: #0a0a0a; border: 1px solid var(--line);
+      border-radius: 8px; padding: 10px; margin: 4px 0;
+      font: 12px/1.6 var(--mono); color: var(--keyline);
+      word-break: break-all; user-select: all;
+    }
+    .help-body { border-left: 2px solid var(--line2); padding-left: 8px; font-size: 13px; color: var(--dim); margin-top: 8px; }
+    button.help {
+      background: none; border: 1px solid #444; border-radius: 50%;
+      color: var(--dim); width: 32px; height: 32px; min-height: 32px;
+      padding: 0; line-height: 1; flex: none; font-size: 14px;
+    }
+    .pinrow { display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--line); }
+    .pinrow:last-of-type { border-bottom: none; }
+    .pinrow .id { font: 13px var(--mono); color: var(--bright); word-break: break-all; }
+    .pinrow .at { font: 12px var(--sans); color: var(--dim); }
+    .pinrow .spacer { flex: 1; }
+    .prefrow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .prefrow:last-of-type { border-bottom: none; }
+    .prefrow input { margin-top: 2px; }
+    .prefrow .body { flex: 1; }
+    .prefrow .t { font: 15px var(--sans); color: var(--bright); }
+    .prefrow .d { font: 13px var(--sans); color: var(--dim); margin-top: 2px; }
+
+    /* the camera preview, while a scan is running (qr.mjs) */
+    .scan-view video {
+      display: block; width: 100%; max-height: 46vh;
+      background: #000; border: 1px solid var(--line2); border-radius: 10px;
+      object-fit: contain;
+    }
+    .scan-view .hint { color: var(--dim); margin: 8px 0; font-size: 13px; }
+    .scan-view button { min-height: 44px; padding: 0 16px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; }
+
+    /* ---- the link confirmation (links.mjs): unchanged semantics ---- */
+    #linkdialog {
+      font: 14px var(--sans); color: var(--text); background: var(--surface);
+      border: 1px solid var(--line2); border-radius: 12px;
+      padding: 14px 16px; margin: auto;
+      width: min(480px, 92vw); box-sizing: border-box;
+    }
+    #linkdialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+    #linkdialog code {
+      display: block; margin: 8px 0; padding: 8px;
+      background: #000; color: #9ecbff;
+      font: 13px var(--mono); word-break: break-all;
+    }
+    #linkdialog .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    #linkdialog .row .spacer { flex: 1; }
+    #linkdialog label { display: flex; align-items: center; gap: 6px; }
+    #linkdialog button { font-size: 14px; min-height: 40px; padding: 0 14px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; }
   </style>
   <script src="./xterm/xterm.js"></script>
   <script src="./xterm/addon-fit.js"></script>
@@ -231,18 +376,33 @@
 <body>
   <div id="wrap">
     <div id="bar">
-      <span id="status">idle</span>
-      <button id="settings-btn">connect…</button>
+      <span id="dot"></span>
+      <span class="sess-id">
+        <span id="who"></span>
+        <span id="status">idle</span>
+      </span>
+      <button id="sessions-btn" title="sessions">⇆</button>
     </div>
     <div id="term"></div>
     <div id="keys"></div>
   </div>
-  <dialog id="panel"></dialog>
+  <!-- The chrome overlay: home (connections), identity & keys, settings.
+       boot.mjs owns everything inside. Shown whenever there is no
+       session to look at; reachable in-session via the session sheet. -->
+  <div id="chrome">
+    <section id="home" class="screen on"></section>
+    <section id="identity" class="screen"></section>
+    <section id="prefs" class="screen"></section>
+  </div>
+  <!-- Every ask rides this one dialog, one at a time: host-key
+       confirmation, prompt batches, the passkey ceremony, the connect
+       form, the session sheet, card menus. boot.mjs owns it. -->
+  <dialog id="sheet"></dialog>
   <dialog id="linkdialog"></dialog>
   <script type="module">
     import { connect } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
-    window.__woshBoot = await initBoot(document.getElementById("panel"), { onConnect: connect });
+    window.__woshBoot = await initBoot(document.getElementById("chrome"), { onConnect: connect });
     // PWA shell: https only. Local serving stays http, so development
     // and the browser gate never install the worker and a stale cache
     // can never confuse them. The deployed sw.js is version-keyed by

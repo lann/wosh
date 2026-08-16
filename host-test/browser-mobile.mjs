@@ -63,6 +63,7 @@ const FIXTURE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>keys-bar fixture</title>
 <style>${style}</style>
+<body class="live"><!-- the keys bar shows only WITH a session (body.live) -->
 <div id="wrap">
   <div id="bar"><span id="status">fixture</span></div>
   <div id="term"><textarea id="fake-textarea"></textarea></div>
@@ -103,6 +104,7 @@ const TERMINAL_FIXTURE = `<!doctype html>
 <title>terminal fixture</title>
 <link rel="stylesheet" href="/site/node_modules/@xterm/xterm/css/xterm.css">
 <style>${style}</style>
+<body class="live"><!-- the keys bar shows only WITH a session (body.live) -->
 <div id="wrap">
   <div id="bar"><span id="status">fixture</span></div>
   <div id="term"></div>
@@ -715,117 +717,135 @@ try {
     console.log("[21] no session, or a torn-down one, is survived quietly");
   }
 
-  // --- the connect panel's shape ---------------------------------------
+  // --- the chrome's shape ------------------------------------------------
   //
-  // The panel used to render identity management -- the passkey pitch,
-  // adopt input, recover story, ~15 lines of prose -- permanently, and
-  // appended the rows that NEED answers (host-key confirm, prompt
-  // batches) below all of it, off a phone's screen. These legs pin the
-  // structure that fixed it, against the real index.html + boot.mjs
-  // with only the wasm component stubbed.
+  // The chrome outside the terminal is a home screen plus ONE ask at a
+  // time in a bottom sheet (#sheet). These legs pin the structure that
+  // makes the old failure modes unrepresentable -- a question buried
+  // below a phone's fold, a dead attempt's prompt left answerable, a
+  // history row tappable mid-auth -- against the real index.html +
+  // boot.mjs with only the wasm component stubbed.
   await page.goto(`http://127.0.0.1:${PORT}/panel`, { waitUntil: "load" });
-  await page.waitForSelector("#panel button", { timeout: 15_000 });
+  await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
-  // The capabilities probe re-renders the sections; wait for its
-  // observable effect (the passkey section unhiding) rather than a
-  // fixed delay.
+
+  // 22. A fresh home screen is the TASK: scan (primary), paste, and
+  //     nothing else demanding answers -- no cards on fresh storage, no
+  //     folds, and the extra-keys bar stays hidden until a session
+  //     exists (body.live).
+  const shape = await page.evaluate(() => ({
+    cards: document.querySelectorAll("#home .histrow").length,
+    scanVisible: document.querySelector("#home button.scan")?.checkVisibility() ?? false,
+    pasteVisible: document.querySelector("#home input.connstring")?.checkVisibility() ?? false,
+    textInputs: [...document.querySelectorAll("#home input[type=text]")].length,
+    keysDisplay: getComputedStyle(document.getElementById("keys")).display,
+    live: document.body.classList.contains("live"),
+  }));
+  if (ok(shape.cards === 0, `fresh storage must show no connection cards (found ${shape.cards})`) &&
+      ok(shape.scanVisible && shape.pasteVisible, "scan and paste must both be visible on a fresh home") &&
+      ok(shape.textInputs === 1, `a fresh home should carry exactly the paste field (${shape.textInputs} inputs)`) &&
+      ok(!shape.live && shape.keysDisplay === "none",
+         `the extra-keys bar must stay hidden without a session (display: ${shape.keysDisplay})`)) {
+    console.log("[22] a fresh home is the task: scan + paste, no cards, keys bar hidden");
+  }
+
+  // 22b. body.live is the keys bar's whole switch: flipping it on shows
+  //      the bar under a coarse pointer (boot.mjs flips it on connect).
+  const keysLive = await page.evaluate(() => {
+    document.body.classList.add("live");
+    const display = getComputedStyle(document.getElementById("keys")).display;
+    document.body.classList.remove("live");
+    return display;
+  });
+  if (ok(keysLive === "flex", `body.live must show the keys bar (display: ${keysLive})`)) {
+    console.log("[22b] the keys bar rides body.live");
+  }
+
+  // 23. An ask OWNS the screen: the host-key confirmation arrives as a
+  //     modal sheet -- visible, above everything, nothing else tappable
+  //     -- and its buttons resolve it. This is what retired the
+  //     below-the-fold prompt (the page looking hung on
+  //     "authenticating…" while its question sat unseen).
+  const asked = page.evaluate(() =>
+    window.__woshBoot.ui.confirmHostKey("SHA256:synthetic-fingerprint-for-the-gate", ""));
+  await page.waitForSelector("#sheet[data-ask='hostkey'] .confirm", { timeout: 5_000 });
+  const askShape = await page.evaluate(() => {
+    const sheet = document.getElementById("sheet");
+    const fp = sheet.querySelector(".confirm code.fp");
+    return {
+      open: sheet.open,
+      modal: sheet.matches(":modal"),
+      fpVisible: fp?.checkVisibility() ?? false,
+      fpText: fp?.textContent ?? "",
+      rememberUnchecked: sheet.querySelector("#remember-hostkey")?.checked === false,
+    };
+  });
+  await page.click(`#sheet button:has-text("don't connect")`);
+  if (ok(await asked === false, "the host-key ask did not resolve from its buttons") &&
+      ok(askShape.open && askShape.modal, "the ask must be a modal sheet") &&
+      ok(askShape.fpVisible, "the fingerprint must be visible in the sheet") &&
+      ok(askShape.fpText === "SHA256:synthetic-fingerprint-for-the-gate",
+         `the fingerprint text must be EXACT (grouping is visual only); got ${JSON.stringify(askShape.fpText)}`) &&
+      ok(askShape.rememberUnchecked, "the remember checkbox must default to unchecked")) {
+    console.log("[23] a host-key ask owns the screen as a modal sheet; the fingerprint text is exact");
+  }
+
+  // 23b. Superseding an ask resolves it null: the sheet can never
+  //      accumulate a dead attempt's questions (the zombie-prompt bug).
+  const first = page.evaluate(() =>
+    window.__woshBoot.ui.collectPrompts({ instruction: "first", prompts: [{ text: "a:", echo: true }] }));
+  await page.waitForSelector("#sheet[data-ask='prompts']", { timeout: 5_000 });
+  const second = page.evaluate(() =>
+    window.__woshBoot.ui.collectPrompts({ instruction: "second", prompts: [{ text: "b:", echo: true }] }));
   await page.waitForFunction(
-    () => !document.querySelector("#panel .passkey")?.hidden,
-    null,
-    { timeout: 15_000 },
-  );
-
-  // 22. A fresh panel is the TASK: connstring, user, connect, scan.
-  //     Setup material exists but is folded (auth settings, and the
-  //     session fold with the on-connect command); nothing inside a
-  //     closed fold is visible or tappable.
-  const shape = await page.evaluate(() => {
-    const panel = document.getElementById("panel");
-    // checkVisibility, not a rect test: Chromium renders a closed
-    // <details>' contents as content-visibility:hidden, whose boxes
-    // keep their size while being unrenderable and untappable.
-    const visible = (el) => el.checkVisibility();
-    const details = [...panel.querySelectorAll("details")];
-    return {
-      detailsCount: details.length,
-      anyOpen: details.some((d) => d.open),
-      visibleButtons: [...panel.querySelectorAll("button")].filter(visible).map((b) => b.textContent.trim()),
-      foldedButtons: details.flatMap((d) => [...d.querySelectorAll("button")]).filter(visible).length,
-      summaries: details.map((d) => d.querySelector("summary")?.textContent.trim()),
-    };
-  });
-  if (ok(shape.detailsCount === 2, `expected 2 folded sections, found ${shape.detailsCount}`) &&
-      ok(!shape.anyOpen, "a folded section opened itself on a fresh load") &&
-      ok(shape.foldedButtons === 0, `${shape.foldedButtons} buttons inside the closed folds are visible`) &&
-      ok(shape.visibleButtons.length <= 4,
-         `a fresh panel still shows ${shape.visibleButtons.length} buttons: ${JSON.stringify(shape.visibleButtons)}`)) {
-    console.log(`[22] a fresh panel shows ${shape.visibleButtons.length} buttons; setup is folded ("${shape.summaries.join(" / ")}")`);
+    () => document.querySelector("#sheet p")?.textContent === "second", null, { timeout: 5_000 });
+  if (ok(await first === null, "a superseded ask must resolve null (cancelled), not linger")) {
+    console.log("[23b] a superseded ask resolves null; one question on screen at a time");
+  }
+  await page.click("#sheet button:text-is('cancel')");
+  if (ok(await second === null, "cancel must resolve the prompt batch null")) {
+    console.log("[23c] cancel resolves the batch null (the attempt tears down)");
   }
 
-  // 23. The rows that need ANSWERS appear under the connect button,
-  //     above the folds -- never below them (the below-the-fold prompt
-  //     was how "authenticating…" could look like a hang on a phone).
-  const prompt = page.locator("#panel .confirm");
-  const asked = page.evaluate(() => {
-    // Resolved by the click below; the return value is the user's answer.
-    return window.__woshBoot.ui.confirmHostKey("SHA256:synthetic-fingerprint-for-the-gate", "");
-  });
-  await prompt.waitFor({ timeout: 5_000 });
-  const placement = await page.evaluate(() => {
-    const row = document.querySelector("#panel .confirm");
-    const firstFold = document.querySelector("#panel details");
-    const connect = [...document.querySelectorAll("#panel button")].find((b) => b.textContent.trim() === "connect");
-    return {
-      aboveFolds: !!(row.compareDocumentPosition(firstFold) & Node.DOCUMENT_POSITION_FOLLOWING),
-      belowConnect: !!(connect.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING),
-      visible: row.getBoundingClientRect().height > 0,
-    };
-  });
-  await page.click("#panel .confirm button:has-text('no')");
-  if (ok(await asked === false, "the host-key prompt did not resolve from its buttons") &&
-      ok(placement.visible, "the host-key prompt rendered without size") &&
-      ok(placement.belowConnect, "the prompt did not appear under the connect button") &&
-      ok(placement.aboveFolds, "the prompt appeared BELOW the folded sections again")) {
-    console.log("[23] a host-key prompt lands under connect, above the folds");
-  }
-
-  // 24. The fold announces itself: display:flex on summary removes
-  //     the NATIVE disclosure marker in Chromium/WebKit, so the
-  //     chevron is drawn explicitly -- and a fold with no indicator
-  //     reads as a dead label, which is how this got reported.
+  // 24. The connect sheet: paste + go opens it, its options fold
+  //     announces itself with an explicit chevron (display:flex on
+  //     summary removes the native marker), and the method select
+  //     works inside it.
+  await page.fill("#home input.connstring", "not-a-real-connstring");
+  await page.click("#home .pasterow button.go");
+  await page.waitForSelector("#sheet[data-ask='connect']", { timeout: 5_000 });
   const marker = await page.evaluate(() => {
-    const summary = document.querySelector("#panel details.auth summary");
+    const summary = document.querySelector("#sheet details.options summary");
     const closed = getComputedStyle(summary, "::before").content;
-    document.querySelector("#panel details.auth").open = true;
+    document.querySelector("#sheet details.options").open = true;
     const opened = getComputedStyle(summary, "::before").content;
     return { closed, opened };
   });
-  if (ok(marker.closed !== "none" && marker.closed !== "normal", "the folded row has no expand indicator") &&
+  if (ok(marker.closed !== "none" && marker.closed !== "normal", "the options fold has no expand indicator") &&
       ok(marker.opened !== marker.closed, "the indicator does not change when the fold opens")) {
-    console.log(`[24] the fold carries an explicit expand indicator (${marker.closed} -> ${marker.opened})`);
+    console.log(`[24] the options fold carries an explicit expand indicator (${marker.closed} -> ${marker.opened})`);
   }
+  await page.selectOption("#sheet select.method", "password");
+  const picked = await page.locator("#sheet select.method").inputValue();
+  if (ok(picked === "password", `the method select did not take a selection (${picked})`)) {
+    console.log("[25] the method select works inside the options fold");
+  }
+  await page.click("#sheet button:text-is('cancel')");
 
-  // 25. Inside the (now open) fold, the flows work: the method select
-  //     selects, the browser key renders on demand. Scoped to
-  //     details.auth: the session fold carries a select of its own.
-  await page.selectOption("#panel details.auth select", "password");
-  const picked = await page.locator("#panel details.auth select").inputValue();
-  if (!ok(picked === "password", `the method select did not take a selection (${picked})`)) {
-    // fall through; the key check is independent
-  }
-  await page.click("#panel button:has-text(\"show this browser's public key\")");
-  await page.waitForSelector("#panel .key code", { timeout: 5_000 });
-  const line = (await page.locator("#panel .key code").textContent()).trim();
+  // 25b. The identity screen: the browser key renders on demand, and
+  //      the passkey card is one compact action row -- adopt's paste
+  //      field hidden until asked for, the guidance behind the "?".
+  await page.click("#home .footer button:has-text('identity')");
+  await page.waitForFunction(
+    () => !document.querySelector("#identity .passkey")?.hidden, null, { timeout: 15_000 });
+  await page.click(`#identity button:has-text("show this browser's public key")`);
+  await page.waitForSelector("#identity .key code", { timeout: 5_000 });
+  const line = (await page.locator("#identity .key code").textContent()).trim();
   if (ok(line.startsWith("ssh-ed25519 "), `the browser-key line did not render: "${line}"`)) {
-    console.log("[25] auth settings opens; the method select and the browser key work inside it");
+    console.log("[25c] the identity screen renders the browser key on demand");
   }
-
-  // 25b. The passkey actions are one compact row: adopt's paste field
-  //      stays hidden until adopt… reveals it, and the guidance prose
-  //      hides behind the "?" -- rendering it permanently is how the
-  //      panel got crowded to begin with.
   const submenu = await page.evaluate(() => {
-    const section = document.querySelector("#panel .passkey");
+    const section = document.querySelector("#identity .passkey");
     const visible = (el) => el.checkVisibility();
     const byText = (t) => [...section.querySelectorAll("button")].find((b) => b.textContent.trim() === t);
     const adoptInput = section.querySelector("input");
@@ -834,21 +854,20 @@ try {
     byText("adopt…").click();
     byText("?").click();
     const after = { adoptInput: visible(adoptInput), helpBody: visible(helpBody) };
-    return { before, after,
-      actions: [...section.querySelectorAll("button")].filter(visible).map((b) => b.textContent.trim()) };
+    return { before, after };
   });
   if (ok(!submenu.before.adoptInput, "the adopt paste field rendered before being asked for") &&
       ok(!submenu.before.helpBody, "the guidance prose rendered before the ? was pressed") &&
       ok(submenu.after.adoptInput, "adopt… did not reveal the paste field") &&
       ok(submenu.after.helpBody, "? did not reveal the guidance")) {
-    console.log(`[25b] passkey is one action row (${submenu.actions.join(" / ")}); adopt and the guidance reveal on demand`);
+    console.log("[25d] passkey is one action row; adopt and the guidance reveal on demand");
   }
+  await page.click("#identity .backrow .back");
 
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it
-  //     arrives. Auto-reconnect after a lost session redials with the
-  //     dialog closed; a row appended into a closed <dialog> is not
-  //     rendered, so the attempt used to park forever behind a
-  //     question nobody could see.
+  //     arrives: the sheet is top-layer, so it renders over the home
+  //     screen AND over a bare terminal (chrome hidden) alike -- the
+  //     closed-dialog invisibility bug is unrepresentable.
   await page.waitForFunction(() => globalThis.__ceremonyGate, null, { timeout: 15_000 });
   const raiseCeremony = () => page.evaluate(() => {
     window.__cerState = "pending";
@@ -858,52 +877,42 @@ try {
     );
   });
   const cerState = () => page.evaluate(() => window.__cerState);
-  const panelOpen = () => page.evaluate(() => document.getElementById("panel").open);
 
-  // 26. Closed dialog: the ask opens it, the tap answers it, and the
-  //     dialog goes back the way it was found.
-  await page.evaluate(() => document.getElementById("panel").close());
+  // 26. Over the home screen: visible, tap resolves, sheet closes.
   await raiseCeremony();
-  // waitForSelector requires VISIBILITY, which is the property under
-  // test: in the pre-fix panel the row exists but sits in a closed
-  // <dialog>, unrendered -- fail the leg legibly instead of dying on
-  // the timeout.
-  const askVisible = await page.waitForSelector("#panel .confirm button", { timeout: 5_000 })
-    .then(() => true, () => false);
-  if (!ok(askVisible && await panelOpen(),
-          "a ceremony raised into a closed dialog stayed invisible (the reconnect would park forever)")) {
+  const askVisible = await page.waitForSelector("#sheet .confirm button", { timeout: 5_000 })
+    .then((el) => el.isVisible(), () => false);
+  if (!ok(askVisible, "a ceremony ask was not visible over the home screen")) {
     // the taps below would time out; skip them
   } else {
-    await page.click("#panel .confirm button:has-text('touch your passkey')");
+    await page.click("#sheet .confirm button:has-text('touch your passkey')");
     await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
     if (ok(await cerState() === "resolved", `the tap did not resolve the gate (${await cerState()})`) &&
-        ok(!(await panelOpen()), "the dialog stayed open after the ask it was opened for")) {
-      console.log("[26] a ceremony with the dialog closed opens it, and the tap puts it back");
+        ok(!(await page.evaluate(() => document.getElementById("sheet").open)),
+           "the sheet stayed open after the ask was answered")) {
+      console.log("[26] a ceremony ask over the home screen resolves and closes");
     }
   }
 
-  // 27. Cancelling fails the gate (which fails the attempt, legibly)
-  //     and leaves the dialog open -- that is where the failure will
-  //     be told.
-  await page.evaluate(() => document.getElementById("panel").close());
+  // 27. Cancelling fails the gate (which fails the attempt, legibly).
   await raiseCeremony();
-  await page.waitForSelector("#panel .confirm button", { timeout: 5_000 });
-  await page.click("#panel .confirm button:has-text('cancel')");
+  await page.waitForSelector("#sheet .confirm button", { timeout: 5_000 });
+  await page.click("#sheet .confirm button:has-text('cancel')");
   await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
-  if (ok(await cerState() === "rejected", `cancel did not reject the gate (${await cerState()})`) &&
-      ok(await panelOpen(), "cancel closed the dialog out from under the failure notice")) {
-    console.log("[27] cancelling the ceremony fails the gate and keeps the dialog for the story");
+  if (ok(await cerState() === "rejected", `cancel did not reject the gate (${await cerState()})`)) {
+    console.log("[27] cancelling the ceremony fails the gate");
   }
 
-  // 28. An ask into an ALREADY-open dialog (a manual connect) leaves
-  //     it exactly as it found it: open before, open after.
+  // 28. With the chrome hidden (a silent reconnect over a bare
+  //     terminal): the sheet still owns the top layer.
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
   await raiseCeremony();
-  await page.waitForSelector("#panel .confirm button", { timeout: 5_000 });
-  await page.click("#panel .confirm button:has-text('touch your passkey')");
-  await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
-  if (ok(await cerState() === "resolved", "the open-dialog tap did not resolve the gate") &&
-      ok(await panelOpen(), "answering a ceremony closed a dialog it did not open")) {
-    console.log("[28] a ceremony into an open dialog leaves it open");
+  const visibleOverTerm = await page.waitForSelector("#sheet .confirm button", { timeout: 5_000 })
+    .then((el) => el.isVisible(), () => false);
+  if (ok(visibleOverTerm, "a ceremony ask was not visible over the bare terminal")) {
+    await page.click("#sheet .confirm button:has-text('touch your passkey')");
+    await page.waitForFunction(() => window.__cerState !== "pending", null, { timeout: 5_000 });
+    console.log("[28] a ceremony ask renders over a bare terminal too");
   }
 
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
