@@ -216,6 +216,15 @@ try {
       await writeAll(restorer, fixture); // an old-format dump: modes and all
       await writeAll(restorer, app.SCROLLBACK_MODE_RESET);
 
+      // The save gate: a terminal parked on the alternate screen is
+      // not worth dumping (tmux/vim repaint it themselves, and the
+      // stale normal buffer would overwrite a better dump); one that
+      // has come back is. The `saver` terminal is on the alt screen
+      // from the fixture; leaving it must flip the verdict.
+      const worthOnAlt = app.dumpWorthSaving(saver);
+      await writeAll(saver, "\x1b[?1049l");
+      const worthOnNormal = app.dumpWorthSaving(saver);
+
       resolve({
         dumpHasMouse: dump.includes("[?1000h"),
         dumpHasAppCursor: dump.includes("[?1h"),
@@ -224,6 +233,8 @@ try {
         resetMouse: restorer.modes.mouseTrackingMode,
         resetAppCursor: restorer.modes.applicationCursorKeysMode,
         resetBuffer: restorer.buffer.active.type,
+        worthOnAlt,
+        worthOnNormal,
       });
     })();
   }));
@@ -233,8 +244,10 @@ try {
     fail("serialized dump lost the normal-buffer content it exists to keep");
   } else if (modes.resetMouse !== "none" || modes.resetAppCursor || modes.resetBuffer !== "normal") {
     fail(`mode reset left state behind: ${JSON.stringify(modes)}`);
+  } else if (modes.worthOnAlt || !modes.worthOnNormal) {
+    fail(`the alt-screen save gate answered wrong: ${JSON.stringify(modes)}`);
   } else {
-    console.log("[7] scrollback dumps carry content only; the restore reset returns a dirtied terminal to defaults");
+    console.log("[7] scrollback dumps carry content only; the restore reset returns a dirtied terminal to defaults; saves wait out the alt screen");
   }
 
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
