@@ -179,11 +179,70 @@ try {
   if (!(usage > 0)) fail(`image storage is ${usage} after a sixel, expected > 0`);
   else console.log(`[6] sixel decoded (storage ${usage} MB)`);
 
+  // [7] scrollback persistence is CONTENT-ONLY, both directions.
+  //
+  // A dump serialized while a tmux session held the terminal (alt
+  // screen, mouse tracking on) once replayed those MODES on restore:
+  // the next session never re-enabled mouse tracking, so every touch
+  // and wheel event was typed into the pty as escape junk instead of
+  // scrolling -- "unresponsive until reload". Two contracts pin the
+  // fix, on scratch terminals fed a worst-case fixture:
+  //   save side: serialize(SCROLLBACK_SERIALIZE_OPTIONS) emits no
+  //     mode sequences and no alt-buffer content;
+  //   restore side: SCROLLBACK_MODE_RESET written after an OLD-format
+  //     dump (modes included) leaves the terminal back at defaults.
+  const modes = await page.evaluate(() => new Promise((resolve) => {
+    (async () => {
+      const app = await import("./app.mjs");
+      const mk = () => {
+        const t = new window.Terminal({ allowProposedApi: true });
+        const host = document.createElement("div");
+        document.body.append(host);
+        t.open(host);
+        return t;
+      };
+      const writeAll = (t, s) => new Promise((r) => t.write(s, r));
+      // The worst case a save can see: mouse tracking, application
+      // cursor keys, and the alt screen with content on it.
+      const fixture = "normal-line\r\n\x1b[?1000h\x1b[?1h\x1b[?1049halt-only-content";
+
+      const saver = mk();
+      const ser = new window.SerializeAddon.SerializeAddon();
+      saver.loadAddon(ser);
+      await writeAll(saver, fixture);
+      const dump = ser.serialize(app.SCROLLBACK_SERIALIZE_OPTIONS);
+
+      const restorer = mk();
+      await writeAll(restorer, fixture); // an old-format dump: modes and all
+      await writeAll(restorer, app.SCROLLBACK_MODE_RESET);
+
+      resolve({
+        dumpHasMouse: dump.includes("[?1000h"),
+        dumpHasAppCursor: dump.includes("[?1h"),
+        dumpHasAlt: dump.includes("[?1049h") || dump.includes("alt-only-content"),
+        dumpHasContent: dump.includes("normal-line"),
+        resetMouse: restorer.modes.mouseTrackingMode,
+        resetAppCursor: restorer.modes.applicationCursorKeysMode,
+        resetBuffer: restorer.buffer.active.type,
+      });
+    })();
+  }));
+  if (modes.dumpHasMouse || modes.dumpHasAppCursor || modes.dumpHasAlt) {
+    fail(`serialized dump leaks modes or alt content: ${JSON.stringify(modes)}`);
+  } else if (!modes.dumpHasContent) {
+    fail("serialized dump lost the normal-buffer content it exists to keep");
+  } else if (modes.resetMouse !== "none" || modes.resetAppCursor || modes.resetBuffer !== "normal") {
+    fail(`mode reset left state behind: ${JSON.stringify(modes)}`);
+  } else {
+    console.log("[7] scrollback dumps carry content only; the restore reset returns a dirtied terminal to defaults");
+  }
+
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
     console.log("\nBROWSER LINKS PASS: addon family wired (unicode 11 widths, write-only OSC 52," +
-      " webgl, sixel), and links open on a single click only through the confirmation" +
-      " -- verbatim URI, cancel is free, always-open is opt-in and persists");
+      " webgl, sixel), links open on a single click only through the confirmation" +
+      " -- verbatim URI, cancel is free, always-open is opt-in and persists --" +
+      " and scrollback dumps are content-only in both directions");
   }
 } catch (e) {
   fail(String(e?.stack ?? e));

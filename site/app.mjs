@@ -264,8 +264,55 @@ function restoreScrollback(text, key) {
   restored = true;
   claimTerminal(key);
   term.write(text);
+  // Sanitize MODES after the content, unconditionally. Dumps saved
+  // before SCROLLBACK_SERIALIZE_OPTIONS existed replay whatever
+  // terminal modes were live at save time -- a tmux session with
+  // `mouse on` (or vim/htop inside it) restores mouse tracking into a
+  // page whose NEW session may never enable it, and from then on every
+  // touch, wheel and click is typed into the pty as escape-sequence
+  // junk instead of scrolling: the session reads as "unresponsive
+  // until reload". The reset also covers any dump the exclusions ever
+  // miss. Written after the dump and before the live session's first
+  // output, so whatever the attaching program actually wants it sets
+  // itself, on a known-clean slate.
+  term.write(SCROLLBACK_MODE_RESET);
   return true;
 }
+
+/**
+ * What restoreScrollback writes after a dump: every mode the serialize
+ * addon knows how to emit, forced back to its default. Content is the
+ * only thing a restore is FOR; modes belong to the live session.
+ * Exported for the gate that pins this contract (browser-links).
+ */
+export const SCROLLBACK_MODE_RESET =
+  "\x1b[?1049l" + // back to the normal screen; alt-screen content is not scrollback
+  "\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l" + // every mouse-tracking flavor off
+  "\x1b[?1004l" + // focus reporting off
+  "\x1b[?2004l" + // bracketed paste off
+  "\x1b[?1l\x1b>" + // cursor keys and keypad back to normal
+  "\x1b[4l" + // insert mode off
+  "\x1b[?6l" + // origin mode off
+  "\x1b[?45l" + // reverse-wraparound off
+  "\x1b[?7h"; // autowrap back on (the one default-true mode serialize touches)
+
+/**
+ * Serialize options for the persisted dump: content only.
+ *
+ * Modes are excluded because restoring them is never right: the next
+ * session's program re-establishes exactly the modes it wants (a tmux
+ * attach sends its whole init), so a restored mode is either redundant
+ * or -- when the new session wants it OFF -- an input-corrupting lie;
+ * mouse tracking was the observed case. The alternate buffer is
+ * excluded because it defeats the feature: tmux holds the outer
+ * terminal in the alt screen, so an unexcluded dump restores INTO the
+ * alt buffer, where there is no scrollback to show and the seam notes
+ * land on the wrong screen. Exported for the same gate.
+ */
+export const SCROLLBACK_SERIALIZE_OPTIONS = Object.freeze({
+  excludeModes: true,
+  excludeAltBuffer: true,
+});
 
 // A cap on the serialized dump this persists, not a ration: IndexedDB
 // quotas are opaque -- they vary per browser, per origin, and per how
@@ -292,7 +339,7 @@ async function saveScrollback(key) {
   // a restored dump for one -- must not persist the mixture anywhere.
   if (terminalOwner !== key) return;
   try {
-    const buf = serializeAddon.serialize();
+    const buf = serializeAddon.serialize(SCROLLBACK_SERIALIZE_OPTIONS);
     if (buf.length > SCROLLBACK_SAVE_CAP) return;
     await bufferStore.put(key, buf);
   } catch (e) {
