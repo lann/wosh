@@ -59,13 +59,17 @@ cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 # files from two deploys -- load-bearing, because deltic runtime-links
 # the wasm against the page bundle.
 version="${WOSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
-built="${WOSH_BUILT:-$(date -u +'%Y-%m-%d %H:%M UTC')}"
+# The build number is the commit count: deterministic from the commit
+# alone (the same commit always numbers the same, deployed from
+# anywhere), monotonic along main, and zero CI state involved. The
+# pages workflow fetches full history so this is right in CI too.
+build="${WOSH_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
 
-# The page shows its own deploy identity (home/settings footers): the
-# SAME version string that keys the cache below, plus the assembly
-# time. Substituted here so the raw site/ tree keeps its placeholders
-# (which boot.mjs renders as a dev build).
-sed -e "s|__WOSH_VERSION__|$version|" -e "s|__WOSH_BUILT__|$built|" \
+# The page shows its own deploy identity (home/settings footers):
+# "build N (hash)", where hash is the SAME version string that keys
+# the cache below. Substituted here so the raw site/ tree keeps its
+# placeholders (which boot.mjs renders as a dev build).
+sed -e "s|__WOSH_VERSION__|$version|" -e "s|__WOSH_BUILD__|$build|" \
     site/index.html > "$dest/index.html"
 if grep -q '__WOSH_' "$dest/index.html"; then
   echo "index.html still contains unreplaced placeholders" >&2

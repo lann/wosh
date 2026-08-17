@@ -713,9 +713,9 @@ export async function initBoot(chrome, { onConnect }) {
     const read = (name) =>
       document.querySelector(`meta[name="${name}"]`)?.content ?? "";
     const version = read("wosh-version");
-    const built = read("wosh-built");
-    if (!version || version.startsWith("__WOSH_")) return "wosh dev — unversioned tree";
-    return `wosh ${version}${built && !built.startsWith("__WOSH_") ? ` · built ${built}` : ""}`;
+    const build = read("wosh-build");
+    if (!version || version.startsWith("__WOSH_")) return "dev build";
+    return `build ${build && !build.startsWith("__WOSH_") ? build : "?"} (${version})`;
   };
   const buildLine = () => el("div", { className: "buildinfo", textContent: buildInfo() });
 
