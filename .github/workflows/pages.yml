@@ -28,7 +28,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the deploy tree's build number is the commit
+      # count (scripts/site-deploy-tree.sh), which a shallow checkout
+      # would report as 1.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Rust + wasm targets
         run: |
