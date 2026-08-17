@@ -331,6 +331,22 @@ const SCROLLBACK_SAVE_CAP = 768 * 1024;
  * scrollback persistence is a nicety, never something worth surfacing
  * to the person trying to use the terminal.
  */
+/**
+ * Whether a dump of `t` is worth persisting right now: not while the
+ * ALTERNATE screen is active. Full-screen programs -- tmux and screen
+ * always, vim or htop under any shell -- own that screen and repaint
+ * it themselves on the next attach; what they show is not scrollback,
+ * and serialize() excludes it anyway (SCROLLBACK_SERIALIZE_OPTIONS).
+ * A save taken then would just re-write the STALE normal buffer --
+ * and, worse, overwrite a genuinely valuable dump from an earlier
+ * plain-shell or dtach session under the same (host, user) key with
+ * whatever banner happened to precede tmux. Waiting until the
+ * alternate screen closes means the dump is always the most recent
+ * moment the normal buffer was the real story. Exported for the
+ * browser-links gate that pins this.
+ */
+export const dumpWorthSaving = (t) => t.buffer.active.type !== "alternate";
+
 async function saveScrollback(key) {
   if (!key || !serializeAddon) return;
   // Ownership gate (see claimTerminal): save only a buffer whose
@@ -338,6 +354,7 @@ async function saveScrollback(key) {
   // another key's bytes -- an earlier session to a different host, or
   // a restored dump for one -- must not persist the mixture anywhere.
   if (terminalOwner !== key) return;
+  if (!dumpWorthSaving(term)) return;
   try {
     const buf = serializeAddon.serialize(SCROLLBACK_SERIALIZE_OPTIONS);
     if (buf.length > SCROLLBACK_SAVE_CAP) return;
