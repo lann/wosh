@@ -703,6 +703,22 @@ export async function initBoot(chrome, { onConnect }) {
     showChrome("home");
   };
 
+  /// The deploy identity for the footer of #home and #prefs: the git
+  /// short hash + build time scripts/site-deploy-tree.sh substituted
+  /// into index.html's metas -- the same version string that keys the
+  /// service worker's cache, so what the footer says is what the cache
+  /// holds. A raw site/ tree still carries the placeholders, and the
+  /// footer says so instead of pretending.
+  const buildInfo = () => {
+    const read = (name) =>
+      document.querySelector(`meta[name="${name}"]`)?.content ?? "";
+    const version = read("wosh-version");
+    const built = read("wosh-built");
+    if (!version || version.startsWith("__WOSH_")) return "wosh dev — unversioned tree";
+    return `wosh ${version}${built && !built.startsWith("__WOSH_") ? ` · built ${built}` : ""}`;
+  };
+  const buildLine = () => el("div", { className: "buildinfo", textContent: buildInfo() });
+
   const QR_GLYPH =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/></svg>';
 
@@ -888,7 +904,7 @@ export async function initBoot(chrome, { onConnect }) {
         });
       }
     }
-
+    homeEl.append(buildLine());
   }
 
   // --- #connection: per-connection settings -----------------------------
@@ -1265,7 +1281,7 @@ export async function initBoot(chrome, { onConnect }) {
       renderPrefs();
     });
     wipeCard.append(el("div", { className: "row" }, forgetAll));
-    prefsEl.append(wipeCard);
+    prefsEl.append(wipeCard, buildLine());
   }
 
   // --- the asks --------------------------------------------------------------

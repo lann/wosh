@@ -7,6 +7,12 @@
        token and mobile.mjs sizes off visualViewport instead. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
   <meta name="theme-color" content="#000000" />
+  <!-- Deploy identity, substituted by scripts/site-deploy-tree.sh (the
+       same version that keys the service worker's cache, so what the
+       footer says is what the cache holds). The raw site/ tree keeps
+       the placeholders; boot.mjs renders those as a dev build. -->
+  <meta name="wosh-version" content="__WOSH_VERSION__" />
+  <meta name="wosh-built" content="__WOSH_BUILT__" />
   <title>wosh</title>
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/png" href="./icons/icon-192.png" />
@@ -340,6 +346,13 @@
     .prefrow .body { flex: 1; }
     .prefrow .t { font: 15px var(--sans); color: var(--bright); }
     .prefrow .d { font: 13px var(--sans); color: var(--dim); margin-top: 2px; }
+    /* Deploy identity at the foot of #home and #prefs: quiet, selectable
+       (it exists to be pasted into bug reports). */
+    .buildinfo {
+      margin-top: auto; text-align: center; user-select: all;
+      font: 11px var(--mono); color: #555;
+      padding: 24px 16px calc(16px + env(safe-area-inset-bottom));
+    }
 
     /* The camera preview, while a scan is running (qr.mjs): a square,
        cropped (the decoder gets the full frame; only the VIEW clips),

@@ -59,6 +59,19 @@ cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
 # files from two deploys -- load-bearing, because deltic runtime-links
 # the wasm against the page bundle.
 version="${WOSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
+built="${WOSH_BUILT:-$(date -u +'%Y-%m-%d %H:%M UTC')}"
+
+# The page shows its own deploy identity (home/settings footers): the
+# SAME version string that keys the cache below, plus the assembly
+# time. Substituted here so the raw site/ tree keeps its placeholders
+# (which boot.mjs renders as a dev build).
+sed -e "s|__WOSH_VERSION__|$version|" -e "s|__WOSH_BUILT__|$built|" \
+    site/index.html > "$dest/index.html"
+if grep -q '__WOSH_' "$dest/index.html"; then
+  echo "index.html still contains unreplaced placeholders" >&2
+  exit 1
+fi
+
 files=$(cd "$dest" && find . -type f ! -name sw.js | LC_ALL=C sort | sed 's|^\./||')
 precache=$(printf '"%s",' $files)
 precache="[${precache%,}]"
