@@ -75,6 +75,7 @@ web-bundle:
     mkdir -p site/dist
     deno bundle --platform browser --format esm --config deno.json \
         --external node-datachannel --external node-datachannel/polyfill --external werift \
+        --external "npm:node-datachannel*" --external "npm:werift*" \
         -o site/dist/deltic.js site/deltic-entry.ts
 
 # xterm assets + the browser-gate driver (once).

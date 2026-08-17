@@ -34,11 +34,11 @@ import {
   instantiate,
   isComponentException,
 } from "@deltic/runtime/embedder";
-import { wasiShims } from "@deltic/wasi-shims";
-import { webcryptoImports } from "@polymorph/webcrypto-deltic";
-import { websocketImports } from "@polymorph/websocket-deltic";
-import { webrtcImports } from "@polymorph/webrtc-deltic";
-import { socketsImports } from "@polymorph/iroh-sockets-stubs";
+import { wasi } from "@deltic/wasi";
+import { webcryptoImports } from "@polymorph/webcrypto";
+import { websocketImports } from "@polymorph/websocket";
+import { webrtcImports } from "@polymorph/webrtc-datachannels";
+import { socketsImports } from "@polymorph/iroh";
 import { identityStoreImports } from "./identity-store.ts";
 import { pairingStoreImports } from "./pairing-store.ts";
 import { passkeyStoreImports, setCeremonyGate } from "./passkey-store.ts";
@@ -83,7 +83,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     // rebinds there), and a buffered stderr nobody reads is a black
     // box exactly when the network is misbehaving. Routed to the
     // console, it costs nothing until something prints.
-    ...wasiShims({ cli: { args: ["wosh-client"], env: {}, passthrough: true } }),
+    ...wasi({ cli: { args: ["wosh-client"], env: {}, passthrough: true } }),
     ...webcryptoImports(),
     ...websocketImports(),
     ...webrtcImports(),

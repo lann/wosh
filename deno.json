@@ -1,21 +1,24 @@
 {
   "//": [
-    "The import map for the browser bundle. deltic's wasi-shims and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; mapping it ONCE here means the whole module graph shares one copy, so `instanceof WitError` holds across every boundary. Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
-    "All paths point into .deps/, which scripts/setup.sh pins and builds.",
-    "minimumDependencyAge keeps Deno's default supply-chain gate for everything else while letting the exactly-pinned same-day @deltic prereleases resolve (the polymorph deltic host modules name them via their own nested deno.jsons; same convention as those configs)."
+    "The import map for the browser bundle, now on the published jsr releases. deltic's wasi package and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; every package resolving to ONE release means the whole module graph shares one copy, so `instanceof WitError` holds across every boundary. Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
+    "Exact pins, not ranges: the runtime and the translator wasm (which scripts/site-deploy-tree.sh ships from the SAME @deltic release) share a plan format, and a range that drifted one without the other would skew them. Bumps are deliberate: change the pin here and TRANSLATOR_VERSION/TRANSLATOR_SHA256 in site-deploy-tree.sh together.",
+    "minimumDependencyAge keeps Deno's default supply-chain gate for everything else while letting these exactly-pinned component-family releases resolve on their publish day (the same convention the polymorph packages' own deno.jsons use)."
   ],
   "nodeModulesDir": "auto",
   "minimumDependencyAge": {
     "age": "P1D",
-    "exclude": ["jsr:@deltic/*"]
+    "exclude": [
+      "jsr:@deltic/*",
+      "jsr:@polymorph/*"
+    ]
   },
   "imports": {
-    "@deltic/runtime/embedder": "./.deps/deltic/runtime/src/embedder/mod.ts",
-    "@deltic/runtime/shim": "./.deps/deltic/runtime/src/shim/mod.ts",
-    "@deltic/wasi-shims": "./.deps/deltic/wasi-shims/src/mod.ts",
-    "@polymorph/webcrypto-deltic": "./.deps/polymorph-iroh/.deps/webcrypto/js/deltic/src/mod.ts",
-    "@polymorph/websocket-deltic": "./.deps/polymorph-iroh/.deps/websocket/js/deltic/websocket.ts",
-    "@polymorph/webrtc-deltic": "./.deps/polymorph-iroh/.deps/webrtc/deltic-impl/src/webrtc.ts",
-    "@polymorph/iroh-sockets-stubs": "./.deps/polymorph-iroh/host-deltic/src/sockets.ts"
+    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0/embedder",
+    "@deltic/runtime/shim": "jsr:@deltic/runtime@0.1.0/shim",
+    "@deltic/wasi": "jsr:@deltic/wasi@0.1.0",
+    "@polymorph/webcrypto": "jsr:@polymorph/webcrypto@0.1.0",
+    "@polymorph/websocket": "jsr:@polymorph/websocket@0.1.0",
+    "@polymorph/webrtc-datachannels": "jsr:@polymorph/webrtc-datachannels@0.1.0",
+    "@polymorph/iroh": "jsr:@polymorph/iroh@0.1.0"
   }
 }
