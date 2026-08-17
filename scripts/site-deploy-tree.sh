@@ -16,9 +16,25 @@ mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons" "$dest/vendor"
 
 bundle="$ROOT/site/dist/deltic.js"
 client="$ROOT/target/components/wosh-ssh-client.wasm"
-translator="$ROOT/.deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm"
 
-for f in "$bundle" "$client" "$translator"; do
+# The translator wasm ships INSIDE the @deltic/translator release -- the
+# versioned peer of the @deltic/runtime the bundle pins (deno.json), so
+# the two cannot skew. Fetched once from jsr, digest-pinned, cached
+# under .deps/. Bump TRANSLATOR_VERSION together with the deno.json pins.
+TRANSLATOR_VERSION=0.1.0
+TRANSLATOR_SHA256=73d540b3e7bf29b81fb720245ed8e6d4f1b3a88eef2eb32ace63f2ffee3a4520
+translator="$ROOT/.deps/translator_shim-$TRANSLATOR_VERSION.wasm"
+if ! sha256sum -c --status <<<"$TRANSLATOR_SHA256  $translator" 2>/dev/null; then
+  mkdir -p "$ROOT/.deps"
+  curl -fsSL -o "$translator" \
+    "https://jsr.io/@deltic/translator/$TRANSLATOR_VERSION/translator_shim.wasm"
+  sha256sum -c --status <<<"$TRANSLATOR_SHA256  $translator" || {
+    echo "translator_shim.wasm digest mismatch (expected $TRANSLATOR_SHA256)" >&2
+    exit 1
+  }
+fi
+
+for f in "$bundle" "$client"; do
   [ -f "$f" ] || { echo "missing $f -- run: just web-bundle compose" >&2; exit 1; }
 done
 

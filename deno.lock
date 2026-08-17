@@ -1,17 +1,79 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5": "0.1.0-pre.ga2f84a5",
+    "jsr:@deltic/protocol@0.2": "0.2.0",
+    "jsr:@deltic/runtime@0.1": "0.1.0",
+    "jsr:@deltic/runtime@0.1.0": "0.1.0",
     "jsr:@deltic/runtime@0.1.0-pre.ga67ee83": "0.1.0-pre.ga67ee83",
+    "jsr:@deltic/translator@0.1": "0.1.0",
+    "jsr:@deltic/wasi@0.1": "0.1.0",
+    "jsr:@deltic/wasi@0.1.0": "0.1.0",
+    "jsr:@polymorph/iroh@0.1.0": "0.1.0",
+    "jsr:@polymorph/webcrypto@0.1": "0.1.0",
+    "jsr:@polymorph/webcrypto@0.1.0": "0.1.0",
+    "jsr:@polymorph/webrtc-datachannels@0.1": "0.1.0",
+    "jsr:@polymorph/webrtc-datachannels@0.1.0": "0.1.0",
+    "jsr:@polymorph/websocket@0.1": "0.1.0",
+    "jsr:@polymorph/websocket@0.1.0": "0.1.0",
     "npm:node-datachannel@0.32.3": "0.32.3",
     "npm:werift@0.22.2": "0.22.2"
   },
   "jsr": {
-    "@deltic/runtime@0.1.0-pre.ga2f84a5": {
-      "integrity": "c9abb811d0c814c819924e92d57eed5f68b7bad35593edc5dcf3fc656022f4e1"
+    "@deltic/protocol@0.2.0": {
+      "integrity": "028be6a3623c5e910598aa7a199209b85e8931ae484ac7f6638d610ddb0e19fa"
     },
     "@deltic/runtime@0.1.0-pre.ga67ee83": {
       "integrity": "2a2b0949031747a2340dc186299e654ea9f361ae39ac6bd633019940682db4ed"
+    },
+    "@deltic/runtime@0.1.0": {
+      "integrity": "8d3f52f1a336a2dd9aed28a5c34fd281612a2f55a1582b159be614dd678593b3",
+      "dependencies": [
+        "jsr:@deltic/protocol"
+      ]
+    },
+    "@deltic/translator@0.1.0": {
+      "integrity": "c447f27a90d7637dd3d5709f3f25378ded0f4b985bedc890c3f6a8cb9ff1eb9f",
+      "dependencies": [
+        "jsr:@deltic/runtime@0.1"
+      ]
+    },
+    "@deltic/wasi@0.1.0": {
+      "integrity": "c35a19d139d684dafeca8ba200230a3eb1154627c80db298ae1393e3af938d68",
+      "dependencies": [
+        "jsr:@deltic/protocol",
+        "jsr:@deltic/runtime@0.1"
+      ]
+    },
+    "@polymorph/iroh@0.1.0": {
+      "integrity": "38cb3722080517676f24fcba930d31b5ec641384e2201026c2e093a6998b05cf",
+      "dependencies": [
+        "jsr:@deltic/runtime@0.1",
+        "jsr:@deltic/translator",
+        "jsr:@deltic/wasi@0.1",
+        "jsr:@polymorph/webcrypto@0.1",
+        "jsr:@polymorph/webrtc-datachannels@0.1",
+        "jsr:@polymorph/websocket@0.1"
+      ]
+    },
+    "@polymorph/webcrypto@0.1.0": {
+      "integrity": "3829ada3d3e1401f050f91d7a5faf51e0d4795271345cd1688791b083acf475e",
+      "dependencies": [
+        "jsr:@deltic/runtime@0.1"
+      ]
+    },
+    "@polymorph/webrtc-datachannels@0.1.0": {
+      "integrity": "ac1d1cff5bcff5bb71973ebe60d069a4132fc0918c7d44fe182d3560a7d7fb36",
+      "dependencies": [
+        "jsr:@deltic/runtime@0.1",
+        "npm:node-datachannel",
+        "npm:werift"
+      ]
+    },
+    "@polymorph/websocket@0.1.0": {
+      "integrity": "7799d6de4d722b0a4b85cac0d6d6d62c64d71c7c36f889223a9baf47fe08b4f3",
+      "dependencies": [
+        "jsr:@deltic/runtime@0.1"
+      ]
     }
   },
   "npm": {
@@ -581,29 +643,13 @@
     }
   },
   "workspace": {
-    "links": {
-      "jsr:@deltic/ct-runner@0.1.0": {},
-      "jsr:@deltic/protocol@0.2.0": {},
-      "jsr:@deltic/runtime@0.1.0": {},
-      "jsr:@deltic/translator@0.1.0": {},
-      "jsr:@deltic/wasi-shims@0.1.0": {},
-      "jsr:@polymorph/webcrypto-deltic@0.0.0": {
-        "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5"
-        ]
-      },
-      "jsr:@polymorph/webrtc-datachannels-deltic@0.0.0": {
-        "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5",
-          "npm:node-datachannel@0.32.3",
-          "npm:werift@0.22.2"
-        ]
-      },
-      "jsr:@polymorph/websocket-deltic@0.0.0": {
-        "dependencies": [
-          "jsr:@deltic/runtime@0.1.0-pre.ga2f84a5"
-        ]
-      }
-    }
+    "dependencies": [
+      "jsr:@deltic/runtime@0.1.0",
+      "jsr:@deltic/wasi@0.1.0",
+      "jsr:@polymorph/iroh@0.1.0",
+      "jsr:@polymorph/webcrypto@0.1.0",
+      "jsr:@polymorph/webrtc-datachannels@0.1.0",
+      "jsr:@polymorph/websocket@0.1.0"
+    ]
   }
 }

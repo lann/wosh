@@ -28,12 +28,10 @@ PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
 # by the freeze drill here); re-pin to the merge commit once it lands.
 PIROH_PIN=793f12724987c84ebd78964a54495286a593d564
 
-# deltic is the JS component host that runs the browser client in-page.
-# The pin matches what polymorph-iroh's deltic host modules are written
-# against (their deno.jsons name jsr @deltic/*@0.1.0-pre.g<shorthash> of
-# the same commit); our root deno.json maps @deltic/* to this checkout.
-DELTIC_REPO=https://github.com/lann/deltic
-DELTIC_PIN=a2f84a5e9a4ef44aaa64a8141bdea8e1103047d3
+# deltic (the JS component host) now arrives as published jsr releases:
+# the root deno.json pins @deltic/* and @polymorph/* there, and
+# scripts/site-deploy-tree.sh fetches the matching digest-pinned
+# translator wasm from the same @deltic release -- no checkout to build.
 
 # --- required tools ---------------------------------------------------
 # componentize-go installs to GOBIN, and componentize-go itself needs a
@@ -100,22 +98,10 @@ else
   (cd "$DEPS/polymorph-iroh/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
 fi
 
-# --- deltic: the JS component host for the browser leg ----------------
-if [ ! -d "$DEPS/deltic/.git" ]; then
-  say "cloning deltic"
-  git clone "$DELTIC_REPO" "$DEPS/deltic"
-fi
-git -C "$DEPS/deltic" rev-parse --verify --quiet "$DELTIC_PIN" >/dev/null 2>&1 \
-  && git -C "$DEPS/deltic" checkout --quiet "$DELTIC_PIN"
-say "deltic: $(git -C "$DEPS/deltic" log --oneline -1)"
-
-say "building deltic's translator shim"
-(cd "$DEPS/deltic" && cargo build -p translator-shim --target wasm32-unknown-unknown --release)
 
 say "setup complete
 
   iroh endpoint : .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm
   iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay${WOSH_SKIP_RELAY:+ (skipped)}
-  deltic shim   : .deps/deltic/target/wasm32-unknown-unknown/release/translator_shim.wasm
 
 next: just build"
