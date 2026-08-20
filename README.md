@@ -15,7 +15,9 @@ Three WebAssembly components:
   the machine you want a shell on. It mints (and persists) an iroh
   identity, binds an endpoint on a relay, prints a connection string as
   a link *and* a terminal QR code, then accepts iroh connections and
-  byte-proxies each one to a configured TCP endpoint (your `sshd`).
+  byte-proxies each one to a configured TCP endpoint (your `sshd`). It
+  also *observes* the host key of the sshd it is proxying — see
+  "The fingerprint the listener prints".
 - **the client** (`wosh-client`, Rust) — runs in the browser under
   [deltic][], and owns everything long-lived: it parses the connection
   string, dials the listener over iroh, pumps bytes, relays signatures
@@ -482,6 +484,50 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   is required to compose either component, so it must not live in a
   scratch directory that can be reclaimed.
 
+## The fingerprint the listener prints
+
+The browser confirms the target's SSH host key end to end — that is the
+point of the tunnel being reachability and not trust. But the human
+answering that prompt has to compare it with *something*, and until
+recently there was nothing on the other side of the room to compare it
+against.
+
+There is now. The host key crosses the wire **in the clear**: SSH
+encrypts nothing until `NEWKEYS`, and the server's key exchange reply
+carries the host key blob `K_S` verbatim. The listener is already
+proxying those bytes, so it observes them passively — `hostkey/` is the
+whole of it: a framing state machine over the cleartext phase, with
+[RustCrypto's `ssh-key`][ssh-key] doing every piece of parsing
+(`PublicKey::from_bytes` on `K_S`, SHA256 fingerprints, `known_hosts`
+lines). Nothing is hand-decoded, and the observer is a *tap*: it sees
+copies, and any confusion — desync, a packet it cannot believe, traffic
+that is not SSH — disables it silently rather than touching the pipe.
+
+Which message carries the key depends on the negotiated kex (31 is the
+ECDH reply, but under group exchange 31 is a prime and 33 is the reply),
+so rather than track the negotiation it **validates by parse**: read the
+leading `string`, and accept it only if it parses as a public key. A
+prime does not.
+
+A fingerprint is only worth printing if the listener can say *why* it
+believes it, so the printout is governed by the operator's own
+`known_hosts` (passed in by the native host as content — never a handle
+to `~/.ssh`, which also holds private keys):
+
+| `known_hosts` says | what the listener does |
+| --- | --- |
+| this key, for this target | prints it, noting the corroboration |
+| a *different* key | **refuses the connection**, naming both fingerprints (`--allow-host-key-mismatch` downgrades this to a loud warning) |
+| `@revoked` | refuses, always — a revocation is an instruction, not a stale record |
+| nothing, target is loopback | prints it: the listener is *on* the machine, so this is self-observation |
+| nothing, target is remote | prints no fingerprint, and says why |
+
+`just browser-e2e` pins the part that matters: the fingerprint the
+listener sniffed off the wire must equal the one the page made a human
+confirm, in the same run. Two independent observers — one reading the
+key end to end through the tunnel, one watching the handshake it is
+proxying — and the gate fails if they ever disagree.
+
 ## Where this actually is
 
 Verified working:
@@ -670,10 +716,12 @@ next deploy, so it is a startup and coherency mechanism, not a pin.
 ## Licence and provenance
 
 Experiment-grade; no stability promised. Built against
+[ssh-key][] (SSH key, fingerprint and `known_hosts` parsing),
 [polymorph-iroh][] (the iroh endpoint as a component), [deltic][] (the
 JS component host), and `golang.org/x/crypto/ssh`.
 
 [iroh]: https://iroh.computer
+[ssh-key]: https://github.com/RustCrypto/SSH
 [deltic]: https://github.com/lann/deltic
 [polymorph-iroh]: https://github.com/polymorph-components/polymorph-iroh
 [xterm.js]: https://xtermjs.org

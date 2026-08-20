@@ -8,6 +8,7 @@ description = "The wosh listener: a wasi:cli component that prints a QR/link, ac
 [dependencies]
 wosh-connstring = { path = "../connstring" }
 wosh-tunnel = { path = "../tunnel" }
+wosh-hostkey = { path = "../hostkey" }
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
 clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.2"

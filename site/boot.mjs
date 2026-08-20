@@ -1327,10 +1327,16 @@ export async function initBoot(chrome, { onConnect }) {
               "against what its operator published:",
           }),
           fpBlock(fingerprint),
+          // Two ways to check, both real. The listener prints this
+          // same fingerprint when it observes the handshake it is
+          // proxying -- but only when its own known_hosts corroborates
+          // it, or when it is running on the target machine itself, so
+          // "the listener said so" is never a claim it cannot back.
           el("div", {
             className: "hedge",
-            textContent: "on that machine: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub — " +
-              "one line's SHA256 must match this exactly",
+            textContent: "the listener prints this same line when it can vouch for it. " +
+              "on the target: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub — one line's " +
+              "SHA256 must match this exactly",
           }),
         );
         // Opt-in (default off): approving never writes anything unless

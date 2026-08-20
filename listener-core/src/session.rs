@@ -332,13 +332,32 @@ async fn pump_tcp_to_client(
     reg: Rc<Registry>,
     id: [u8; 16],
     mut rx: wit_bindgen::StreamReader<u8>,
+    target: SocketAddr,
 ) {
+    // One TCP leg per SESSION -- attachments come and go over it, and
+    // resume reuses it -- so one observer per leg sees the whole
+    // cleartext handshake, exactly once, however many times a phone
+    // reconnects to the session on top of it.
+    let mut sniffer = wosh_hostkey::Sniffer::new();
     loop {
         if !wait_attached_or_dead(&sess).await {
             break; // dead: [B] handles the flush + FIN
         }
         let (result, buf) = rx.read(Vec::with_capacity(CHUNK)).await;
         if !buf.is_empty() {
+            // A copy, before anything is queued: the observer can end
+            // the session, and if it does, these bytes -- the KEX
+            // reply of a server known_hosts says is the wrong one --
+            // must not reach the client.
+            if !sniffer.finished() {
+                if let Some(key) = sniffer.feed(&buf) {
+                    if let Err(e) = crate::tcp::observe(target, key) {
+                        eprintln!("[session {}] {e}", id8(&id));
+                        end_session(&sess, &reg, id, "host key refused");
+                        break;
+                    }
+                }
+            }
             let mut st = sess.state.borrow_mut();
             // Record BEFORE queueing: `sent_total` must cover every
             // byte a resume tail might have to cover, including bytes
@@ -709,7 +728,7 @@ async fn start_session(
     // out from under this task's in-flight read is not allowed.
     let hold = conn.clone();
     let generation = attach(&sess, send, conn, Vec::new());
-    spawn_session_tasks(&sess, &reg, id, leg, grace, &peer);
+    spawn_session_tasks(&sess, &reg, id, leg, grace, &peer, target);
     eprintln!("[{peer}] session {} opened (target {target})", id8(&id));
     let out = pump_client_reader(sess, reg, id, recv, dec, generation, grace, peer, pings).await;
     drop(hold);
@@ -775,6 +794,7 @@ async fn resume_session(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_session_tasks(
     sess: &Rc<Session>,
     reg: &Rc<Registry>,
@@ -782,9 +802,10 @@ fn spawn_session_tasks(
     leg: TcpLeg,
     grace: u64,
     peer: &str,
+    target: SocketAddr,
 ) {
     let TcpLeg { tx, rx } = leg;
-    wit_bindgen::spawn_local(pump_tcp_to_client(sess.clone(), reg.clone(), id, rx));
+    wit_bindgen::spawn_local(pump_tcp_to_client(sess.clone(), reg.clone(), id, rx, target));
     wit_bindgen::spawn_local(pump_client_to_tcp(sess.clone(), reg.clone(), id, tx));
     wit_bindgen::spawn_local(pump_client_writer(
         sess.clone(),

@@ -1,0 +1,25 @@
+[package]
+name = "wosh-hostkey"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Passive SSH host-key observation for the wosh listener: a sniffer for the cleartext phase of the SSH transport handshake, known_hosts lookup, and the print/refuse policy that decides whether an observed fingerprint is worth showing an operator."
+
+[dependencies]
+# Key parsing, SHA256 fingerprints and known_hosts LINE parsing are
+# all this crate borrows -- none of it is hand-rolled. `std` is on
+# because the listener component has it; `ecdsa` because plenty of
+# sshd hosts still present nistp256 host keys and a key we cannot
+# parse is a key we silently fail to report.
+#
+# default-features = false keeps `rand_core`/getrandom out of the
+# wasm32-wasip2 build of listener-core: nothing here generates keys.
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "std", "ecdsa"] }
+# Hashed known_hosts entries (`ssh-keygen -Hf`) are HMAC-SHA1 over the
+# lookup key; ssh-key hands us the salt and hash but does not match.
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+
+[lib]
+name = "wosh_hostkey"
+path = "src/lib.rs"

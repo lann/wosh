@@ -121,6 +121,51 @@ fn resolve_identity_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/share/wosh"))
 }
 
+/// The largest known_hosts we will pass through. A wasi env var is
+/// not a stream, and a very large one is a startup cost paid on every
+/// run for a file that is almost certainly not what it looks like.
+const KNOWN_HOSTS_LIMIT: usize = 1024 * 1024;
+
+/// Collect the operator's known_hosts: the personal file first, then
+/// the system-wide one, concatenated. Missing files are simply not
+/// there.
+///
+/// Over the limit, this passes NOTHING and says so. Truncating would
+/// be far worse than skipping: a cut-off file turns an entry the
+/// listener would have REFUSED on into a host it has never heard of,
+/// which is precisely the silent downgrade the host-key check exists
+/// to prevent. Refusing to check at all is at least visible.
+fn read_known_hosts() -> Result<Option<String>, String> {
+    let mut text = String::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        paths.push(PathBuf::from(home).join(".ssh/known_hosts"));
+    }
+    paths.push(PathBuf::from("/etc/ssh/ssh_known_hosts"));
+
+    for path in &paths {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            text.push_str(&contents);
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+    }
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.len() > KNOWN_HOSTS_LIMIT {
+        return Err(format!(
+            "known_hosts is {} bytes, over the {KNOWN_HOSTS_LIMIT}-byte limit -- \
+             the listener's SSH host-key check was SKIPPED for this run (a truncated \
+             known_hosts could turn a key mismatch into an unrecognised host, so \
+             nothing was passed rather than part of it)",
+            text.len()
+        ));
+    }
+    Ok(Some(text))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let (component_path, identity_dir_flag, guest_args) = parse_host_args();
@@ -149,6 +194,24 @@ async fn main() -> Result<()> {
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_env().inherit_network().args(&guest_args);
+
+    // The operator's known_hosts, handed to the guest as CONTENT.
+    //
+    // Not as a preopened `~/.ssh`: that directory also holds private
+    // keys, and this project's posture is that the component graph
+    // never gets a handle to key material. A component that can read
+    // known_hosts is a component that can check a fingerprint; a
+    // component that can read the directory it lives in is one that
+    // could exfiltrate an identity. Reading the file here, in native
+    // code the operator already trusts with their whole session, is
+    // the difference.
+    match read_known_hosts() {
+        Ok(Some(text)) => {
+            wasi.env("WOSH_KNOWN_HOSTS", &text);
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("{e}"),
+    }
 
     // The guest's persistent identity lives under a `wosh-data`
     // preopen. Skipped entirely in ephemeral mode (that flag is the

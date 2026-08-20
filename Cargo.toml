@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "connstring",
+    "hostkey",
     "tunnel",
     "webauthn-ssh",
     "listener-core",
@@ -24,6 +25,7 @@ members = [
 # all -- which is exactly how this broke in CI.
 default-members = [
     "connstring",
+    "hostkey",
     "tunnel",
     "webauthn-ssh",
     "webauthn-ssh",

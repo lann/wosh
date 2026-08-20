@@ -85,6 +85,14 @@ struct Cli {
     #[arg(long, default_value_t = 600, value_name = "SECONDS")]
     resume_grace: u64,
 
+    /// Proceed even when the target's observed SSH host key
+    /// CONTRADICTS known_hosts (the default is to refuse the
+    /// connection). The fingerprint is then printed with an
+    /// UNVERIFIED warning: use this only when you know the target
+    /// legitimately re-keyed and you have not updated known_hosts yet
+    #[arg(long)]
+    allow_host_key_mismatch: bool,
+
     /// Mint a fresh identity for this run instead of loading/persisting
     /// one: the endpoint id (and so the connection string) changes every
     /// start, and browser host-key pins keyed on it will not carry over
@@ -201,6 +209,10 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     let mut pk = [0u8; wosh_connstring::PUBKEY_LEN];
     pk.copy_from_slice(&pubkey);
 
+    // The host-key check's configuration, read once: the operator's
+    // opt-out flag and the known_hosts text the native host handed in.
+    tcp::init_host_key_check(cli.allow_host_key_mismatch);
+
     let connstring = ConnString {
         pubkey: pk,
         relay_url: cli.relay.clone(),
@@ -287,7 +299,8 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
                         }
                         return;
                     }
-                    match serve_connection(&conn, target, token, listener_id, &paired).await {
+                    match serve_connection(&conn, target, token, listener_id, &paired).await
+                    {
                         Ok(summary) => eprintln!("[{peer}] {summary}"),
                         Err(e) => eprintln!("[{peer}] {e}"),
                     }
