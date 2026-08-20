@@ -698,7 +698,16 @@ export async function initBoot(chrome, { onConnect }) {
   /// here, so the page can never strand a dead screen.
   const idleHome = (msg) => {
     setIdle();
-    withdrawSheet();
+    // Only clear the screen's question when no dial is in flight. A
+    // session dying is not a reason to withdraw an ask that belongs to
+    // the attempt REPLACING it -- and that ordering really happens: the
+    // old session's `ended` event lands while its replacement is
+    // already parked on a host-key confirmation. Withdrawing there left
+    // the new attempt waiting on an answer to a question no longer on
+    // screen, which is the one failure the one-ask-at-a-time model
+    // exists to make impossible. A dial that fails clears its own ask
+    // on the way in (doConnect withdraws first thing).
+    if (!dialing) withdrawSheet();
     homeNotice = msg ?? "";
     showChrome("home");
   };
