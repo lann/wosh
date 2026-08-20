@@ -155,34 +155,133 @@ impl<W: Write> Backend for WasiAnsiBackend<W> {
     }
 }
 
+/// terminput's `Event::parse_from` parses a leading event, tolerates
+/// trailing bytes, and reports "incomplete" -- but not a consumed byte
+/// count. So: shortest parseable prefix wins (n=1 upward), which is
+/// correct because escape sequences return incomplete (not Some) until
+/// their terminator arrives. One exception: a lone ESC parses as the Esc
+/// key at n=1, so while continuation bytes exist we start at n=2 --
+/// ESC+tail then resolves as the sequence or as Alt+char, matching
+/// crossterm. An ESC that ends the chunk is treated as the Esc key,
+/// wrong only when a read() boundary splits a sequence (crossterm
+/// disambiguates with an is-more-input-pending flag; same caveat here).
+fn drain_events(pending: &mut Vec<u8>, out: &mut Vec<terminput::Event>) {
+    use terminput::Event;
+    while !pending.is_empty() {
+        let start = if pending[0] == 0x1b && pending.len() > 1 { 2 } else { 1 };
+        let mut consumed = 0;
+        for n in start..=pending.len() {
+            if let Ok(Some(ev)) = Event::parse_from(&pending[..n]) {
+                out.push(ev);
+                consumed = n;
+                break;
+            }
+        }
+        if consumed == 0 {
+            match Event::parse_from(pending) {
+                // Incomplete prefix of a valid sequence: await more bytes.
+                Ok(None) => return,
+                // Unparseable head: skip one byte and retry.
+                _ => {
+                    pending.remove(0);
+                }
+            }
+        } else {
+            pending.drain(..consumed);
+        }
+    }
+}
+
+fn describe(ev: &terminput::Event) -> String {
+    use terminput::{Event, KeyCode};
+    match ev {
+        Event::Key(k) => {
+            let mut s = String::new();
+            if k.modifiers.intersects(terminput::KeyModifiers::CTRL) {
+                s.push_str("Ctrl+");
+            }
+            if k.modifiers.intersects(terminput::KeyModifiers::ALT) {
+                s.push_str("Alt+");
+            }
+            match k.code {
+                KeyCode::Char(c) => s.push(c),
+                code => s.push_str(&format!("{code:?}")),
+            }
+            s
+        }
+        other => format!("{other:?}"),
+    }
+}
+
 fn main() {
+    use std::io::Read;
+
     // Half 1: istty straight from the wasi 0.3 imports.
     let stdin_tty = wasip3::cli::terminal_stdin::get_terminal_stdin().is_some();
     let stdout_tty = wasip3::cli::terminal_stdout::get_terminal_stdout().is_some();
     let stderr_tty = wasip3::cli::terminal_stderr::get_terminal_stderr().is_some();
 
-    // Half 2: render one ratatui frame through the ANSI backend.
+    // Half 2: a ratatui frame through the ANSI backend, redrawn per
+    // input event decoded by terminput. Quit: q, Ctrl+C, or EOF.
     let backend = WasiAnsiBackend::new(io::stdout());
     let mut term = ratatui::Terminal::new(backend).unwrap();
-    term.draw(|f| {
-        use ratatui::style::Style;
-        use ratatui::widgets::{Block, Borders, Paragraph};
-        let text = format!(
-            "istty via wasi:cli@0.3.0 -- stdin: {stdin_tty}  stdout: {stdout_tty}  stderr: {stderr_tty}",
-        );
-        let p = Paragraph::new(text)
-            .style(Style::new().bold())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("ratatui on wasip3 (no forks)"),
-            );
-        f.render_widget(p, f.area());
-    })
-    .unwrap();
+    let mut events: Vec<terminput::Event> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut quit = false;
 
-    // Park the cursor under the frame so the shell prompt lands sanely.
+    loop {
+        term.draw(|f| {
+            use ratatui::style::Style;
+            use ratatui::widgets::{Block, Borders, Paragraph};
+            let mut lines = vec![format!(
+                "istty via wasi:cli@0.3.0 -- stdin: {stdin_tty}  stdout: {stdout_tty}  stderr: {stderr_tty}",
+            )];
+            let recent: Vec<String> = events.iter().rev().take(8).map(describe).collect();
+            lines.push(format!("keys (terminput): {}", recent.join("  ")));
+            lines.push("q / Ctrl+C / EOF quits".to_string());
+            let p = Paragraph::new(lines.join("\n"))
+                .style(Style::new().bold())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("ratatui + terminput on wasip3 (no forks)"),
+                );
+            f.render_widget(p, f.area());
+        })
+        .unwrap();
+        term.backend_mut().flush().unwrap();
+
+        if quit {
+            break;
+        }
+
+        let mut buf = [0u8; 1024];
+        // Blocking read on std stdin (wasi 0.2 streams under the hood;
+        // the p3-native path would be an async stream read instead).
+        let n = io::stdin().lock().read(&mut buf).unwrap_or(0);
+        if n == 0 {
+            break; // EOF
+        }
+        pending.extend_from_slice(&buf[..n]);
+        let before = events.len();
+        drain_events(&mut pending, &mut events);
+        for ev in &events[before..] {
+            use terminput::{Event, KeyCode, KeyModifiers};
+            if let Event::Key(k) = ev {
+                let ctrl_c = k.code == KeyCode::Char('c')
+                    && k.modifiers.intersects(KeyModifiers::CTRL);
+                if ctrl_c || (k.code == KeyCode::Char('q') && k.modifiers.is_empty()) {
+                    quit = true;
+                }
+            }
+        }
+    }
+
+    // Park the cursor under the frame, then emit a plain-text summary of
+    // everything terminput decoded (assertion target for the test run).
     let h = term.size().unwrap().height;
     print!("\x1b[{};1H", h.min(6) + 1);
+    let decoded: Vec<String> = events.iter().map(|e| describe(e)).collect();
+    println!("decoded: {}", decoded.join(" "));
     io::stdout().flush().unwrap();
 }

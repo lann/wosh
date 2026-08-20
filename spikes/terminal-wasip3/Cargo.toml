@@ -10,4 +10,5 @@ publish = false
 
 [dependencies]
 ratatui = { version = "0.30", default-features = false }
+terminput = "0.5"
 wasip3 = "0.7"

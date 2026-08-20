@@ -332,7 +332,17 @@ name = "terminal-wasip3-spike"
 version = "0.1.0"
 dependencies = [
  "ratatui",
+ "terminput",
  "wasip3",
+]
+
+[[package]]
+name = "terminput"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fe296cb813b5bad99a8eb911e6a08e48f0854ee1e8b427073e657a509a7097"
+dependencies = [
+ "bitflags",
 ]
 
 [[package]]
