@@ -238,6 +238,70 @@ try {
       });
     })();
   }));
+  // [10] The seam after a restore: a dump ends by restoring the cursor
+  // where it WAS, which a full-screen redraw leaves ABOVE the last line
+  // of content. Everything the page appends next -- the "[wosh]
+  // restored scrollback" note and the session start rule -- then landed
+  // ON restored lines, leaving their tails sticking out beside it, and
+  // the rule (a DECORATION, i.e. an overlay) was drawn across live
+  // text. Both halves are pinned here: nothing overwrites restored
+  // content, and the rule stands on a blank line.
+  const seam = await page.evaluate(() => new Promise((resolve) => {
+    (async () => {
+      const app = await import("./app.mjs");
+      const { markSessionStart } = await import("./separator.mjs");
+      const t = new window.Terminal({ allowProposedApi: true, rows: 12, cols: 80 });
+      const host = document.createElement("div");
+      document.body.append(host);
+      t.open(host);
+      const write = (s) => new Promise((r) => t.write(s, r));
+      // Three lines of "restored" content, then the cursor sent back
+      // home -- exactly what a redraw-on-attach leaves behind.
+      await write("banner line one\r\n * Documentation:  https://docs.example\r\n * Support: pro\r\n");
+      await write("\x1b[H");
+
+      await app.parkBelowContent(t);
+      // app.mjs's own seam note, then the bookend.
+      await write("\r\n\x1b[2m[wosh] restored scrollback from 2 h ago\x1b[0m\r\n");
+      await markSessionStart(t, "lann");
+      await write("live session output\r\n");
+      await new Promise((r) => setTimeout(r, 150));
+
+      const b = t.buffer.active;
+      const line = (i) => b.getLine(i)?.translateToString(true) ?? "";
+      const rows = [];
+      for (let i = 0; i < b.length; i++) rows.push(line(i));
+      // Which buffer row is the rule drawn over? Decorations are
+      // overlays positioned in pixels, so measure it the way the eye
+      // does.
+      const el = document.querySelectorAll(".session-separator");
+      const rule = el[el.length - 1];
+      const screen = host.querySelector(".xterm-screen").getBoundingClientRect();
+      const box = rule?.getBoundingClientRect();
+      const cell = screen.height / t.rows;
+      const ruleRow = box ? Math.round((box.top - screen.top) / cell) : -1;
+      resolve({
+        rows: rows.filter((l) => l.trim()),
+        ruleText: rule?.textContent ?? "",
+        under: ruleRow >= 0 ? line(b.viewportY + ruleRow) : "(no rule)",
+      });
+    })();
+  }));
+  {
+    const intact = (s) => seam.rows.some((l) => l.trim() === s);
+    const damaged = seam.rows.filter((l) => /\[wosh\].*\S/.test(l) && !/\[wosh\] restored scrollback from 2 h ago$/.test(l.trim()));
+    if (!intact("banner line one") || !intact("* Documentation:  https://docs.example") ||
+        !intact("* Support: pro")) {
+      fail(`the restore seam overwrote restored content: ${JSON.stringify(seam.rows)}`);
+    } else if (damaged.length) {
+      fail(`the seam note landed on top of restored text: ${JSON.stringify(damaged)}`);
+    } else if (seam.under.trim() !== "") {
+      fail(`the session rule is drawn across "${seam.under.trim()}" instead of a blank line`);
+    } else {
+      console.log("[10] a restore seam appends: nothing overwritten, the rule stands on a blank line");
+    }
+  }
+
   if (modes.dumpHasMouse || modes.dumpHasAppCursor || modes.dumpHasAlt) {
     fail(`serialized dump leaks modes or alt content: ${JSON.stringify(modes)}`);
   } else if (!modes.dumpHasContent) {
