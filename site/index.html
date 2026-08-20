@@ -237,21 +237,24 @@
     .notice { color: var(--warn); margin: 10px 0 0; font-size: 14px; }
 
     /* ---- the sheet: every ask, one at a time ---- */
+    /* Every ask hangs from the TOP of the screen.
+       Two reasons, both mobile: a sheet anchored to the bottom is the
+       half of the screen the soft keyboard takes, so the moment an ask
+       has a field in it -- the user name, an OTP, a session name --
+       its own title and inputs are what gets crowded out; and the scan
+       sheet has to be up here anyway, since that is the end of the
+       phone the camera looks out of. One anchor for all of them beats
+       a rule the scan sheet is always the exception to. */
     #sheet {
       width: 100%; max-width: 640px; box-sizing: border-box;
-      margin: auto auto 0; padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
+      margin: 0 auto auto;
+      padding: calc(14px + env(safe-area-inset-top)) 16px 18px;
       background: var(--surface); color: var(--text);
-      border: 1px solid var(--line2); border-bottom: none;
-      border-radius: 16px 16px 0 0;
+      border: 1px solid var(--line2); border-top: none;
+      border-radius: 0 0 16px 16px;
       max-height: calc(100dvh - 40px); overflow-y: auto;
     }
     #sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
-    #sheet[data-ask="scan"] {
-      margin: 0 auto auto;
-      border-radius: 0 0 16px 16px;
-      border-top: none; border-bottom: 1px solid var(--line2);
-      padding-top: calc(14px + env(safe-area-inset-top));
-    }
     #sheet .close-x {
       position: absolute; top: 8px; right: 8px;
       width: 40px; height: 40px; min-height: 40px;
