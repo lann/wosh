@@ -135,6 +135,47 @@ try {
     await page.mouse.click(at.x, at.y);
   };
 
+  // [2b] Dragging ACROSS a link is a SELECTION, not an activation. The
+  // browser reports a press-move-release as a click on the element the
+  // release landed on, so highlighting a line that happens to contain a
+  // URL used to throw up the confirmation dialog -- and the reflex when
+  // a dialog appears is to dismiss it, which loses the selection the
+  // drag was for. Asserted before the click legs, so a regression here
+  // cannot hide behind a preference they set.
+  {
+    await page.mouse.move(screen.x + screen.width - 4, screen.y + screen.height - 4);
+    await page.waitForTimeout(60);
+    // Start ON the URL and drag along it. That is the gesture xterm
+    // actually activates on: its linkifier fires only when the press
+    // and the release are on the SAME link, so a drag that begins off
+    // the link never reached this code and would prove nothing.
+    const from = { x: screen.x + cellW * 5.5, y: at.y };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 6; i++) {
+      await page.mouse.move(from.x + ((at.x - from.x) * i) / 6, at.y);
+      await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => ({
+      dialog: document.getElementById("linkdialog")?.open ?? false,
+      selection: window.__wosh.term.getSelection(),
+    }));
+    if (after.dialog) {
+      fail("dragging across a link opened the confirmation dialog instead of selecting");
+      await page.evaluate(() => document.getElementById("linkdialog")?.close());
+    } else if (after.selection.trim().length < 4) {
+      // Both ends land inside the URL (that is the point: press and
+      // release must be on the SAME link, which is the only gesture
+      // xterm activates on), so the selection is a run of it.
+      fail(`the drag selected nothing useful (${JSON.stringify(after.selection)}), so this leg proves nothing`);
+    } else {
+      console.log("[2b] dragging across a link highlights it and opens nothing");
+    }
+    await page.evaluate(() => window.__wosh.term.clearSelection());
+  }
+
   // [3] click -> dialog with the verbatim URI; cancel opens nothing.
   await clickLink();
   await page.waitForFunction(() => document.getElementById("linkdialog")?.open, null, { timeout: 5_000 });
