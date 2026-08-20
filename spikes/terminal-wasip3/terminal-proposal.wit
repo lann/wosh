@@ -5,8 +5,24 @@
 /// Design stance, in one line: byte streams are PASSTHROUGH (the
 /// existing terminal application/emulator ecosystem keeps working,
 /// in-band feature negotiation keeps evolving); the API adds the things
-/// that genuinely cannot travel in-band -- line-discipline modes, size
-/// and theme with change notification, and capability discovery hints.
+/// that genuinely cannot travel in-band -- line-discipline modes, and
+/// size with change notification.
+///
+/// The interfaces are tiered by a boundary borrowed from native Unix:
+///
+/// - CORE (`terminal-input`, `terminal-output`): the syscall surface --
+///   what native applications obtain via termios, TIOCGWINSZ, and
+///   SIGWINCH. Not expressible in-band; every host with a terminal can
+///   implement it.
+///
+/// - HINTS (`terminal-hints`): the terminfo/environment surface --
+///   capability discovery that native applications assemble from
+///   `$TERM`/`$COLORTERM`/`$NO_COLOR` conventions and in-band queries
+///   (DA1, XTGETTCAP, OSC 10/11), all of which continue to work under
+///   passthrough. This interface offers the same answers without
+///   round-trip timeouts, from hosts that know their terminal
+///   statically. Optional to implement and to import, and expected to
+///   evolve faster than core.
 ///
 /// This file is standalone-parseable; in wasi-cli it would replace the
 /// body of wit-0.3.0-draft/terminal.wit (package declared elsewhere).
@@ -134,10 +150,7 @@ interface terminal-input {
 /// terminal emulators working unmodified, and lets features negotiated
 /// in-band -- colors, mouse reporting, bracketed paste, keyboard
 /// protocols, hyperlinks, graphics -- work wherever the attached
-/// terminal supports them, without awaiting specification here. The
-/// query functions below are discovery HINTS reflecting the
-/// implementation's knowledge of the attached terminal; they are not
-/// guarantees, and applications may still negotiate in-band.
+/// terminal supports them, without awaiting specification here.
 @since(version = 0.3.0)
 interface terminal-output {
     @since(version = 0.3.0)
@@ -156,31 +169,6 @@ interface terminal-output {
         pixel-width: option<u16>,
         /// Height in pixels, if known.
         pixel-height: option<u16>,
-    }
-
-    /// Families of color escape sequences, plus the user's preference.
-    @since(version = 0.3.0)
-    flags color-support {
-        /// The classic 16-color SGR parameters (30-37, 40-47, 90-97,
-        /// 100-107).
-        ansi,
-        /// 8-bit indexed color (SGR 38;5 and 48;5).
-        indexed,
-        /// 24-bit direct color (SGR 38;2 and 48;2).
-        truecolor,
-        /// The user wants color used by default. When unset,
-        /// applications SHOULD NOT emit color unless explicitly asked
-        /// to (compare the `NO_COLOR` convention).
-        color-by-default,
-    }
-
-    /// A terminal color theme.
-    @since(version = 0.3.0)
-    enum color-theme {
-        /// Dark text on a light background.
-        light,
-        /// Light text on a dark background.
-        dark,
     }
 
     /// The output side of a terminal.
@@ -210,32 +198,80 @@ interface terminal-output {
         /// disconnected. Multiple streams may be open concurrently;
         /// each receives notifications independently.
         size-changes: func() -> stream;
-
-        /// Which color-sequence families the attached terminal is
-        /// believed to support, and whether the user wants color by
-        /// default.
-        color: func() -> color-support;
-
-        /// The terminal's current color theme, if known.
-        theme: func() -> option<color-theme>;
-
-        /// Return a stream producing an (empty) value whenever the
-        /// terminal's color theme may have changed (compare DEC
-        /// private mode 2031). On receipt, applications should call
-        /// `theme`. Same stream semantics as `size-changes`.
-        theme-changes: func() -> stream;
-
-        /// Whether the attached terminal is believed to support a
-        /// feature, identified by name. `none` means unknown, in which
-        /// case applications may fall back to in-band negotiation.
-        ///
-        /// This covers the whole terminal, input-side features
-        /// included. Well-known names (non-exhaustive):
-        /// `alternate-screen`, `mouse-sgr`, `bracketed-paste`,
-        /// `kitty-keyboard`, `synchronized-output`, `hyperlinks`,
-        /// `sixel`, `kitty-graphics`, `clipboard-write`.
-        supports: func(feature: string) -> option<bool>;
     }
+}
+
+/// Optional capability discovery: the terminfo/environment surface.
+///
+/// Everything in this interface is a HINT reflecting the
+/// implementation's knowledge of the attached terminal -- never a
+/// guarantee, and never required: under passthrough, applications can
+/// obtain the same information the way they do natively, through
+/// environment conventions (`$TERM`, `$COLORTERM`, `$NO_COLOR`) and
+/// in-band queries (DA1, XTGETTCAP, OSC 10/11, DEC mode 2031). The
+/// value added here is answers without probe round-trips and their
+/// timeouts, from implementations (such as browser-embedded terminals)
+/// that know their terminal statically.
+///
+/// Implementations and worlds may omit this interface entirely; it is
+/// expected to grow independently of the core terminal interfaces.
+@since(version = 0.3.0)
+interface terminal-hints {
+    @since(version = 0.3.0)
+    use terminal-output.{terminal-output};
+
+    /// Families of color escape sequences, plus the user's preference.
+    @since(version = 0.3.0)
+    flags color-support {
+        /// The classic 16-color SGR parameters (30-37, 40-47, 90-97,
+        /// 100-107).
+        ansi,
+        /// 8-bit indexed color (SGR 38;5 and 48;5).
+        indexed,
+        /// 24-bit direct color (SGR 38;2 and 48;2).
+        truecolor,
+        /// The user wants color used by default. When unset,
+        /// applications SHOULD NOT emit color unless explicitly asked
+        /// to (compare the `NO_COLOR` convention).
+        color-by-default,
+    }
+
+    /// A terminal color theme.
+    @since(version = 0.3.0)
+    enum color-theme {
+        /// Dark text on a light background.
+        light,
+        /// Light text on a dark background.
+        dark,
+    }
+
+    /// Which color-sequence families the attached terminal is believed
+    /// to support, and whether the user wants color by default.
+    @since(version = 0.3.0)
+    color: func(terminal: borrow<terminal-output>) -> color-support;
+
+    /// The terminal's current color theme, if known.
+    @since(version = 0.3.0)
+    theme: func(terminal: borrow<terminal-output>) -> option<color-theme>;
+
+    /// Return a stream producing an (empty) value whenever the
+    /// terminal's color theme may have changed (compare DEC private
+    /// mode 2031). On receipt, applications should call `theme`. Same
+    /// stream semantics as `terminal-output.size-changes`.
+    @since(version = 0.3.0)
+    theme-changes: func(terminal: borrow<terminal-output>) -> stream;
+
+    /// Whether the attached terminal is believed to support a feature,
+    /// identified by name. `none` means unknown, in which case
+    /// applications may fall back to in-band negotiation.
+    ///
+    /// This covers the whole terminal, input-side features included.
+    /// Well-known names (non-exhaustive): `alternate-screen`,
+    /// `mouse-sgr`, `bracketed-paste`, `kitty-keyboard`,
+    /// `synchronized-output`, `hyperlinks`, `sixel`, `kitty-graphics`,
+    /// `clipboard-write`.
+    @since(version = 0.3.0)
+    supports: func(terminal: borrow<terminal-output>, feature: string) -> option<bool>;
 }
 
 /// An interface providing an optional `terminal-input` for stdin as a
