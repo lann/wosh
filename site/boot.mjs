@@ -1316,11 +1316,22 @@ export async function initBoot(chrome, { onConnect }) {
       } else {
         wrap.append(
           el("h2", { textContent: "confirm this machine's key" }),
+          // Honest provenance: the LISTENER never sees this key (it is
+          // a dumb pipe; the fingerprint is verified end-to-end through
+          // the tunnel), so there is nothing "printed next to the QR"
+          // to compare against. The truth lives on the machine itself,
+          // or with whoever operates it.
           el("p", {
-            textContent: `first connection to ${target} — compare with what the ` +
-              "listener printed next to its QR:",
+            textContent: `first connection to ${target}. this is the SSH host key ` +
+              "that machine presented — check it against the machine itself, or " +
+              "against what its operator published:",
           }),
           fpBlock(fingerprint),
+          el("div", {
+            className: "hedge",
+            textContent: "on that machine: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub — " +
+              "one line's SHA256 must match this exactly",
+          }),
         );
         // Opt-in (default off): approving never writes anything unless
         // this is checked.
