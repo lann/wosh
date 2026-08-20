@@ -131,6 +131,15 @@ gates-down:
 test-sessions:
     node host-test/sessions-parse.mjs
 
+# The passive host-key observer and its known_hosts policy: SSH
+# handshake framing fed at every chunk boundary, host-pattern matching
+# (globs, negation, hashed entries, @revoked, @cert-authority), and the
+# full print/refuse table. All of it is invisible in the e2e gates --
+# they run one loopback sshd whose key nothing corroborates -- so this
+# is the only place the refusal paths are exercised at all.
+test-hostkey:
+    cargo test -p wosh-hostkey
+
 # The connection-string format: the Rust crate is the single owner and
 # decoder now (the Go core never sees a connstring).
 test-connstring:
@@ -471,10 +480,25 @@ browser-e2e: site hosts
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
     sleep 7
     cs=$(scripts/gate-proc.sh field browser-e2e connstring)
+    fp="$(scripts/test-sshd.sh fingerprint)"
     WOSH_CONNSTRING="$cs" \
     WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
-    WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
+    WOSH_EXPECT_FP="$fp" \
         node host-test/browser-e2e.mjs
+    # The listener's own host-key line, checked against the SAME
+    # fingerprint the page just made a human confirm. This is the only
+    # place the two observers meet: the browser reads the key end to
+    # end through the tunnel, the listener sniffs it off the cleartext
+    # handshake it is proxying, and if those two ever disagree the
+    # printout is worse than useless -- it would talk an operator into
+    # approving something else.
+    log="$(scripts/gate-proc.sh log browser-e2e)"
+    if ! grep -q "host key of .*: $fp" "$log"; then
+        echo "FAIL: the listener never printed sshd's fingerprint ($fp); its host-key lines were:" >&2
+        grep -n 'host key' "$log" >&2 || echo "  (none)" >&2
+        exit 1
+    fi
+    echo "[HK] the listener's sniffed fingerprint matches the one the page confirmed"
 
 # Browser passkey gate: the real page enrolling and authenticating with
 # a WebAuthn passkey (a CDP virtual authenticator standing in for a
@@ -623,7 +647,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-sessions test-connstring test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
+check: test-gate-proc test-sessions test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

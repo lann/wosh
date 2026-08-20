@@ -9,9 +9,11 @@
 //! completes, and both pumps retire without cancelling any in-flight
 //! import.
 
+use std::cell::RefCell;
 use std::net::SocketAddr;
 
 use wit_bindgen::StreamResult;
+use wosh_hostkey as hostkey;
 
 use crate::bindings::polymorph::iroh::endpoint::{RecvStream, SendStream};
 use crate::bindings::wasi::sockets::types::{
@@ -121,13 +123,32 @@ pub async fn forward(
         n
     };
 
-    // TCP -> iroh stream.
+    // TCP -> iroh stream. This is the direction that carries the
+    // server's KEX reply, so it is where a COPY of each chunk goes to
+    // the host-key observer. Strictly passive: the bytes written to
+    // the tunnel below are the same bytes, in the same order, at the
+    // same time, whatever the sniffer makes of them -- the only thing
+    // it can do is end the connection, and only when known_hosts says
+    // the server on the other end is not the one we were promised.
     let (mut tcp_rx, _rx_done) = sock.receive();
     let from_tcp = async move {
         let mut n = 0u64;
+        let mut sniffer = hostkey::Sniffer::new();
+        let mut refusal = None;
         loop {
             let (result, buf) = tcp_rx.read(Vec::with_capacity(16 * 1024)).await;
             if !buf.is_empty() {
+                if !sniffer.finished() {
+                    if let Some(key) = sniffer.feed(&buf) {
+                        if let Err(e) = observe(target, key) {
+                            // Refuse BEFORE forwarding this chunk: the
+                            // client must not receive the KEX reply of
+                            // a server we have decided to reject.
+                            refusal = Some(e);
+                            break;
+                        }
+                    }
+                }
                 n += buf.len() as u64;
                 if send.write(buf).await.is_err() {
                     break; // stream/connection gone; FIN cascade ends the other pump
@@ -138,22 +159,36 @@ pub async fn forward(
                 StreamResult::Dropped | StreamResult::Cancelled => break,
             }
         }
-        n
+        (n, refusal)
     };
 
-    let (sent, received) = join2(to_tcp, from_tcp).await;
+    let ((sent, received), refusal) = join2_or_refuse(to_tcp, from_tcp).await;
+    if let Some(e) = refusal {
+        // Deliberately NOT awaiting `send_done` here. The normal
+        // teardown rides the FIN cascade and lets every in-flight
+        // import retire; a refusal cannot wait for that, because the
+        // pump that would end it is parked reading from a client that
+        // has no reason to say anything. Dropping the futures with
+        // the connection is the price of tearing down promptly, and
+        // it happens only on this path.
+        return Err(e);
+    }
     let _ = send_done.await;
     Ok(format!("{sent}B -> target, {received}B <- target"))
 }
 
-async fn join2<A, B>(
-    a: impl std::future::Future<Output = A>,
-    b: impl std::future::Future<Output = B>,
-) -> (A, B) {
+/// Run both pumps to completion -- except that the second one can end
+/// the whole thing early: once it reports a refusal there is nothing
+/// left to forward, and waiting for the other pump would mean waiting
+/// for a client that will never speak again.
+async fn join2_or_refuse(
+    a: impl std::future::Future<Output = u64>,
+    b: impl std::future::Future<Output = (u64, Option<String>)>,
+) -> ((u64, u64), Option<String>) {
     let mut a = std::pin::pin!(a);
     let mut b = std::pin::pin!(b);
-    let mut ra = None;
-    let mut rb = None;
+    let mut ra: Option<u64> = None;
+    let mut rb: Option<(u64, Option<String>)> = None;
     std::future::poll_fn(|cx| {
         if ra.is_none() {
             if let std::task::Poll::Ready(v) = a.as_mut().poll(cx) {
@@ -165,11 +200,115 @@ async fn join2<A, B>(
                 rb = Some(v);
             }
         }
-        if ra.is_some() && rb.is_some() {
-            std::task::Poll::Ready((ra.take().unwrap(), rb.take().unwrap()))
+        let refused = matches!(&rb, Some((_, Some(_))));
+        if (ra.is_some() && rb.is_some()) || refused {
+            let (received, refusal) = rb.take().unwrap();
+            std::task::Poll::Ready(((ra.take().unwrap_or(0), received), refusal))
         } else {
             std::task::Poll::Pending
         }
     })
     .await
+}
+
+/// Process configuration for the host-key check: the operator's
+/// opt-out, and the known_hosts text the native host handed in (as
+/// CONTENT, not a directory handle -- see listener-host/src/main.rs
+/// for why). Read once at startup rather than threaded through the
+/// session state machine, because that is what it is: configuration.
+#[derive(Default)]
+struct HostKeyConfig {
+    allow_host_key_mismatch: bool,
+    known_hosts: String,
+}
+
+thread_local! {
+    static CONFIG: RefCell<HostKeyConfig> = RefCell::new(HostKeyConfig::default());
+}
+
+/// Called once at startup, before any connection is served.
+pub(crate) fn init_host_key_check(allow_host_key_mismatch: bool) {
+    CONFIG.with(|c| {
+        *c.borrow_mut() = HostKeyConfig {
+            allow_host_key_mismatch,
+            known_hosts: std::env::var("WOSH_KNOWN_HOSTS").unwrap_or_default(),
+        };
+    });
+}
+
+/// The process-wide host-key verdict.
+///
+/// Once per PROCESS, not once per connection: the fingerprint of the
+/// sshd behind `--target` is a property of the target, and reprinting
+/// it on every connection would bury the one line the operator is
+/// meant to read. What IS per-connection is the check -- a later
+/// connection presenting a DIFFERENT key is a change of identity
+/// under a running listener, and gets its own verdict.
+///
+/// Returns `Err(message)` when this connection must be torn down.
+pub(crate) fn observe(target: SocketAddr, key: &hostkey::PublicKey) -> Result<(), String> {
+    let allow_host_key_mismatch = CONFIG.with(|c| c.borrow().allow_host_key_mismatch);
+    thread_local! {
+        /// (fingerprint we already ruled on, the refusal it earned).
+        static SEEN: RefCell<Option<(String, Option<String>)>> = const { RefCell::new(None) };
+    }
+    let fp = hostkey::fingerprint(key);
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        match seen.as_ref() {
+            // The same key as before: the verdict was already spoken,
+            // and repeating it every connection would be noise. The
+            // REFUSAL is not noise, though -- it still applies.
+            Some((prev, refusal)) if *prev == fp => match refusal {
+                Some(e) => Err(e.clone()),
+                None => Ok(()),
+            },
+            Some((prev, _)) => {
+                let d = hostkey::policy_changed(prev, &fp, &target, allow_host_key_mismatch);
+                if d.refuses() {
+                    // Do NOT record the new key: leaving the earlier,
+                    // corroborated one in place means the target
+                    // coming back to its real key is silently fine,
+                    // while every appearance of the impostor is
+                    // refused loudly rather than once.
+                    return Err(d.message);
+                }
+                say(&d);
+                *seen = Some((fp, None));
+                Ok(())
+            }
+            None => {
+                // The operator's known_hosts, handed in by the native
+                // host as CONTENT (see listener-host/src/main.rs for
+                // why it is not a directory handle). Absent or empty
+                // means every target is simply unknown.
+                let text = CONFIG.with(|c| c.borrow().known_hosts.clone());
+                let lookup = hostkey::lookup(&text, &hostkey::host_lookup_key(target), key);
+                let d = hostkey::policy(&lookup, &fp, &target, allow_host_key_mismatch);
+                let refusal = d.refuses().then(|| d.message.clone());
+                if !d.refuses() {
+                    say(&d);
+                }
+                *seen = Some((fp, refusal.clone()));
+                match refusal {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                }
+            }
+        }
+    })
+}
+
+/// Where a verdict goes. The fingerprint the operator is meant to
+/// compare with the phone belongs beside the QR code on stdout;
+/// anything that opens with WARNING is a thing that went wrong and
+/// belongs on stderr with the rest of the diagnostics. Refusals never
+/// reach here -- they ride the `Err` back to the accept loop, which
+/// already logs `[{peer}] {e}`.
+fn say(d: &hostkey::Decision) {
+    if d.message.starts_with("WARNING") {
+        eprintln!("{}", d.message);
+    } else {
+        println!("{}", d.message);
+    }
 }
