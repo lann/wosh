@@ -1,0 +1,278 @@
+/// Proposal sketch: wasi:cli terminal interfaces for 0.3, synthesized
+/// from the terminal-wasip3 spike findings and a review of
+/// WebAssembly/wasi-cli#62.
+///
+/// Design stance, in one line: byte streams are PASSTHROUGH (the
+/// existing terminal application/emulator ecosystem keeps working,
+/// in-band feature negotiation keeps evolving); the API adds the things
+/// that genuinely cannot travel in-band -- line-discipline modes, size
+/// and theme with change notification, and capability discovery hints.
+///
+/// This file is standalone-parseable; in wasi-cli it would replace the
+/// body of wit-0.3.0-draft/terminal.wit (package declared elsewhere).
+package wasi:cli@0.3.0;
+
+/// Common types shared by `terminal-input` and `terminal-output`.
+@since(version = 0.3.0)
+interface terminal-types {
+    /// Why a terminal request could not be satisfied.
+    @since(version = 0.3.0)
+    enum terminal-error {
+        /// The implementation cannot provide the requested state or
+        /// information for this terminal. This is a static property of
+        /// the terminal; retrying will not succeed.
+        not-supported,
+        /// An error occurred communicating with the terminal.
+        io,
+    }
+}
+
+/// Terminal input.
+///
+/// # Passthrough
+///
+/// Bytes delivered on a terminal input stream are those produced by the
+/// terminal, unmodified except for the line-discipline processing
+/// controlled by `input-mode`. Implementations do not define, translate,
+/// or filter key encodings; applications interpret them as they would on
+/// a native terminal (in practice, xterm-style escape sequences).
+///
+/// Implementations SHOULD deliver text as valid UTF-8.
+///
+/// # Signals
+///
+/// There is no signal delivery in this API. In immediate mode,
+/// keypresses such as Ctrl-C are delivered to the application as bytes.
+/// In line mode, the effect of such keypresses is
+/// implementation-defined (typically, terminating the application).
+///
+/// So that users can always regain control of a terminal from an
+/// unresponsive or uncooperative application, implementations MAY
+/// reserve key sequences of their choice (compare `ssh`'s `~.`);
+/// reserved sequences are handled by the implementation and never
+/// delivered to the application.
+@since(version = 0.3.0)
+interface terminal-input {
+    @since(version = 0.3.0)
+    use terminal-types.{terminal-error};
+
+    /// Line-discipline settings for terminal input.
+    @since(version = 0.3.0)
+    record input-mode {
+        /// When `true`, input is echoed to the terminal's display by
+        /// the implementation. When `false`, nothing is echoed;
+        /// applications are responsible for any display of what is
+        /// typed (interactive interfaces) or its deliberate absence
+        /// (password prompts).
+        echo: bool,
+        /// When `true` ("raw"-style input), bytes are delivered on the
+        /// input stream as the terminal produces them, without line
+        /// buffering, line editing, or newline translation.
+        ///
+        /// When `false` (line mode), input is delivered a line at a
+        /// time: line-editing keys are handled by the implementation
+        /// rather than delivered, and lines are terminated by U+A.
+        ///
+        /// When `true`, implementations SHOULD also disable newline
+        /// translation on the output side of the same terminal (the
+        /// equivalent of `stty -opost`), matching the raw-mode behavior
+        /// portable terminal libraries expect.
+        immediate: bool,
+    }
+
+    /// The input side of a terminal.
+    ///
+    /// Dropping this resource restores the input mode that was in
+    /// effect when the resource was created. Implementations also
+    /// restore it when the application exits, however it exits.
+    @since(version = 0.3.0)
+    resource terminal-input {
+        /// Return the current input mode.
+        ///
+        /// The initial mode is implementation-defined. It is commonly
+        /// `{ echo: true, immediate: false }` (the conventional
+        /// "cooked" terminal), but on some implementations no line
+        /// discipline exists and the terminal is permanently immediate.
+        /// Applications that require line-oriented input should verify
+        /// with this function rather than assume.
+        get-mode: func() -> input-mode;
+
+        /// Request an input mode.
+        ///
+        /// Succeeds if the resulting mode equals the requested mode,
+        /// including when it already did (setting is idempotent).
+        /// Returns `not-supported` if the implementation cannot provide
+        /// a requested state -- for example `immediate: false` on a
+        /// terminal with no line discipline.
+        set-mode: func(mode: input-mode) -> result<_, terminal-error>;
+    }
+}
+
+/// Terminal output.
+///
+/// # Passthrough
+///
+/// Bytes written to a terminal output stream are conveyed to the
+/// terminal unmodified, except that:
+///
+/// - when the terminal's input is in line mode, implementations MAY
+///   apply conventional newline translation (the equivalent of
+///   `stty onlcr`); and
+///
+/// - implementations MAY intercept specific escape sequences whose
+///   effects reach beyond the display -- for example, writing the
+///   clipboard, or queries whose replies the terminal transmits on the
+///   input stream in a form mistakable for user input (title
+///   reporting). Interceptions SHOULD be limited to a small documented
+///   set, SHOULD be observable (a diagnostic, or a consent prompt)
+///   rather than silent, and SHOULD NOT extend to sequences whose
+///   effects are confined to the display. Solicited, well-formed
+///   report round-trips that applications depend on (such as
+///   cursor-position reports) SHOULD be preserved.
+///
+/// This keeps the existing ecosystem of terminal applications and
+/// terminal emulators working unmodified, and lets features negotiated
+/// in-band -- colors, mouse reporting, bracketed paste, keyboard
+/// protocols, hyperlinks, graphics -- work wherever the attached
+/// terminal supports them, without awaiting specification here. The
+/// query functions below are discovery HINTS reflecting the
+/// implementation's knowledge of the attached terminal; they are not
+/// guarantees, and applications may still negotiate in-band.
+@since(version = 0.3.0)
+interface terminal-output {
+    @since(version = 0.3.0)
+    use terminal-types.{terminal-error};
+
+    /// The size of a terminal.
+    @since(version = 0.3.0)
+    record window-size {
+        /// Width, in columns of character cells.
+        columns: u16,
+        /// Height, in rows of character cells.
+        rows: u16,
+        /// Width in pixels, if known. Together with `columns` this
+        /// yields the pixel size of a character cell, which in-band
+        /// graphics features need.
+        pixel-width: option<u16>,
+        /// Height in pixels, if known.
+        pixel-height: option<u16>,
+    }
+
+    /// Families of color escape sequences, plus the user's preference.
+    @since(version = 0.3.0)
+    flags color-support {
+        /// The classic 16-color SGR parameters (30-37, 40-47, 90-97,
+        /// 100-107).
+        ansi,
+        /// 8-bit indexed color (SGR 38;5 and 48;5).
+        indexed,
+        /// 24-bit direct color (SGR 38;2 and 48;2).
+        truecolor,
+        /// The user wants color used by default. When unset,
+        /// applications SHOULD NOT emit color unless explicitly asked
+        /// to (compare the `NO_COLOR` convention).
+        color-by-default,
+    }
+
+    /// A terminal color theme.
+    @since(version = 0.3.0)
+    enum color-theme {
+        /// Dark text on a light background.
+        light,
+        /// Light text on a dark background.
+        dark,
+    }
+
+    /// The output side of a terminal.
+    ///
+    /// When this resource is dropped, or the application exits,
+    /// implementations MAY emit a reset to return the terminal to a
+    /// usable state (under passthrough they cannot generally know
+    /// whether the application left it clean).
+    @since(version = 0.3.0)
+    resource terminal-output {
+        /// Return the terminal's current size.
+        ///
+        /// Returns `not-supported` if the size cannot be determined.
+        size: func() -> result<window-size, terminal-error>;
+
+        /// Return a stream producing an (empty) value whenever the
+        /// terminal's size may have changed, and when the application
+        /// is resumed after having been suspended or reattached to a
+        /// display (the events delivered as `SIGWINCH` and `SIGCONT`
+        /// on Unix). On receipt, applications should call `size` and
+        /// redraw.
+        ///
+        /// Implementations MAY coalesce pending notifications. On
+        /// terminals where size changes cannot be observed the stream
+        /// never produces values; `size` remains available for
+        /// polling. The stream closes when the terminal is
+        /// disconnected. Multiple streams may be open concurrently;
+        /// each receives notifications independently.
+        size-changes: func() -> stream;
+
+        /// Which color-sequence families the attached terminal is
+        /// believed to support, and whether the user wants color by
+        /// default.
+        color: func() -> color-support;
+
+        /// The terminal's current color theme, if known.
+        theme: func() -> option<color-theme>;
+
+        /// Return a stream producing an (empty) value whenever the
+        /// terminal's color theme may have changed (compare DEC
+        /// private mode 2031). On receipt, applications should call
+        /// `theme`. Same stream semantics as `size-changes`.
+        theme-changes: func() -> stream;
+
+        /// Whether the attached terminal is believed to support a
+        /// feature, identified by name. `none` means unknown, in which
+        /// case applications may fall back to in-band negotiation.
+        ///
+        /// This covers the whole terminal, input-side features
+        /// included. Well-known names (non-exhaustive):
+        /// `alternate-screen`, `mouse-sgr`, `bracketed-paste`,
+        /// `kitty-keyboard`, `synchronized-output`, `hyperlinks`,
+        /// `sixel`, `kitty-graphics`, `clipboard-write`.
+        supports: func(feature: string) -> option<bool>;
+    }
+}
+
+/// An interface providing an optional `terminal-input` for stdin as a
+/// link-time authority.
+@since(version = 0.3.0)
+interface terminal-stdin {
+    @since(version = 0.3.0)
+    use terminal-input.{terminal-input};
+
+    /// If stdin is connected to a terminal, return a `terminal-input`
+    /// handle allowing further interaction with it.
+    @since(version = 0.3.0)
+    get-terminal-stdin: func() -> option<terminal-input>;
+}
+
+/// An interface providing an optional `terminal-output` for stdout as a
+/// link-time authority.
+@since(version = 0.3.0)
+interface terminal-stdout {
+    @since(version = 0.3.0)
+    use terminal-output.{terminal-output};
+
+    /// If stdout is connected to a terminal, return a `terminal-output`
+    /// handle allowing further interaction with it.
+    @since(version = 0.3.0)
+    get-terminal-stdout: func() -> option<terminal-output>;
+}
+
+/// An interface providing an optional `terminal-output` for stderr as a
+/// link-time authority.
+@since(version = 0.3.0)
+interface terminal-stderr {
+    @since(version = 0.3.0)
+    use terminal-output.{terminal-output};
+
+    /// If stderr is connected to a terminal, return a `terminal-output`
+    /// handle allowing further interaction with it.
+    @since(version = 0.3.0)
+    get-terminal-stderr: func() -> option<terminal-output>;
+}
