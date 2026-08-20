@@ -42,6 +42,10 @@ const open = (uri) => {
   window.open(uri, "_blank", "noopener,noreferrer");
 };
 
+/// How far a pointer may travel between press and release and still
+/// count as a click rather than a drag.
+const DRAG_SLOP = 6;
+
 /**
  * Build the handler `WebLinksAddon` calls on link activation.
  *
@@ -50,10 +54,42 @@ const open = (uri) => {
  * called when the dialog closes, however it closes, so the terminal
  * gets the keyboard back -- passed in rather than imported because
  * whether focusing is even wanted is the terminal owner's decision
- * (on a phone it is not; see mobile.mjs).
+ * (on a phone it is not; see mobile.mjs). `hasSelection` reports
+ * whether the terminal is currently holding a selection; see below for
+ * why the handler needs to know.
  */
-export const linkHandler = (dialog, { refocus = () => {} } = {}) => (event, uri) => {
-  void event; // one activation path for mouse and touch alike
+export const linkHandler = (dialog, { refocus = () => {}, hasSelection = () => false } = {}) => {
+  // Where the press that leads to this activation started. Selecting
+  // text by dragging ACROSS a link ends with a mouseup over it, and the
+  // browser reports that as a click -- so without this, highlighting a
+  // line that happens to contain a URL threw up the confirmation
+  // dialog. Capture phase, on the document, because the press can start
+  // anywhere (a selection commonly starts off the link and ends on it).
+  let pressedAt = null;
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      pressedAt = { x: e.clientX, y: e.clientY };
+    },
+    true,
+  );
+
+  return (event, uri) => {
+  // A gesture that produced a selection was a selection, not a click:
+  // xterm clears any previous selection on mousedown, so anything left
+  // at activation time belongs to THIS gesture.
+  if (hasSelection()) return;
+  // ...and the same for a drag that selected nothing (an empty region,
+  // a drag that ends where it started on a different cell): travel is
+  // the honest signal, independent of what the selection ended up
+  // being.
+  if (
+    pressedAt &&
+    typeof event?.clientX === "number" &&
+    Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y) > DRAG_SLOP
+  ) {
+    return;
+  }
   // Only web links, decided before the preference or the dialog: a
   // URI that does not parse, or parses to any other scheme, opens
   // nothing no matter what is stored or clicked.
@@ -117,4 +153,5 @@ export const linkHandler = (dialog, { refocus = () => {} } = {}) => (event, uri)
   // checkbox, and a stray Enter must not toggle-and-open. Cancel is
   // the safe default owner of the keyboard.
   cancelBtn.focus();
+  };
 };

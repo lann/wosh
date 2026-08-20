@@ -117,6 +117,9 @@ window.__wosh.addons = (() => {
   enhance("web links", () => {
     const handler = linkHandler(document.getElementById("linkdialog"), {
       refocus: () => autofocusTerminal(term),
+      // Highlighting text that happens to contain a URL must not open
+      // anything: a drag ending on a link is reported as a click.
+      hasSelection: () => term.hasSelection(),
     });
     term.loadAddon(new WebLinksAddon.WebLinksAddon(handler));
     active.links = true;
