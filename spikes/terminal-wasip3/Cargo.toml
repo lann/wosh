@@ -1,0 +1,13 @@
+[package]
+name = "terminal-wasip3-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone workspace: keep the spike out of the repo's root workspace
+# (explicit members list; this must not perturb the root Cargo.lock).
+[workspace]
+
+[dependencies]
+ratatui = { version = "0.30", default-features = false }
+wasip3 = "0.7"
