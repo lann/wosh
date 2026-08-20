@@ -259,11 +259,11 @@ const claimTerminal = (key) => {
  * print the "restored scrollback from…" note.
  */
 let restored = false;
-function restoreScrollback(text, key) {
+async function restoreScrollback(text, key) {
   if (everPainted || restored || !text) return false;
   restored = true;
   claimTerminal(key);
-  term.write(text);
+  await new Promise((resolve) => term.write(text, resolve));
   // Sanitize MODES after the content, unconditionally. Dumps saved
   // before SCROLLBACK_SERIALIZE_OPTIONS existed replay whatever
   // terminal modes were live at save time -- a tmux session with
@@ -275,8 +275,40 @@ function restoreScrollback(text, key) {
   // miss. Written after the dump and before the live session's first
   // output, so whatever the attaching program actually wants it sets
   // itself, on a known-clean slate.
-  term.write(SCROLLBACK_MODE_RESET);
+  await new Promise((resolve) => term.write(SCROLLBACK_MODE_RESET, resolve));
+
+  await parkBelowContent(term);
   return true;
+}
+
+/**
+ * Move the cursor below every non-blank line, so whatever is written
+ * next APPENDS instead of overwriting.
+ *
+ * Needed after restoring a dump: a serialize() dump ends by restoring
+ * the cursor to where it WAS, and that is not necessarily after the
+ * last line of content -- a full-screen redraw (what dtach's `-r winch`
+ * asks the program for) leaves it high on the screen with content
+ * below it. Everything the page appends next (the seam note, the
+ * session bookend, the new session's first output) then lands ON
+ * restored lines, leaving their tails sticking out beside it. Observed
+ * exactly that: "[wosh] restored scrollback from 2 h ago" with the tail
+ * of a banner line beside it, and the start rule drawn across another.
+ *
+ * Exported for the gate that pins this (browser-links).
+ */
+export async function parkBelowContent(term) {
+  const buf = term.buffer.active;
+  let last = -1;
+  for (let i = 0; i < buf.length; i++) {
+    if ((buf.getLine(i)?.translateToString(true) ?? "").trim()) last = i;
+  }
+  // Newlines rather than absolute positioning: at the bottom of the
+  // buffer they scroll, which is what "append below the history" has to
+  // mean once the history already fills the screen.
+  const below = last + 1 - (buf.baseY + buf.cursorY);
+  await new Promise((resolve) =>
+    term.write(below > 0 ? "\r\n".repeat(below) : "\r", resolve));
 }
 
 /**
@@ -1006,7 +1038,7 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
   // its real scrollback and this is a no-op. Ordering: the dump and
   // its seam note are OLD content, so they land above the opening
   // bookend, and the new session starts below both.
-  if (restore && restoreScrollback(restore.buf, persistKey)) {
+  if (restore && (await restoreScrollback(restore.buf, persistKey))) {
     note(`restored scrollback from ${restore.label}`);
   }
   // The opening bookend (separator.mjs), first session included.

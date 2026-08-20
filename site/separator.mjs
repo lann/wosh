@@ -26,6 +26,15 @@
 
 const draw = async (term, variant, label) => {
   const write = (s) => new Promise((resolve) => term.write(s, resolve));
+  // Flush whatever is queued before measuring anything. term.write is
+  // asynchronous -- xterm parses on its own schedule -- so a caller
+  // that wrote without awaiting leaves term.buffer describing a state
+  // the parser has not reached yet. A marker registered against that
+  // stale buffer tracks the WRONG line, and a decoration is an overlay,
+  // so it then gets drawn across whatever text really lands there. An
+  // empty write is the cheapest wait for the queue: its callback runs
+  // when the parser reaches it.
+  await write("");
   const buf = term.buffer.active;
   // End whatever line is half-written (a dead session's prompt,
   // usually); a pristine buffer has no line to end.
