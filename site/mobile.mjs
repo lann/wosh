@@ -1,4 +1,4 @@
-// Mobile UX for the wosh page. Four pieces, all inert on desktop:
+// Mobile UX for the wosh page. Five pieces, all inert on desktop:
 //
 //  - visual-viewport fit: soft keyboards don't resize the window on
 //    iOS Safari (the keyboard overlays the page and `resize` never
@@ -32,6 +32,16 @@
 //    does with any unclaimed gesture and pans the page instead.
 //    initTouchScroll drives it from pointer events, and the CSS says
 //    (touch-action) that vertical drags in the terminal are ours.
+//
+//  - long-press selection: xterm's selection answers only to a mouse,
+//    and the screen is an unselectable canvas (user-select: none), so a
+//    phone otherwise has no way to select terminal text at all. Android
+//    reports a long-press as a `contextmenu` event, and xterm's own
+//    handler for it will select the word under the finger when
+//    rightClickSelectsWord is set -- the selected text is mirrored into
+//    xterm's hidden textarea, which is what the platform's floating
+//    Copy toolbar acts on. Off phones the option keeps its default, so
+//    desktop right-click behavior does not change.
 //
 // No framework, no dependencies; loaded by app.mjs next to the
 // terminal it drives.
@@ -117,6 +127,7 @@ export const initMobile = (term) => {
   initViewportFit();
   initTouchScroll(term);
   initKeysBar(term);
+  initLongPressSelect(term);
 };
 
 const initViewportFit = () => {
@@ -142,6 +153,27 @@ const initViewportFit = () => {
   };
   vv.addEventListener("resize", schedule);
   vv.addEventListener("scroll", schedule);
+};
+
+// --- long-press selection -------------------------------------------------------
+
+/**
+ * Enable long-press word selection on coarse-pointer devices.
+ *
+ * xterm reads `rightClickSelectsWord` at event time (not just at
+ * term.open()), so setting it here after the terminal is already open
+ * still takes effect on the very next contextmenu. Upstream's handler
+ * (rightClickSelect) also preserves an existing selection when the
+ * press lands inside it, replacing it only when it lands outside --
+ * so a long-press inside a selection the user already made keeps that
+ * selection rather than collapsing it to one word.
+ *
+ * Gated on the same predicate as the rest of the mobile layer, so
+ * desktop right-click behavior is untouched (the option keeps whatever
+ * default xterm ships).
+ */
+const initLongPressSelect = (term) => {
+  if (matchMedia("(pointer: coarse)").matches) term.options.rightClickSelectsWord = true;
 };
 
 // --- touch scrolling ----------------------------------------------------------

@@ -75,6 +75,7 @@ const FIXTURE = `<!doctype html>
   const textarea = document.getElementById("fake-textarea");
   const term = {
     textarea,
+    options: {},
     modes: { applicationCursorKeysMode: false },
     // app.mjs runs transformInput over every onData chunk; mirror that
     // so armed Ctrl/Alt is observable exactly as the session sees it.
@@ -488,10 +489,33 @@ try {
   await desktopPage.waitForFunction(() => globalThis.wosh, null, { timeout: 15_000 });
   const desktopFocused = await desktopPage.evaluate(() => document.activeElement === globalThis.wosh.term.textarea);
   const barShown = await desktopPage.locator("#keys").isVisible();
-  await desktop.close();
   if (!desktopFocused) fail("a fine pointer no longer autofocuses the terminal (a desktop page would open untypable)");
   else if (barShown) fail("the extra-keys bar is visible on a fine pointer (it must stay inert off touch devices)");
   else console.log("[10] a fine pointer still autofocuses the terminal, bar still inert");
+
+  // 10b. THE OPTION MUST STAY OFF a fine pointer: rightClickSelectsWord
+  //      is what makes a long-press (contextmenu) select a word, and it
+  //      must not leak onto desktop, where a real right-click means the
+  //      OS/browser context menu, not a silent selection. Needs a real
+  //      xterm (the /terminal fixture), same as the scrolling legs.
+  if (!existsSync(join(XTERM_DIR, "xterm/lib/xterm.js"))) {
+    fail("site/node_modules/@xterm is missing: run `just web-deps` (leg 10b needs a real xterm)");
+  } else {
+    await desktopPage.goto(`http://127.0.0.1:${PORT}/terminal`, { waitUntil: "load" });
+    await desktopPage.waitForFunction(() => globalThis.wosh?.state, null, { timeout: 15_000 });
+    await desktopPage.waitForTimeout(200);
+    const dTermBox = await desktopPage.locator("#term").boundingBox();
+    const dClient = { x: dTermBox.x + dTermBox.width / 2, y: dTermBox.y + dTermBox.height / 2 };
+    await desktopPage.evaluate(({ x, y }) => {
+      document.querySelector(".xterm").dispatchEvent(
+        new MouseEvent("contextmenu", { clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    }, dClient);
+    const dHasSelection = await desktopPage.evaluate(() => globalThis.wosh.term.hasSelection());
+    if (ok(!dHasSelection, "a long-press/contextmenu selected a word on a fine pointer (rightClickSelectsWord must stay off desktop)")) {
+      console.log("[10b] a fine pointer keeps rightClickSelectsWord at its default: no selection from a contextmenu");
+    }
+  }
+  await desktop.close();
 
   // --- scrolling, against a real terminal ------------------------------
   //
@@ -653,6 +677,99 @@ try {
           console.log("[18] a drag still reaches the top when output moves the view under it");
         }
       }
+
+      // --- long-press selection (site/mobile.mjs: initLongPressSelect) --
+      //
+      // xterm's selection answers only to a mouse and the screen is an
+      // unselectable canvas, so a phone has no way to select terminal
+      // text at all -- UNLESS Android's long-press contextmenu is wired
+      // through rightClickSelectsWord. A synthetic contextmenu stands in
+      // for the real long-press (Chromium dispatches one at the finger
+      // on Android; CDP touch events do not reach that platform code in
+      // headless Linux Chromium, so this is the same substitution the
+      // background doc names).
+      await page.evaluate(() => { globalThis.wosh.term.write("alpha bravo charlie\r\n"); globalThis.wosh.term.scrollToBottom(); });
+      await page.waitForFunction(
+        () => globalThis.wosh.term.buffer.active.getLine(
+          globalThis.wosh.term.buffer.active.baseY + globalThis.wosh.term.buffer.active.cursorY - 1,
+        )?.translateToString(true) === "alpha bravo charlie",
+        null, { timeout: 5_000 },
+      );
+
+      // The written line sits one row above the cursor's resting row
+      // (the \r\n advanced past it); translate buffer-absolute to
+      // on-screen via viewportY, then buffer-cell to pixel via the
+      // screen's own box -- never a hardcoded row.
+      const wordPoint = async (col, len) => {
+        const st = await page.evaluate(() => {
+          const buf = globalThis.wosh.term.buffer.active;
+          const row = buf.baseY + buf.cursorY - 1;
+          return { row, viewportY: buf.viewportY, cellHeight: globalThis.wosh.state().cellHeight };
+        });
+        const screen = await page.locator(".xterm-screen").boundingBox();
+        const cellWidth = screen.width / (await page.evaluate(() => globalThis.wosh.term.cols));
+        const viewRow = st.row - st.viewportY;
+        return {
+          x: screen.x + (col + len / 2) * cellWidth,
+          y: screen.y + (viewRow + 0.5) * st.cellHeight,
+        };
+      };
+
+      // 18b. THE CONTRACT: a long-press (contextmenu) selects the word
+      //      under the finger, and mirrors it into xterm's hidden
+      //      textarea -- the thing Android's floating Copy toolbar
+      //      actually copies from.
+      const bravoPt = await wordPoint(6, 5); // "alpha "=6 cols, "bravo"=5
+      await page.evaluate(({ x, y }) => {
+        document.querySelector(".xterm").dispatchEvent(
+          new MouseEvent("contextmenu", { clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      }, bravoPt);
+      const sel18b = await page.evaluate(() => globalThis.wosh.term.getSelection());
+      const activeIsTextarea = await page.evaluate(() => document.activeElement === globalThis.wosh.term.textarea);
+      const textareaVal = await page.evaluate(() => globalThis.wosh.term.textarea.value);
+      if (ok(sel18b === "bravo", `long-press (contextmenu) did not select the word under the finger -- got ${JSON.stringify(sel18b)}`) &&
+          ok(activeIsTextarea, "long-press did not focus xterm's hidden textarea (the platform Copy toolbar acts on focus)") &&
+          ok(textareaVal === "bravo", `the selected word was not mirrored into the textarea the Copy toolbar reads -- got ${JSON.stringify(textareaVal)}`)) {
+        console.log("[18b] a long-press selects the word under the finger and mirrors it into the textarea");
+      }
+      await page.evaluate(() => globalThis.wosh.term.clearSelection());
+
+      // 18c. A long-press INSIDE an existing selection keeps it, rather
+      //      than collapsing it to the one word under the finger
+      //      (upstream rightClickSelect semantics).
+      await page.evaluate(() => {
+        const buf = globalThis.wosh.term.buffer.active;
+        const row = buf.baseY + buf.cursorY - 1;
+        globalThis.wosh.term.select(6, row, 13); // "bravo charlie" (13 cols)
+      });
+      const insidePt = await wordPoint(6, 13);
+      await page.evaluate(({ x, y }) => {
+        document.querySelector(".xterm").dispatchEvent(
+          new MouseEvent("contextmenu", { clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      }, insidePt);
+      const sel18c = await page.evaluate(() => globalThis.wosh.term.getSelection());
+      if (ok(sel18c === "bravo charlie", `a long-press inside an existing selection collapsed it to one word -- got ${JSON.stringify(sel18c)}`)) {
+        console.log("[18c] a long-press inside an existing selection keeps it");
+      }
+      await page.evaluate(() => globalThis.wosh.term.clearSelection());
+
+      // 18d. The other selection gesture -- double-tap -- still selects
+      //      a word (xterm's compat dblclick path, unaffected by the
+      //      rightClickSelectsWord wiring above).
+      const alphaPt = await wordPoint(0, 5); // "alpha" starts at col 0
+      await send("touchStart", points(alphaPt.x, alphaPt.y));
+      await page.waitForTimeout(50);
+      await send("touchEnd", []);
+      await page.waitForTimeout(80);
+      await send("touchStart", points(alphaPt.x, alphaPt.y));
+      await page.waitForTimeout(50);
+      await send("touchEnd", []);
+      await page.waitForTimeout(400);
+      const sel18d = await page.evaluate(() => globalThis.wosh.term.getSelection());
+      if (ok(sel18d === "alpha", `a double-tap did not select the word under the finger -- got ${JSON.stringify(sel18d)}`)) {
+        console.log("[18d] a double-tap selects the word under the finger");
+      }
+      await page.evaluate(() => globalThis.wosh.term.clearSelection());
     }
   }
 
