@@ -631,7 +631,20 @@ pub async fn serve_v2(
                 crate::pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");
             } else {
-                refuse(&send, "bad pairing token").await;
+                // CONTRACT: tunnel/src/lib.rs `REFUSE_PAIRING` -- the
+                // machine-readable prefix, then `": "`, then prose the
+                // page can show verbatim. The page keys its re-pair
+                // sheet off the prefix ONLY, so this sentence stays
+                // free to improve.
+                refuse(
+                    &send,
+                    &format!(
+                        "{}: this listener does not recognise this device; re-pair it with \
+                         the token or link the listener printed",
+                        wosh_tunnel::REFUSE_PAIRING
+                    ),
+                )
+                .await;
                 return Err("refused: bad pairing token (and not a paired device)".into());
             }
         }

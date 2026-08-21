@@ -620,6 +620,38 @@ browser-fallthrough: site hosts
     WOSH_START_CMD="$start" \
         node host-test/browser-fallthrough.mjs
 
+# Browser re-pair gate: a saved card whose enrollment the listener no
+# longer has must be recoverable from the page, using the token the
+# listener prints. Its own recipe rather than a leg of browser-e2e:
+# that gate runs --ephemeral-identity (no identity dir at all, so
+# nothing to delete a `paired` file from and no stable endpoint id
+# across a restart), and giving it a persistent identity would change
+# what every one of its legs is standing on. This one needs the
+# identity dir e2e-pairing uses -- including the pause that lets its
+# lock go between runs.
+browser-repair: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop browser-repair' EXIT
+    trap 'exit 130' INT TERM
+    rm -rf .deps/test-repair && mkdir -p .deps/test-repair
+    start="scripts/gate-proc.sh start browser-repair target/release/wosh-listener \
+        --identity-dir .deps/test-repair \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr"
+    $start
+    sleep 7
+    cs=$(scripts/gate-proc.sh field browser-repair connstring)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+    WOSH_STOP_CMD="scripts/gate-proc.sh stop browser-repair" \
+    WOSH_START_CMD="$start" \
+    WOSH_PAIRED_FILE=".deps/test-repair/paired" \
+    WOSH_LOG="$(scripts/gate-proc.sh log browser-repair)" \
+        node host-test/browser-repair.mjs
+
 # Resume, end to end in a real browser: a live session must survive a
 # relay restart -- client endpoint rebind + resume machine, listener
 # accept-loop rebind + re-registration, offset-exchange replay. This
@@ -647,7 +679,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-sessions test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-resume
+check: test-gate-proc test-sessions test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-repair browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.

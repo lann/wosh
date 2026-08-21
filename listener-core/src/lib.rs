@@ -100,19 +100,12 @@ struct Cli {
     ephemeral_identity: bool,
 }
 
+/// `--token`, in the same encoding the listener PRINTS (see
+/// `wosh_connstring::token_decode`): base32 with visual error
+/// correction, forgiving about case and about separators someone adds
+/// while reading it out.
 fn parse_token(s: &str) -> Result<[u8; wosh_connstring::TOKEN_LEN], String> {
-    const LEN: usize = wosh_connstring::TOKEN_LEN;
-    let bytes = decode_hex(s).ok_or("not valid hex")?;
-    if bytes.len() != LEN {
-        return Err(format!(
-            "must be exactly {} hex chars ({LEN} bytes), got {} bytes",
-            LEN * 2,
-            bytes.len()
-        ));
-    }
-    let mut t = [0u8; LEN];
-    t.copy_from_slice(&bytes);
-    Ok(t)
+    wosh_connstring::token_decode(s)
 }
 
 fn random_token() -> [u8; wosh_connstring::TOKEN_LEN] {
@@ -123,16 +116,6 @@ fn random_token() -> [u8; wosh_connstring::TOKEN_LEN] {
 
 fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 struct Component;
@@ -239,7 +222,14 @@ async fn run_listener(cli: Cli) -> Result<(), String> {
     }
     println!("scan or open -> {url}");
     match &cli.token {
-        Some(t) => println!("ready; target {} (pairing token required, hex: {})", cli.target, encode_hex(t)),
+        // The token is printed the way a person will retype it -- into
+        // another listener's --token, or into the browser's re-pair
+        // field when a saved connection has lost its enrollment.
+        Some(t) => println!(
+            "ready; target {} (pairing token required: {})",
+            cli.target,
+            wosh_connstring::token_encode(&t)
+        ),
         None => println!(
             "ready; target {} (OPEN MODE -- no pairing token: anyone with the link can connect)",
             cli.target
@@ -379,6 +369,13 @@ async fn serve_connection(
                 pairing::persist(&peer);
                 eprintln!("[{peer}] paired (valid token; this device now reconnects across token rotations)");
             } else {
+                // No `REFUSE_PAIRING` code here on purpose: a v1
+                // refusal is never SPOKEN to the client (v1 just drops
+                // the connection -- see serve_v2's enrollment
+                // comment), so there is nobody to match on it. This
+                // string is the listener's own log/return wording, and
+                // it is deliberately identical to v2's return value so
+                // the two paths read the same in a log.
                 return Err("refused: bad pairing token (and not a paired device)".into());
             }
         }

@@ -138,9 +138,31 @@ pub enum HelloReply {
     /// retransmits from there.
     Resumed { received: u64 },
     /// Not happening (unknown session, wrong endpoint, expired grace,
-    /// replay gap, bad pairing). The reason is for humans.
+    /// replay gap, bad pairing). The reason is for humans -- EXCEPT
+    /// for the machine-readable prefixes below, which are protocol.
     Refused { reason: String },
 }
+
+/// The refusal-reason prefix meaning "this listener does not recognise
+/// this device": the client presented no valid pairing proof and is
+/// not enrolled. Stable protocol surface -- clients MAY match on it.
+///
+/// A reason carrying it is `REFUSE_PAIRING`, then `": "`, then a
+/// human sentence. Only the prefix is contractual; the sentence after
+/// it is prose and will be improved without notice.
+///
+/// Why the two halves are separate: this project has been burned by
+/// matching human-readable wording. `passkeyHint` in `site/app.mjs`
+/// documents the incident -- a hint keyed off an error's phrasing
+/// stopped firing the moment that phrasing was made clearer, i.e.
+/// exactly when it was wanted most. So the machine-readable half is a
+/// constant, and improving the prose can never break a client.
+///
+/// The browser page matches this to raise its re-pair recovery sheet
+/// (`site/boot.mjs`); it arrives there inside `wosh-client`'s
+/// `listener refused the connection: {reason}`, which passes the
+/// reason through verbatim.
+pub const REFUSE_PAIRING: &str = "pairing-required";
 
 /// A decoded frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
