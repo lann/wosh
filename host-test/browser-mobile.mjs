@@ -114,17 +114,27 @@ const TERMINAL_FIXTURE = `<!doctype html>
 <div id="spacer" style="height: 240px"></div>
 <script src="/site/node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="/site/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="/site/node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script type="module">
   import { initMobile } from "/site/mobile.mjs";
   const term = new Terminal({ fontSize: 14, cursorBlink: false, scrollback: 1000 });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  // The link addon is here for leg 18k: a tap on a painted URI must
+  // still reach xterm's linkifier THROUGH the selection overlay, which
+  // is only true while the overlay is a descendant of .xterm-screen
+  // (where the linkifier binds its mouse listeners).
+  const linkActivations = [];
+  term.loadAddon(new WebLinksAddon.WebLinksAddon((event, uri) => {
+    linkActivations.push(uri);
+  }));
   term.open(document.getElementById("term"));
   fit.fit();
   for (let i = 1; i <= 300; i++) term.write("line " + i + "\\r\\n");
   initMobile(term);
   globalThis.wosh = {
     term,
+    linkActivations,
     focused: () => document.activeElement === term.textarea,
     state: () => ({
       viewportY: term.buffer.active.viewportY,
@@ -511,8 +521,13 @@ try {
         new MouseEvent("contextmenu", { clientX: x, clientY: y, bubbles: true, cancelable: true }));
     }, dClient);
     const dHasSelection = await desktopPage.evaluate(() => globalThis.wosh.term.hasSelection());
-    if (ok(!dHasSelection, "a long-press/contextmenu selected a word on a fine pointer (rightClickSelectsWord must stay off desktop)")) {
-      console.log("[10b] a fine pointer keeps rightClickSelectsWord at its default: no selection from a contextmenu");
+    // ...and the touch selection overlay must not exist here either:
+    // it is the phone's answer to an unselectable canvas, and desktop
+    // selects through xterm's own mouse machinery, which works.
+    const dOverlay = await desktopPage.evaluate(() => document.querySelectorAll(".touch-select-layer").length);
+    if (ok(!dHasSelection, "a long-press/contextmenu selected a word on a fine pointer (rightClickSelectsWord must stay off desktop)") &&
+        ok(dOverlay === 0, `the touch selection overlay mounted on a fine pointer (${dOverlay} layers): it must stay inert off touch devices`)) {
+      console.log("[10b] a fine pointer keeps rightClickSelectsWord at its default: no selection from a contextmenu, no touch overlay");
     }
   }
   await desktop.close();
@@ -768,6 +783,310 @@ try {
       const sel18d = await page.evaluate(() => globalThis.wosh.term.getSelection());
       if (ok(sel18d === "alpha", `a double-tap did not select the word under the finger -- got ${JSON.stringify(sel18d)}`)) {
         console.log("[18d] a double-tap selects the word under the finger");
+      }
+      await page.evaluate(() => globalThis.wosh.term.clearSelection());
+
+      // --- the touch selection overlay (site/touch-select.mjs) ---------
+      //
+      // The word-granularity contextmenu path above is all a phone had.
+      // The overlay supersedes it: an invisible, selectable DOM mirror
+      // of the visible viewport, mounted inside .xterm-screen, so the
+      // PLATFORM's own selection machinery has real text to work on --
+      // arbitrary ranges, drag handles, the floating Copy toolbar.
+      // These legs pin the mirror's fidelity, its geometry, the freeze
+      // that keeps live output from moving text out from under a
+      // highlight, and the copy that keeps soft wraps from becoming
+      // hard newlines.
+
+      // Which visual row of the overlay a given buffer row sits on, and
+      // what the overlay put there.
+      const overlay = async () => page.evaluate(() => {
+        const term = globalThis.wosh.term;
+        const layer = document.querySelector(".xterm-screen > .touch-select-layer");
+        if (!layer) return null;
+        const buf = term.buffer.active;
+        return {
+          rowCount: layer.children.length,
+          termRows: term.rows,
+          userSelect: getComputedStyle(layer).userSelect || getComputedStyle(layer).webkitUserSelect,
+          texts: [...layer.children].map((d) => d.textContent),
+          viewportY: buf.viewportY,
+          markerViewRow: buf.baseY + buf.cursorY - 1 - buf.viewportY,
+          markerBufferText: buf.getLine(buf.baseY + buf.cursorY - 1)?.translateToString(false) ?? null,
+        };
+      });
+
+      // 18e. The mirror exists where it has to (a CHILD of
+      //      .xterm-screen -- see 18k), is selectable despite .xterm's
+      //      user-select: none, and reproduces the buffer line
+      //      character for character. UNtrimmed: offsets in the mirror
+      //      must map 1:1 onto terminal columns.
+      const o18e = await overlay();
+      if (!ok(Boolean(o18e), "no .touch-select-layer inside .xterm-screen: the overlay did not mount under a coarse pointer")) {
+        // the legs below have nothing to measure
+      } else if (
+        ok(o18e.rowCount === o18e.termRows, `the overlay has ${o18e.rowCount} rows for a ${o18e.termRows}-row terminal`) &&
+        ok(o18e.userSelect === "text", `the overlay is not selectable (user-select: ${o18e.userSelect}); .xterm's user-select: none would win`) &&
+        ok(o18e.texts[o18e.markerViewRow] === o18e.markerBufferText,
+           `the overlay row does not mirror its buffer line:\n    overlay ${JSON.stringify(o18e.texts[o18e.markerViewRow])}\n    buffer  ${JSON.stringify(o18e.markerBufferText)}`)
+      ) {
+        console.log(`[18e] the overlay mirrors the viewport: ${o18e.rowCount} selectable rows, marker row exact`);
+      }
+
+      // 18f. The geometry that makes a highlight land on the glyphs it
+      //      is highlighting: rows sit on cell boundaries, and one DOM
+      //      character advances exactly one cell (the letter-spacing
+      //      math -- font advance alone is off by a fraction that
+      //      compounds across a row).
+      const geo = await page.evaluate(() => {
+        const term = globalThis.wosh.term;
+        const layer = document.querySelector(".xterm-screen > .touch-select-layer");
+        const screen = document.querySelector(".xterm-screen").getBoundingClientRect();
+        const buf = term.buffer.active;
+        const viewRow = buf.baseY + buf.cursorY - 1 - buf.viewportY;
+        const div = layer.children[viewRow];
+        const cellW = screen.width / term.cols;
+        const cellH = screen.height / term.rows;
+        // "alpha bravo charlie" is 19 characters starting at column 0.
+        const range = document.createRange();
+        range.setStart(div.firstChild, 0);
+        range.setEnd(div.firstChild, 19);
+        const runW = range.getBoundingClientRect().width;
+        range.detach?.();
+        return {
+          top: div.getBoundingClientRect().top,
+          expectedTop: screen.y + viewRow * cellH,
+          runW,
+          expectedRunW: 19 * cellW,
+        };
+      });
+      if (ok(Math.abs(geo.top - geo.expectedTop) <= 1.5,
+             `the overlay row is not on its cell row: top ${geo.top.toFixed(2)}, expected ${geo.expectedTop.toFixed(2)}`) &&
+          ok(Math.abs(geo.runW - geo.expectedRunW) <= 2,
+             `one overlay character does not advance one cell: 19 chars measured ${geo.runW.toFixed(2)}px, expected ${geo.expectedRunW.toFixed(2)}px`)) {
+        console.log(`[18f] the overlay is on the cell grid: 19 chars span ${geo.runW.toFixed(1)}px vs ${geo.expectedRunW.toFixed(1)}px of cells`);
+      }
+
+      // 18g. It tracks live output -- the mirror is only useful if it
+      //      is current when the finger lands.
+      await page.evaluate(() => {
+        globalThis.wosh.term.write("delta echo foxtrot\r\n");
+        globalThis.wosh.term.scrollToBottom();
+      });
+      await page.waitForTimeout(300);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const synced = await page.evaluate(() =>
+        [...document.querySelector(".touch-select-layer").children].some((d) =>
+          d.textContent.includes("delta echo foxtrot")));
+      if (ok(synced, "fresh output never reached the overlay: a finger would select stale text")) {
+        console.log("[18g] the overlay follows live output");
+      }
+
+      // Build a REAL DOM selection over a run of an overlay row -- what
+      // the platform's long-press produces, and the only way to get one
+      // in headless Chromium.
+      const selectRun = (viewRow, from, to) => page.evaluate(({ viewRow, from, to }) => {
+        const div = document.querySelector(".touch-select-layer").children[viewRow];
+        const range = document.createRange();
+        range.setStart(div.firstChild, from);
+        range.setEnd(div.firstChild, to);
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return sel.toString();
+      }, { viewRow, from, to });
+
+      // 18h. THE FREEZE: while the platform holds a selection over the
+      //      mirror, the mirror stops updating. Output arriving
+      //      underneath would otherwise rewrite the very characters the
+      //      highlight is drawn around -- the user watches their
+      //      selection quietly become a selection of something else,
+      //      and copies text they never highlighted. The change below
+      //      repaints row 0 in place (save cursor / home / write /
+      //      restore) so viewportY never moves and this leg is about
+      //      the freeze alone, not about scrolling.
+      const markerRow = (await overlay()).markerViewRow;
+      const held = await selectRun(markerRow, 6, 10); // "echo" in "delta echo foxtrot"
+      await page.waitForTimeout(150);
+      const row0Before = await page.evaluate(() =>
+        document.querySelector(".touch-select-layer").children[0].textContent);
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[s\x1b[H*CHANGED*\x1b[u"));
+      await page.waitForTimeout(300);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const frozenRow0 = await page.evaluate(() => ({
+        overlay: document.querySelector(".touch-select-layer").children[0].textContent,
+        buffer: globalThis.wosh.term.buffer.active
+          .getLine(globalThis.wosh.term.buffer.active.viewportY)?.translateToString(false),
+        selection: document.getSelection().toString(),
+      }));
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+      await page.waitForTimeout(150);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const thawedRow0 = await page.evaluate(() =>
+        document.querySelector(".touch-select-layer").children[0].textContent);
+      if (ok(held === "echo", `the test selection did not take (got ${JSON.stringify(held)})`) &&
+          ok(frozenRow0.buffer.startsWith("*CHANGED*"), "the in-place repaint never reached the buffer, so this leg proves nothing") &&
+          ok(frozenRow0.overlay === row0Before,
+             `the overlay updated under a live selection (row 0 became ${JSON.stringify(frozenRow0.overlay)}): the highlight would slide onto other text`) &&
+          ok(frozenRow0.selection === held, "the selection did not survive the output it was supposed to freeze out") &&
+          ok(thawedRow0.startsWith("*CHANGED*"),
+             `the overlay stayed frozen after the selection was dropped (row 0 is ${JSON.stringify(thawedRow0)})`)) {
+        console.log("[18h] a live selection freezes the overlay, and releasing it resyncs");
+      }
+
+      // 18i. Scrolling DISMISSES a selection. The mirror only ever
+      //      holds the visible viewport, so a highlight over text that
+      //      has scrolled away is a lie about what would be copied;
+      //      dropping it is the honest answer.
+      const scrollRow = (await overlay()).markerViewRow;
+      await selectRun(scrollRow, 0, 5);
+      await page.waitForTimeout(150);
+      const beforeScroll = await page.evaluate(() => ({
+        viewportY: globalThis.wosh.term.buffer.active.viewportY,
+        row0: document.querySelector(".touch-select-layer").children[0].textContent,
+      }));
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-3));
+      await page.waitForTimeout(250);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const afterScroll = await page.evaluate(() => {
+        const sel = document.getSelection();
+        const term = globalThis.wosh.term;
+        const buf = term.buffer.active;
+        return {
+          selectionText: sel.toString(),
+          viewportY: buf.viewportY,
+          row0: document.querySelector(".touch-select-layer").children[0].textContent,
+          bufferRow0: buf.getLine(buf.viewportY)?.translateToString(false) ?? "",
+        };
+      });
+      if (ok(afterScroll.viewportY === beforeScroll.viewportY - 3, `the scroll did not move the viewport (${beforeScroll.viewportY} -> ${afterScroll.viewportY})`) &&
+          ok(afterScroll.selectionText === "", `scrolling left the selection standing over text that moved (${JSON.stringify(afterScroll.selectionText)})`) &&
+          ok(afterScroll.row0 === afterScroll.bufferRow0,
+             `the overlay did not resync to the new viewport:\n    overlay ${JSON.stringify(afterScroll.row0)}\n    buffer  ${JSON.stringify(afterScroll.bufferRow0)}`)) {
+        console.log("[18i] scrolling dismisses the selection and the overlay resyncs to the new viewport");
+      }
+      await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+
+      // 18j. COPY: a soft wrap is not a line break. The mirror is one
+      //      div per VISUAL row, so the browser's default copy puts a
+      //      newline at every wrap -- pasting a wrapped command back
+      //      into a shell would break it in half. The handler rebuilds
+      //      the text from the mirror's own characters, joining rows
+      //      the buffer marks as wrapped and right-trimming only the
+      //      rows that really ended.
+      const wrapped = await page.evaluate(() => new Promise((resolve) => {
+        const term = globalThis.wosh.term;
+        const long = "A".repeat(term.cols) + "BBBBBBBBBB"; // one full row, then a wrap
+        term.write(`\r\n${long}\r\nZSHORT\r\n`, () => {
+          term.scrollToBottom();
+          resolve({ cols: term.cols });
+        });
+      }));
+      await page.waitForTimeout(300);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const copied = await page.evaluate(() => {
+        const term = globalThis.wosh.term;
+        const buf = term.buffer.active;
+        const layer = document.querySelector(".touch-select-layer");
+        // Cursor rests on the line after ZSHORT: the three visual rows
+        // above it are the A-row, the B-row (its soft continuation) and
+        // ZSHORT.
+        const cursorAbs = buf.baseY + buf.cursorY;
+        const rowOf = (abs) => abs - buf.viewportY;
+        const aRow = layer.children[rowOf(cursorAbs - 3)];
+        const bRow = layer.children[rowOf(cursorAbs - 2)];
+        const zRow = layer.children[rowOf(cursorAbs - 1)];
+        if (typeof ClipboardEvent !== "function" || typeof DataTransfer !== "function") {
+          return { error: "this Chromium cannot construct ClipboardEvent/DataTransfer; leg 18j cannot run" };
+        }
+        const range = document.createRange();
+        range.setStart(aRow.firstChild, 40); // mid-way along the first visual row
+        // ...through the very END of the ZSHORT row, trailing cell
+        // padding included, so the right-trim is exercised.
+        range.setEnd(zRow.firstChild, zRow.textContent.length);
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        const ev = new ClipboardEvent("copy", {
+          clipboardData: new DataTransfer(),
+          bubbles: true,
+          cancelable: true,
+        });
+        layer.dispatchEvent(ev);
+        return {
+          text: ev.clipboardData.getData("text/plain"),
+          defaultPrevented: ev.defaultPrevented,
+          aJoins: aRow.dataset.joinNext === "1",
+          bJoins: bRow.dataset.joinNext === "1",
+          aText: aRow.textContent,
+          bText: bRow.textContent,
+          zText: zRow.textContent,
+        };
+      });
+      if (copied.error) {
+        fail(copied.error);
+      } else {
+        const expected = `${"A".repeat(wrapped.cols - 40)}BBBBBBBBBB\nZSHORT`;
+        if (ok(copied.aJoins, "the wrapped row is not marked as joining the next: the copy has nothing to join on") &&
+            ok(!copied.bJoins, "the continuation row was marked as wrapping too, but ZSHORT is a fresh line") &&
+            ok(copied.defaultPrevented, "the copy handler let the browser's default (a newline at every wrap) through") &&
+            ok(copied.text === expected,
+               `the copy did not join the soft wrap:\n    got      ${JSON.stringify(copied.text)}\n    expected ${JSON.stringify(expected)}`) &&
+            ok((copied.text.match(/\n/g) ?? []).length === 1, `the copy carries ${(copied.text.match(/\n/g) ?? []).length} newlines, expected exactly the one hard break`)) {
+          console.log("[18j] copying across a soft wrap joins it, and the hard break stays one trimmed newline");
+        }
+      }
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+
+      // 18k. THE PLACEMENT: a tap on a painted URI still reaches
+      //      xterm's linkifier THROUGH the overlay. The linkifier binds
+      //      its mouse listeners on .xterm-screen (the selection
+      //      service and the contextmenu handler bind on .xterm), so
+      //      only an overlay mounted as a DESCENDANT of .xterm-screen
+      //      lets a tap's compatibility mouse events bubble through
+      //      both. Mount it one level up and link taps die silently on
+      //      every phone -- which is the failure this leg exists to
+      //      catch.
+      const LINK_URI = "https://example.com/tap";
+      const linkAt = await page.evaluate((uri) => new Promise((resolve) => {
+        const term = globalThis.wosh.term;
+        globalThis.wosh.linkActivations.length = 0;
+        term.write(`\r\nsee ${uri} done\r\n`, () => {
+          term.scrollToBottom();
+          const buf = term.buffer.active;
+          resolve({
+            viewRow: buf.baseY + buf.cursorY - 1 - buf.viewportY,
+            col: 4 + Math.floor(uri.length / 2), // "see " is 4 cells
+            // A phone is ~44 columns: the line has to FIT, or the row
+            // below the cursor is the wrap continuation and the
+            // coordinates land past the end of the URI -- a leg that
+            // fails for a reason that is not the one it is testing.
+            fits: `see ${uri} done`.length <= term.cols,
+          });
+        });
+      }), LINK_URI);
+      await page.waitForTimeout(300);
+      if (!ok(linkAt.fits, "the link line wrapped: leg 18k would be aiming at the continuation row, not the URI")) {
+        // the tap below would prove nothing
+      } else {
+      const linkScreen = await page.locator(".xterm-screen").boundingBox();
+      const linkCols = await page.evaluate(() => globalThis.wosh.term.cols);
+      const linkRows = await page.evaluate(() => globalThis.wosh.term.rows);
+      const linkPt = {
+        x: linkScreen.x + (linkScreen.width / linkCols) * (linkAt.col + 0.5),
+        y: linkScreen.y + (linkScreen.height / linkRows) * (linkAt.viewRow + 0.5),
+      };
+      await send("touchStart", points(linkPt.x, linkPt.y));
+      await page.waitForTimeout(60);
+      await send("touchEnd", []);
+      await page.waitForTimeout(500);
+      const activations = await page.evaluate(() => globalThis.wosh.linkActivations.slice());
+      if (ok(activations.length === 1,
+             `a tap on a painted URI produced ${activations.length} link activations, expected 1 -- if the overlay is not a child of .xterm-screen, the linkifier never sees the tap`) &&
+          ok(activations[0] === LINK_URI, `the linkifier reported ${JSON.stringify(activations[0])}, expected the URI verbatim`)) {
+        console.log("[18k] a tap on a link still reaches the linkifier through the overlay");
+      }
       }
       await page.evaluate(() => globalThis.wosh.term.clearSelection());
     }

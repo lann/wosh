@@ -176,6 +176,54 @@ try {
     await page.evaluate(() => window.__wosh.term.clearSelection());
   }
 
+  // [2c] A tap that DISMISSES a live selection is not a click on
+  // whatever it landed on. The touch selection overlay (site/
+  // touch-select.mjs) selects real DOM text, which the terminal's own
+  // hasSelection() cannot see at all -- so the [2b] guard above is
+  // blind to it, and the first tap after selecting something would
+  // both clear the highlight and open the link under the finger. The
+  // guard that catches it records the selection state at PRESS time,
+  // because by activation time the press has already cleared it.
+  // Selected here on the page's own status text: any DOM selection
+  // outside the terminal exercises the same path, and it needs no
+  // touch emulation to build.
+  {
+    await page.evaluate(() => {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("status"));
+      sel.addRange(range);
+    });
+    const live = await page.evaluate(() => !window.getSelection().isCollapsed);
+    if (!live) {
+      fail("could not build a DOM selection outside the terminal, so this leg proves nothing");
+    } else {
+      await clickLink();
+      await page.waitForTimeout(400);
+      const dismissed = await page.evaluate(() => document.getElementById("linkdialog")?.open ?? false);
+      if (dismissed) {
+        fail("clicking while a DOM selection was up opened the link as well as dismissing it");
+        await page.evaluate(() => document.getElementById("linkdialog")?.close());
+      } else {
+        // ...and with nothing selected, the very same click still works:
+        // the guard declines a dismissing tap, not every tap afterwards.
+        await page.evaluate(() => window.getSelection().removeAllRanges());
+        await clickLink();
+        await page.waitForFunction(() => document.getElementById("linkdialog")?.open, null, { timeout: 5_000 })
+          .then(
+            async () => {
+              await page.click("#linkdialog button:has-text('cancel')");
+              await page.waitForFunction(() => !document.getElementById("linkdialog")?.open, null, { timeout: 5_000 });
+              console.log("[2c] a click that dismisses a selection opens nothing; the next one still opens");
+            },
+            () => fail("the press-time selection guard swallowed the following click too: links would stop opening after any selection"),
+          );
+      }
+    }
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+  }
+
   // [3] click -> dialog with the verbatim URI; cancel opens nothing.
   await clickLink();
   await page.waitForFunction(() => document.getElementById("linkdialog")?.open, null, { timeout: 5_000 });
