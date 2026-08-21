@@ -126,39 +126,73 @@ pub struct ConnString {
     pub token: Option<[u8; TOKEN_LEN]>,
 }
 
+/// The alphabet the pairing token is written in: RFC 4648 base32 with
+/// **`I` replaced by `9`**.
+///
+/// That one substitution is what makes the encoding safe to type. In
+/// the standard alphabet both `I` and `L` are symbols, so the cluster
+/// a reader cannot tell apart -- `i I l L 1` -- spans two different
+/// values, and any rule that folds it has to pick a winner and corrupt
+/// the loser. (data_encoding's BASE32_NOPAD_VISUAL folds lowercase `l`
+/// to `I` and leaves uppercase `L` alone, which means blanket
+/// lowercasing silently changes a token: a trap we shipped and then
+/// took back out.) With `I` gone the whole cluster collapses to `L`,
+/// case folding is unconditional, and the digit that replaces it --
+/// `9` -- shares a shape only with `g`, which is a far weaker
+/// resemblance in the fonts terminals actually use.
+///
+/// Kept in RFC 4648 order so every other symbol keeps its value.
+const TOKEN_SYMBOLS: &str = "ABCDEFGH9JKLMNOPQRSTUVWXYZ234567";
+
+fn token_encoding() -> &'static data_encoding::Encoding {
+    static ENC: std::sync::OnceLock<data_encoding::Encoding> = std::sync::OnceLock::new();
+    ENC.get_or_init(|| {
+        let mut spec = data_encoding::Specification::new();
+        spec.symbols.push_str(TOKEN_SYMBOLS);
+        spec.encoding().expect("32 distinct symbols is a valid base32 alphabet")
+    })
+}
+
+/// Fold what a person typed onto the alphabet: drop the separators
+/// they add while reading it out, then resolve every shape that has
+/// only one possible meaning.
+///
+/// Uppercasing FIRST is safe here precisely because `I` is not a
+/// symbol (see `TOKEN_SYMBOLS`): `l` and `L` mean the same thing, so
+/// no information is lost on the way in.
+fn token_fold(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != ':' && *c != '_')
+        .map(|c| c.to_ascii_uppercase())
+        .map(|c| match c {
+            'O' | '0' => 'O',        // the round one
+            'I' | '1' | 'L' => 'L',  // the tall one: i I l L 1 are one symbol
+            '8' => 'B',
+            other => other,
+        })
+        .collect()
+}
+
 /// The pairing token as a human passes it around: 26 characters of
-/// base32 with visual error correction (`data_encoding`'s
-/// `BASE32_NOPAD_VISUAL`).
+/// base32 over [`TOKEN_SYMBOLS`].
 ///
 /// This is the form the listener prints and a person retypes -- into
 /// `--token`, or into the browser's re-pair field when a saved
 /// connection has lost its enrollment. Hex was 32 characters and had
-/// no notion of the mistakes people actually make reading a code off a
-/// terminal, so the alphabet here corrects the classic confusions on
-/// the way in: `0`/`O`, `1`/`l`/`I`, `8`/`B`. It is NOT the wire
-/// encoding -- inside a connection string the token is 16 raw bytes
-/// (see `WireV2`), and nothing about this affects the protocol.
+/// no notion of the mistakes people make reading a code off a
+/// terminal. It is NOT the wire encoding: inside a connection string
+/// the token is 16 raw bytes (see `WireV2`), and nothing here touches
+/// the protocol.
 pub fn token_encode(token: &[u8; TOKEN_LEN]) -> String {
-    data_encoding::BASE32_NOPAD_VISUAL.encode(token)
+    token_encoding().encode(token)
 }
 
-/// The inverse, tolerant of how a person types: separators they add
-/// while reading it out (spaces, `-`, `:`) are dropped, and case is
-/// accepted either way.
-///
-/// One subtlety, and it is why the case fold is not a blanket
-/// `to_uppercase`: the visual table maps LOWERCASE `l` to `I`, while
-/// UPPERCASE `L` is a symbol in its own right (value 11). So `l` is
-/// resolved first and the rest folded after, or a typed `l` would
-/// silently become a different byte.
+/// The inverse, forgiving of case, of separators, and of every
+/// confusable shape the alphabet was chosen to make unambiguous.
 pub fn token_decode(s: &str) -> Result<[u8; TOKEN_LEN], String> {
-    let cleaned: String = s
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-' && *c != ':')
-        .map(|c| if c == 'l' { 'I' } else { c.to_ascii_uppercase() })
-        .collect();
-    let bytes = data_encoding::BASE32_NOPAD_VISUAL
-        .decode(cleaned.as_bytes())
+    let folded = token_fold(s);
+    let bytes = token_encoding()
+        .decode(folded.as_bytes())
         .map_err(|e| format!("not a pairing token: {e}"))?;
     if bytes.len() != TOKEN_LEN {
         return Err(format!(
@@ -534,77 +568,41 @@ mod tests {
     }
 
     #[test]
-    fn the_confusable_characters_are_corrected() {
-        let token = [0u8; TOKEN_LEN]; // encodes as all 'A's -- no confusables
-        let text = token_encode(&token);
-        // Take a token whose text HAS the confusable symbols, then type
-        // it the way a person would get it wrong.
-        let real = [
+    fn every_confusable_shape_folds_to_one_symbol() {
+        // A token whose text uses the symbols people misread.
+        let token = [
             0x7f, 0xff, 0x0e, 0x88, 0x21, 0x00, 0x44, 0x99, 0x2a, 0xbc, 0xde, 0xf0, 0x13, 0x57,
             0x9b, 0xdf,
         ];
-        let good = token_encode(&real);
-        let typed = good
-            .replace('O', "0")
-            .replace('I', "1")
-            .replace('B', "8");
-        assert_eq!(token_decode(&typed), Ok(real), "typed {typed} for {good}");
-        // ...and a lowercase `l` means `I`, while an uppercase `L` does
-        // not (it is symbol 11): the reason the fold is not blanket.
-        assert_eq!(token_decode(&good.replace('I', "l")), Ok(real));
-        let _ = text;
-    }
-
-    #[test]
-    fn separators_are_forgiven_but_length_is_not() {
-        let token = [9u8; TOKEN_LEN];
         let text = token_encode(&token);
-        let spaced = format!("{} {} {}", &text[..8], &text[8..16], &text[16..]);
-        assert_eq!(token_decode(&spaced), Ok(token));
-        assert_eq!(token_decode(&text.replace("", "-")), Ok(token));
-        assert!(token_decode(&text[..20]).is_err(), "a short token must not decode");
-        assert!(token_decode("").is_err());
-        assert!(token_decode("not a token at all!!").is_err());
-    }
-
-    /// The one place this encoding bites, pinned rather than
-    /// discovered later: `l` and `L` are NOT the same symbol.
-    ///
-    /// The visual table reads lowercase `l` as `I` (the misreading it
-    /// exists to correct), while uppercase `L` is symbol 11 in its own
-    /// right. So lowercase input round-trips only for tokens whose
-    /// text contains no `L` -- blanket-lowercasing one that does
-    /// changes it. The listener prints uppercase and the browser's
-    /// field asks for uppercase; this test is here so nobody "fixes"
-    /// the fold without knowing what it costs.
-    #[test]
-    fn lowercase_l_means_i_and_uppercase_l_does_not() {
-        // A token whose encoding contains an 'L'.
-        let mut with_l = None;
-        for n in 0u8..64 {
-            let t = [n; TOKEN_LEN];
-            if token_encode(&t).contains('L') {
-                with_l = Some(t);
-                break;
-            }
+        assert!(!text.contains('I'), "`I` is not in this alphabet: {text}");
+        for typed in [
+            text.to_lowercase(),                              // typed in lowercase
+            text.replace('O', "0").replace('B', "8"),         // round one, fat one
+            text.replace('L', "1"),                           // tall one, as a digit
+            text.replace('L', "l").to_lowercase(),            // tall one, as a letter
+            text.replace('L', "I"),                           // tall one, as capital i
+            text.replace('L', "i"),                           // tall one, as small i
+            format!("{} {}", &text[..13], &text[13..]),       // read out in halves
+            text.replace("", "-"),                            // hyphenated
+        ] {
+            assert_eq!(token_decode(&typed), Ok(token), "typed {typed} for {text}");
         }
-        let token = with_l.expect("some byte pattern encodes with an L");
-        let text = token_encode(&token);
-        assert_eq!(token_decode(&text), Ok(token), "as printed");
-        assert_ne!(
-            token_decode(&text.to_lowercase()),
-            Ok(token),
-            "lowercasing an L must NOT silently survive: {text}"
-        );
+    }
 
-        // A token WITHOUT an 'L' is case-insensitive, which is what
-        // makes the caveat narrow rather than general.
-        let plain = [9u8; TOKEN_LEN];
-        assert!(!token_encode(&plain).contains('L'));
-        assert_eq!(token_decode(&token_encode(&plain).to_lowercase()), Ok(plain));
-
-        // And the misreading the table is FOR still works.
-        assert_eq!(token_decode(&text.replace('I', "l")), Ok(token));
+    /// The property the alphabet exists for: case folding is
+    /// UNCONDITIONAL. The previous encoding folded lowercase `l` to
+    /// `I` while uppercase `L` stayed itself, so lowercasing a token
+    /// could silently change it -- possible only because both letters
+    /// were symbols. Here one of them is not.
+    #[test]
+    fn lowercasing_any_token_is_lossless() {
+        for n in 0u8..64 {
+            let token = [n; TOKEN_LEN];
+            let text = token_encode(&token);
+            assert_eq!(token_decode(&text.to_lowercase()), Ok(token), "{text}");
+            assert_eq!(token_decode(&text.to_uppercase()), Ok(token), "{text}");
+        }
     }
 
     #[test]

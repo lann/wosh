@@ -391,35 +391,38 @@ export function tokenedConnstring(idHex, relay, tokenBytes) {
   return v3Connstring(idHex, relay, tokenBytes);
 }
 
-/** The base32 alphabet the token's human encoding uses. */
-const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+/**
+ * The alphabet a pairing token is written in: RFC 4648 base32 with `I`
+ * replaced by `9`.
+ *
+ * CONTRACT: `TOKEN_SYMBOLS` in connstring/src/lib.rs. That one
+ * substitution is what makes the encoding safe to type: in the
+ * standard alphabet both `I` and `L` are symbols, so the cluster a
+ * reader cannot tell apart -- `i I l L 1` -- spans two values and any
+ * fold has to corrupt one of them. With `I` gone the cluster collapses
+ * to `L`, case folding is unconditional, and `9` shares a shape only
+ * with `g`.
+ */
+const TOKEN_ALPHABET = "ABCDEFGH9JKLMNOPQRSTUVWXYZ234567";
 
 /**
  * A pairing token as a person retypes it -> its 16 bytes, or null.
- *
- * CONTRACT: `token_encode`/`token_decode` in connstring/src/lib.rs,
- * which is `data_encoding`'s BASE32_NOPAD_VISUAL -- base32 with visual
- * error correction, so the confusions people actually make reading a
- * code off a terminal are corrected rather than rejected: `0` for `O`,
- * `1` or lowercase `l` for `I`, `8` for `B`. 26 characters for 16
- * bytes.
- *
- * Note the case fold is not a blanket uppercase: lowercase `l` means
- * `I`, while uppercase `L` is a symbol in its own right (value 11), so
- * `l` is resolved BEFORE folding, or a typed `l` would quietly become a
- * different byte. Same order as the Rust side, for the same reason.
+ * Mirrors `token_decode` in connstring/src/lib.rs, fold included:
+ * separators dropped, case folded unconditionally, and every shape
+ * with one possible meaning resolved (`0`->`O`, `i I l 1`->`L`,
+ * `8`->`B`).
  */
 export function decodeToken(raw) {
-  const cleaned = [...String(raw ?? "")]
-    .filter((c) => !/[\s:-]/.test(c))
-    .map((c) => (c === "l" ? "I" : c.toUpperCase()))
-    .map((c) => ({ 0: "O", 1: "I", 8: "B" })[c] ?? c)
+  const folded = [...String(raw ?? "")]
+    .filter((c) => !/[\s:_-]/.test(c))
+    .map((c) => c.toUpperCase())
+    .map((c) => (c === "0" ? "O" : c === "1" || c === "I" ? "L" : c === "8" ? "B" : c))
     .join("");
-  if (cleaned.length !== 26) return null;
+  if (folded.length !== 26) return null;
   const out = [];
   let acc = 0;
   let bits = 0;
-  for (const c of cleaned) {
+  for (const c of folded) {
     const v = TOKEN_ALPHABET.indexOf(c);
     if (v < 0) return null;
     acc = (acc << 5) | v;
@@ -434,6 +437,7 @@ export function decodeToken(raw) {
   if (out.length !== 16 || (acc & ((1 << bits) - 1)) !== 0) return null;
   return out;
 }
+
 
 /**
  * MRU list of `{ id, relay, user, at }`, each optionally carrying

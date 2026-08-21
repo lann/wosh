@@ -92,7 +92,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function currentToken(after) {
   for (let i = 0; i < 100; i++) {
     const log = existsSync(LOG) ? readFileSync(LOG, "utf8") : "";
-    const all = [...log.matchAll(/pairing token required: ([A-Z2-7]{26})/g)].map((m) => m[1]);
+    const all = [...log.matchAll(/pairing token required: ([A-Z2-79]{26})/g)].map((m) => m[1]);
     const last = all[all.length - 1];
     if (last && last !== after) return last;
     await sleep(200);
