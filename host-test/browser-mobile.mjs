@@ -237,7 +237,16 @@ export async function loadClient() {
   Session.prototype.linkState = async () => "attached";
   Session.prototype.suspend = async () => {};
   Session.prototype.wake = async () => {};
-  Session.prototype.probe = async () => ({ output: new Uint8Array(), exitStatus: 0 });
+  // Echo the command back: the install leg pins the SHAPE of what the
+  // page asks a machine to run, which is the part a stub can check and
+  // the part that has to be right.
+  Session.prototype.probe = async (cmd) => {
+    globalThis.__probed = cmd;
+    return {
+      output: new TextEncoder().encode(globalThis.__probeReply ?? "WOSH_ADDED\\n"),
+      exitStatus: 0,
+    };
+  };
   Session.connect = async () => new Session();
   return {
     Session,
@@ -1376,6 +1385,99 @@ try {
       await page.reload({ waitUntil: "load" });
       await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
     }
+  }
+
+  // 25f. Installing the key on the connected machine: the button is
+  //      dead without a session, and with one it asks the machine to
+  //      run ssh-copy-id's command rather than typing anything into the
+  //      terminal. Each clause of that command is pinned because each
+  //      one is a bug ssh-copy-id already paid for: umask 077 (sshd
+  //      ignores a group-writable authorized_keys, silently), the
+  //      tail -1c guard (a file with no trailing newline gets its last
+  //      key concatenated with the new one), restorecon (SELinux), and
+  //      the already-there check.
+  {
+    // With no session, the affordance exists but is disabled -- that is
+    // how you learn it is there at all. (The key card renders its
+    // buttons only once the line is shown, so ask for it first.)
+    await page.click("#home .topline button:has-text('settings')");
+    await page.click(`#prefs button:has-text("show this browser's public key")`);
+    await page.waitForSelector("#prefs .key code", { timeout: 5_000 });
+    const idle = await page.evaluate(() => {
+      const b = [...document.querySelectorAll("#prefs button")]
+        .find((x) => x.textContent.trim() === "install on this machine");
+      return { present: !!b, disabled: b?.disabled ?? null };
+    });
+    if (!ok(idle.present && idle.disabled === true,
+            `without a session the install button must be present and disabled: ${JSON.stringify(idle)}`)) {
+      // fall through; the live half is still worth running
+    }
+
+    await page.evaluate(() => {
+      localStorage.setItem("wosh.history.v1", JSON.stringify([{
+        id: "c0ffee".padEnd(64, "0"),
+        relay: "https://use1-1.relay.n0.iroh.link",
+        user: "lann", name: "ivy", at: new Date().toISOString(),
+      }]));
+      localStorage.setItem("wosh.hostkeys.v1", JSON.stringify({
+        ["c0ffee".padEnd(64, "0")]: { fp: "SHA256:synthetic-fingerprint-for-the-gate", at: "2026-08-01" },
+      }));
+    });
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+    await page.click("#home .histrow");
+    await page.waitForFunction(() => document.body.classList.contains("live"), null, { timeout: 15_000 });
+    await page.click("#sessions-btn");
+    await page.click("#sheet button:text-is('settings & keys')");
+    await page.waitForSelector("#prefs .backrow", { timeout: 5_000 });
+    await page.click(`#prefs button:has-text("show this browser's public key")`);
+    await page.waitForSelector("#prefs .key code", { timeout: 5_000 });
+    const line = (await page.locator("#prefs .key code").textContent()).trim();
+
+    await page.click("#prefs button:text-is('install on this machine')");
+    await page.waitForSelector("#sheet[data-ask='install'] input", { timeout: 5_000 });
+    // The default comment is offered as a PLACEHOLDER, so leaving the
+    // field alone keeps it -- and typing replaces it.
+    const placeholder = await page.locator("#sheet input").getAttribute("placeholder");
+    await page.fill("#sheet input", "my phone");
+    await page.click("#sheet button:text-is('install')");
+    await page.waitForFunction(() => globalThis.__probed, null, { timeout: 5_000 });
+    const cmd = await page.evaluate(() => globalThis.__probed);
+    const blob = line.split(/\s+/)[1];
+    const said = await page.locator("#prefs .key .sub").textContent();
+
+    const clauses = [
+      ["umask 077", /umask 077/],
+      ["mkdir -p .ssh", /mkdir -p \.ssh/],
+      ["the already-there check", new RegExp(`grep -qsF '${blob.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'`)],
+      ["the missing-newline guard", /tail -1c \.ssh\/authorized_keys/],
+      ["an append, not a clobber", />> \.ssh\/authorized_keys/],
+      ["restorecon", /restorecon/],
+    ];
+    const missing = clauses.filter(([, re]) => !re.test(cmd)).map(([name]) => name);
+    if (ok(placeholder === "wosh-browser", `the default comment must be the placeholder, got ${placeholder}`) &&
+        ok(missing.length === 0, `the install command is missing: ${missing.join(", ")}\n  ${cmd}`) &&
+        ok(cmd.includes("'ssh-ed25519 " + blob + " my phone'"), // spaces survive; quotes never would
+           `the typed comment did not reach the line: ${cmd}`) &&
+        ok(!/\r|\n/.test(cmd), "the command must be one line: a newline in it would append a second key") &&
+        ok(/installed on ivy/.test(said ?? ""), `the outcome was not reported: ${said}`)) {
+      console.log("[25f] install asks the machine to run ssh-copy-id's command, with the comment given");
+    }
+
+    // ...and a key already in the file is reported, not appended twice.
+    await page.evaluate(() => { globalThis.__probeReply = "WOSH_ALREADY\n"; });
+    await page.click("#prefs button:text-is('install on this machine')");
+    await page.waitForSelector("#sheet[data-ask='install'] input", { timeout: 5_000 });
+    await page.click("#sheet button:text-is('install')");
+    await page.waitForFunction(
+      () => /already/.test(document.querySelector("#prefs .key .sub")?.textContent ?? ""),
+      null, { timeout: 5_000 },
+    ).then(() => console.log("[25g] a key already in the file is reported, not installed again"),
+           () => fail("an already-present key was not reported as such"));
+
+    await page.evaluate(() => localStorage.clear());
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
   }
 
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it

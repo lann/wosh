@@ -52,6 +52,7 @@ import {
   detectCommand,
   parseDetect,
 } from "./sessions.mjs";
+import { cleanComment, installCommand } from "./authorized-keys.mjs";
 import { scanQr } from "./qr.mjs";
 import * as bufferStore from "./buffer-store.mjs";
 
@@ -691,6 +692,72 @@ export async function initBoot(chrome, { onConnect }) {
   /// Copy-to-clipboard with inline feedback: these lines exist to
   /// leave the device, and long-press selection of an 80-character
   /// token is a phone's worst input mode.
+  /// The button, and the sheet that explains what it will try.
+  const installBtn = (line, status) => {
+    const live = document.body.classList.contains("live");
+    const b = el("button", {
+      className: "small",
+      textContent: "install on this machine",
+      disabled: !live,
+      title: live
+        ? "append this key to ~/.ssh/authorized_keys on the connected machine"
+        : "connect to a machine first: this installs the key on the one you are logged into",
+    });
+    b.addEventListener("click", async () => {
+      const [kind, blob] = line.split(/\s+/);
+      const dflt = line.split(/\s+/).slice(2).join(" ") || "wosh";
+      const label = liveLabel();
+      const answer = await showSheet("install", ({ append, done }) => {
+        append(el("h2", { textContent: `install this key on ${label}` }));
+        append(el("p", {
+          textContent: "wosh will append it to ~/.ssh/authorized_keys there, over a second " +
+            "channel — nothing is typed into your shell. It creates ~/.ssh if it has to, " +
+            "keeps the permissions sshd insists on, and does nothing if this key is " +
+            "already in the file.",
+        }));
+        append(el("div", { className: "fieldlabel", textContent: "comment (how it will be labelled in the file)" }));
+        const field = el("input", { type: "text", placeholder: dflt });
+        field.style.fontFamily = "var(--sans)";
+        append(field);
+        const go = el("button", { className: "primary", textContent: "install" });
+        go.addEventListener("click", () => done({ comment: cleanComment(field.value) || dflt }));
+        const no = el("button", { className: "quiet", textContent: "cancel" });
+        no.addEventListener("click", () => done(null));
+        append(el("div", { className: "stack" }, go, no));
+        setTimeout(() => field.focus(), 0);
+      });
+      if (!answer) return;
+      status.textContent = `installing on ${label}…`;
+      const result = await probeSession(installCommand(`${kind} ${blob} ${answer.comment}`));
+      if (!result) {
+        status.textContent = "could not ask the machine: the session went away, or it refused a second channel";
+        return;
+      }
+      if (result.text.includes("WOSH_ADDED")) {
+        status.textContent = `installed on ${label} as “${answer.comment}”`;
+      } else if (result.text.includes("WOSH_ALREADY")) {
+        status.textContent = `already in ~/.ssh/authorized_keys on ${label}`;
+      } else {
+        // The remote's own words: this is where a read-only home, a
+        // full disk or a shell that is not POSIX actually explains
+        // itself.
+        const said = result.text.trim().split("\n").slice(-2).join(" ").slice(0, 200);
+        status.textContent = `install failed on ${label}${result.code != null ? ` (exit ${result.code})` : ""}` +
+          (said ? `: ${said}` : "");
+      }
+    });
+    return b;
+  };
+
+  /// What to call the machine a live session is on.
+  const liveLabel = () => {
+    const details = lastConnected ? connstringDetails(lastConnected.connstring) : null;
+    const entry = details
+      ? loadHistory().find((e) => e.id === details.id && e.user === lastConnected.user)
+      : null;
+    return entry ? labelOf(entry) : (details ? `${details.id.slice(0, 8)}…` : "this machine");
+  };
+
   const copyBtn = (text) => {
     const b = el("button", { className: "small", textContent: "copy" });
     b.addEventListener("click", async () => {
@@ -1248,9 +1315,11 @@ export async function initBoot(chrome, { onConnect }) {
       keyRow.textContent = "loading…";
       try {
         const line = await identity();
+        const status = el("div", { className: "sub" });
         keyRow.replaceChildren(
           el("code", { textContent: line }),
-          el("div", { className: "row" }, copyBtn(line)),
+          el("div", { className: "row" }, copyBtn(line), installBtn(line, status)),
+          status,
         );
       } catch (e) {
         keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
@@ -1299,7 +1368,8 @@ export async function initBoot(chrome, { onConnect }) {
             status.textContent = `forget failed: ${e.message ?? e}`;
           }
         });
-        const actions = el("div", { className: "row" }, copyBtn(line), forgetBtn, help.btn);
+        const actions = el("div", { className: "row" },
+          copyBtn(line), installBtn(line, status), forgetBtn, help.btn);
         passkeyCard.append(
           el("p", { textContent: "enrolled — add this line to ~/.ssh/authorized_keys on the target host:" }),
           el("code", { textContent: line }),
