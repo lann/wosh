@@ -631,6 +631,10 @@ export async function initBoot(chrome, { onConnect }) {
         append: (...nodes) => sheet.append(...nodes),
         done: (value) => settleSheet(value),
       });
+      // A sheet with no heading has nothing occupying the corner the
+      // close button floats in, so its first control would sit under
+      // the x (the session sheet's `detach` did). Reserve the row.
+      sheet.classList.toggle("untitled", !sheet.querySelector("h2"));
       if (!sheet.open) sheet.showModal();
     });
   };

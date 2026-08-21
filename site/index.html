@@ -265,12 +265,30 @@
        prompt sheet has no 53px to spare. --bar-h is measured in
        boot.mjs, because the bar's height follows its font. */
     #sheet[data-ask="session"] { margin-top: var(--bar-h, 0px); }
+    /* The close button floats over the sheet's top-right corner, so
+       whatever the sheet puts there has to stay clear of it. Two rules
+       keep that true without every sheet having to know: a title never
+       runs under it, and a sheet with NO title reserves the row (added
+       by boot.mjs, which knows whether the build appended one). The
+       session sheet is the one with no title -- without the reservation
+       its first control, `detach`, lands directly beneath the x. */
     #sheet .close-x {
       position: absolute; top: 8px; right: 8px;
       width: 40px; height: 40px; min-height: 40px;
       background: none; border: none; color: var(--dim);
       font-size: 20px; line-height: 1; padding: 0;
     }
+    /* A float, not per-element padding: it shortens the line boxes of
+       every block that follows it, so ALL text near the corner steps
+       aside (a title, and the paragraph under it) without each one
+       having to opt in. Block-level children below it are unaffected. */
+    #sheet::before { content: ""; float: right; width: 46px; height: 44px; }
+    /* ...but a flex container is its own formatting context and does
+       not flow around floats, so a sheet whose first child is a row of
+       controls still needs the row reserved. boot.mjs adds this when a
+       sheet has no heading -- the session sheet, whose `detach` button
+       landed straight under the x. */
+    #sheet.untitled { padding-top: calc(52px + env(safe-area-inset-top)); }
     #sheet { position: relative; }
     #sheet h2 { font: 600 17px var(--sans); color: var(--bright); margin: 0 0 8px; }
     #sheet h2.warn { color: var(--danger); }
