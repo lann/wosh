@@ -1325,16 +1325,12 @@ try {
   }
   await page.click("#prefs .backrow .back");
 
-  // 25e. Settings is reachable FROM a live session, and can put this
-  //      browser's key onto that session's command line.
-  //
-  //      Installing a key on the machine you are already logged into is
-  //      the case this path exists for; the alternative is copying a
-  //      90-character line out of a settings screen and pasting it into
-  //      a terminal on a phone. Two properties matter and are both
-  //      asserted: the line is TYPED, not run (no trailing newline, so
-  //      it waits on the prompt to be read), and answering leaves the
-  //      terminal on screen rather than the settings page.
+  // 25e. Settings is reachable FROM a live session -- without ending
+  //      it, and without a detour through the connection list. That is
+  //      the one moment it used to be unreachable, and the moment a key
+  //      line is most wanted: you are logged into the machine you want
+  //      to install it on. Leaving goes back to the session, not to the
+  //      connection list, so the way out is where you came from.
   {
     await page.evaluate(() => {
       localStorage.setItem("wosh.history.v1", JSON.stringify([{
@@ -1363,20 +1359,19 @@ try {
         await page.click(`#prefs button:has-text("show this browser's public key")`);
         await page.waitForSelector("#prefs .key code", { timeout: 5_000 });
         const line = (await page.locator("#prefs .key code").textContent()).trim();
-        await page.click("#prefs button:text-is('type into the session')");
+        // Back out: the session is still there, and it is what you see.
+        await page.click("#prefs .backrow .back");
         await page.waitForTimeout(200);
         const after = await page.evaluate(() => ({
-          typed: globalThis.__typedAtSession ?? "",
           chromeHidden: document.getElementById("chrome").hidden,
+          live: document.body.classList.contains("live"),
         }));
-        if (ok(after.typed.includes(line), `the key never reached the session: ${JSON.stringify(after.typed)}`) &&
-            ok(!/[\r\n]$/.test(after.typed),
-               "the command was submitted with a newline; it must WAIT on the prompt") &&
-            ok(after.chromeHidden, "typing into the session left the settings page covering it")) {
-          console.log("[25e] settings opens from a live session and types the key onto its prompt, unrun");
+        if (ok(line.startsWith("ssh-ed25519 "), `the key did not render inside a live session: ${line}`) &&
+            ok(after.live, "the session did not survive a trip through settings") &&
+            ok(after.chromeHidden, "leaving settings left it covering the session it came from")) {
+          console.log("[25e] settings opens from a live session, shows the key, and gives the session back");
         }
       }
-      // Back to a sessionless page for the legs below.
       await page.evaluate(() => localStorage.clear());
       await page.reload({ waitUntil: "load" });
       await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });

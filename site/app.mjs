@@ -560,31 +560,6 @@ export async function sendDetachKeys(keys, graceMs = 2000) {
 }
 
 /**
- * Type `text` into the live session, exactly as if it had been typed on
- * the keyboard. No trailing newline: whatever this puts on the command
- * line is left for the person to read and run (or edit, or clear), so
- * nothing this page composes ever executes on its own.
- *
- * What it is for: installing this browser's key on the machine you are
- * already logged into. The alternative is copying a 90-character line
- * out of a settings screen and pasting it into a terminal on a phone,
- * which is the kind of thing people give up on halfway.
- *
- * Returns whether anything was typed.
- */
-export async function typeIntoSession(text) {
-  const s = currentSession;
-  if (!s || typeof s.writeInput !== "function" || !text) return false;
-  try {
-    await s.writeInput(new TextEncoder().encode(text));
-    wakeNow();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * This browser's SSH identity as an `authorized_keys` line. The private
  * half is a non-extractable WebCrypto key: the component can sign with
  * it, nothing can export it. It persists -- the pair lives in IndexedDB

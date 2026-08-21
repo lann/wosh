@@ -43,7 +43,6 @@ import {
   note,
   probeSession,
   sendDetachKeys,
-  typeIntoSession,
 } from "./app.mjs";
 import {
   PRESETS,
@@ -692,26 +691,6 @@ export async function initBoot(chrome, { onConnect }) {
   /// Copy-to-clipboard with inline feedback: these lines exist to
   /// leave the device, and long-press selection of an 80-character
   /// token is a phone's worst input mode.
-  /// Put a key line on the live session's command line -- the reason
-  /// settings is reachable from inside a session at all. Typed, not
-  /// run: the line is left on the prompt for the person to read and
-  /// press Enter on themselves.
-  const typeBtn = (line) => {
-    const b = el("button", { className: "small", textContent: "type into the session" });
-    b.addEventListener("click", async () => {
-      const cmd = `mkdir -p ~/.ssh && echo '${line}' >> ~/.ssh/authorized_keys`;
-      if (await typeIntoSession(cmd)) {
-        // Straight back to the terminal: the command is sitting on the
-        // prompt unrun, and it is the thing to look at now.
-        hideChrome();
-      } else {
-        b.textContent = "no live session";
-        setTimeout(() => (b.textContent = "type into the session"), 1500);
-      }
-    });
-    return b;
-  };
-
   const copyBtn = (text) => {
     const b = el("button", { className: "small", textContent: "copy" });
     b.addEventListener("click", async () => {
@@ -1269,11 +1248,10 @@ export async function initBoot(chrome, { onConnect }) {
       keyRow.textContent = "loading…";
       try {
         const line = await identity();
-        const row = el("div", { className: "row" }, copyBtn(line));
-        // Only with a session to type into; an authorized_keys line is
-        // most useful on the machine you are already inside.
-        if (document.body.classList.contains("live")) row.append(typeBtn(line));
-        keyRow.replaceChildren(el("code", { textContent: line }), row);
+        keyRow.replaceChildren(
+          el("code", { textContent: line }),
+          el("div", { className: "row" }, copyBtn(line)),
+        );
       } catch (e) {
         keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
       }
@@ -1321,9 +1299,7 @@ export async function initBoot(chrome, { onConnect }) {
             status.textContent = `forget failed: ${e.message ?? e}`;
           }
         });
-        const actions = el("div", { className: "row" }, copyBtn(line));
-        if (document.body.classList.contains("live")) actions.append(typeBtn(line));
-        actions.append(forgetBtn, help.btn);
+        const actions = el("div", { className: "row" }, copyBtn(line), forgetBtn, help.btn);
         passkeyCard.append(
           el("p", { textContent: "enrolled — add this line to ~/.ssh/authorized_keys on the target host:" }),
           el("code", { textContent: line }),
