@@ -43,6 +43,7 @@ import {
   note,
   probeSession,
   sendDetachKeys,
+  typeIntoSession,
 } from "./app.mjs";
 import {
   PRESETS,
@@ -691,6 +692,26 @@ export async function initBoot(chrome, { onConnect }) {
   /// Copy-to-clipboard with inline feedback: these lines exist to
   /// leave the device, and long-press selection of an 80-character
   /// token is a phone's worst input mode.
+  /// Put a key line on the live session's command line -- the reason
+  /// settings is reachable from inside a session at all. Typed, not
+  /// run: the line is left on the prompt for the person to read and
+  /// press Enter on themselves.
+  const typeBtn = (line) => {
+    const b = el("button", { className: "small", textContent: "type into the session" });
+    b.addEventListener("click", async () => {
+      const cmd = `mkdir -p ~/.ssh && echo '${line}' >> ~/.ssh/authorized_keys`;
+      if (await typeIntoSession(cmd)) {
+        // Straight back to the terminal: the command is sitting on the
+        // prompt unrun, and it is the thing to look at now.
+        hideChrome();
+      } else {
+        b.textContent = "no live session";
+        setTimeout(() => (b.textContent = "type into the session"), 1500);
+      }
+    });
+    return b;
+  };
+
   const copyBtn = (text) => {
     const b = el("button", { className: "small", textContent: "copy" });
     b.addEventListener("click", async () => {
@@ -873,6 +894,7 @@ export async function initBoot(chrome, { onConnect }) {
     const settingsLink = el("button", { className: "applink", textContent: "settings" });
     settingsLink.addEventListener("click", () => {
       cancelResume();
+      prefsReturn = "home";
       showChrome("prefs");
     });
     homeEl.append(el("div", { className: "pad" },
@@ -1180,12 +1202,23 @@ export async function initBoot(chrome, { onConnect }) {
 
   // --- #prefs ---------------------------------------------------------------
 
+  /// Where settings came from, so leaving it goes back there rather
+  /// than always to the connection list: opened from a live session,
+  /// the way out is that session.
+  let prefsReturn = "home";
+
   function renderPrefs() {
     prefsEl.replaceChildren();
+    const live = document.body.classList.contains("live");
+    const toSession = live && prefsReturn === "session";
     const back = el("button", { className: "back", textContent: "‹" });
-    back.setAttribute("aria-label", "back");
-    back.addEventListener("click", () => showChrome("home"));
-    prefsEl.append(el("div", { className: "backrow" }, back, el("h1", { textContent: "settings" })));
+    back.setAttribute("aria-label", toSession ? "back to the session" : "back");
+    back.addEventListener("click", () => {
+      if (toSession) return hideChrome();
+      showChrome("home");
+    });
+    prefsEl.append(el("div", { className: "backrow" }, back,
+      el("h1", { textContent: toSession ? "settings & keys" : "settings" })));
 
     const prefRow = (id, checked, title, desc, onChange) => {
       const box = el("input", { type: "checkbox", id, checked });
@@ -1236,10 +1269,11 @@ export async function initBoot(chrome, { onConnect }) {
       keyRow.textContent = "loading…";
       try {
         const line = await identity();
-        keyRow.replaceChildren(
-          el("code", { textContent: line }),
-          el("div", { className: "row" }, copyBtn(line)),
-        );
+        const row = el("div", { className: "row" }, copyBtn(line));
+        // Only with a session to type into; an authorized_keys line is
+        // most useful on the machine you are already inside.
+        if (document.body.classList.contains("live")) row.append(typeBtn(line));
+        keyRow.replaceChildren(el("code", { textContent: line }), row);
       } catch (e) {
         keyRow.textContent = `could not obtain an identity: ${e.message ?? e}`;
       }
@@ -1287,10 +1321,13 @@ export async function initBoot(chrome, { onConnect }) {
             status.textContent = `forget failed: ${e.message ?? e}`;
           }
         });
+        const actions = el("div", { className: "row" }, copyBtn(line));
+        if (document.body.classList.contains("live")) actions.append(typeBtn(line));
+        actions.append(forgetBtn, help.btn);
         passkeyCard.append(
           el("p", { textContent: "enrolled — add this line to ~/.ssh/authorized_keys on the target host:" }),
           el("code", { textContent: line }),
-          el("div", { className: "row" }, copyBtn(line), forgetBtn, help.btn),
+          actions,
           help.body,
           status,
         );
@@ -1746,9 +1783,15 @@ export async function initBoot(chrome, { onConnect }) {
         textContent: m ? `detach — keep it running on ${label}` : "detach",
       });
       det.addEventListener("click", () => done({ kind: "detach" }));
+      // Settings, reachable WITHOUT ending or leaving the session --
+      // installing this browser's key on the machine you are already
+      // logged into is a thing you do from inside a session, not
+      // before one.
+      const set = el("button", { className: "quiet", textContent: "settings & keys" });
+      set.addEventListener("click", () => done({ kind: "settings" }));
       const nc = el("button", { className: "quiet", textContent: "new connection…" });
       nc.addEventListener("click", () => done({ kind: "home" }));
-      append(el("div", { className: "stack" }, det, nc));
+      append(el("div", { className: "stack" }, det, set, nc));
     });
     if (!action) return;
     if (action.kind === "attach") {
@@ -1763,6 +1806,9 @@ export async function initBoot(chrome, { onConnect }) {
       });
     } else if (action.kind === "detach") {
       politeDetach();
+    } else if (action.kind === "settings") {
+      prefsReturn = "session";
+      showChrome("prefs");
     } else if (action.kind === "home") {
       showChrome("home");
     }

@@ -212,9 +212,33 @@ const DELTIC_STUB = `
 export function setCeremonyGate(fn) { globalThis.__ceremonyGate = fn; }
 
 export async function loadClient() {
+  // A session with just enough surface for the page to go live: the
+  // legs below drive UI that only exists WITH a session (the session
+  // sheet, and settings reached from inside one). Everything typed at
+  // it is kept on globalThis so a leg can see what the page actually
+  // put on the pty.
   class Session {}
   Session.prototype.authenticateAuto = () => {};
   Session.prototype.pendingPrompts = () => {};
+  Session.prototype.status = async function () {
+    return { kind: this._ready ? "ready" : "host-key-check" };
+  };
+  Session.prototype.hostKeyFingerprint = async () => "SHA256:synthetic-fingerprint-for-the-gate";
+  Session.prototype.confirmHostKey = async function () { this._ready = true; };
+  Session.prototype.drainOutput = async () => new Uint8Array();
+  Session.prototype.exited = async () => false;
+  Session.prototype.writeInput = async (bytes) => {
+    globalThis.__typedAtSession = (globalThis.__typedAtSession ?? "") +
+      new TextDecoder().decode(bytes);
+  };
+  Session.prototype.resize = async () => {};
+  Session.prototype.detach = async () => {};
+  Session.prototype.closeKind = async () => ({ kind: "ended" });
+  Session.prototype.linkState = async () => "attached";
+  Session.prototype.suspend = async () => {};
+  Session.prototype.wake = async () => {};
+  Session.prototype.probe = async () => ({ output: new Uint8Array(), exitStatus: 0 });
+  Session.connect = async () => new Session();
   return {
     Session,
     identityOpenssh: async () => "ssh-ed25519 AAAA-synthetic-not-a-real-key wosh-browser",
@@ -1300,6 +1324,64 @@ try {
     console.log("[25d] passkey is one action row; adopt and the guidance reveal on demand");
   }
   await page.click("#prefs .backrow .back");
+
+  // 25e. Settings is reachable FROM a live session, and can put this
+  //      browser's key onto that session's command line.
+  //
+  //      Installing a key on the machine you are already logged into is
+  //      the case this path exists for; the alternative is copying a
+  //      90-character line out of a settings screen and pasting it into
+  //      a terminal on a phone. Two properties matter and are both
+  //      asserted: the line is TYPED, not run (no trailing newline, so
+  //      it waits on the prompt to be read), and answering leaves the
+  //      terminal on screen rather than the settings page.
+  {
+    await page.evaluate(() => {
+      localStorage.setItem("wosh.history.v1", JSON.stringify([{
+        id: "c0ffee".padEnd(64, "0"),
+        relay: "https://use1-1.relay.n0.iroh.link",
+        user: "lann", name: "ivy", at: new Date().toISOString(),
+      }]));
+      localStorage.setItem("wosh.hostkeys.v1", JSON.stringify({
+        ["c0ffee".padEnd(64, "0")]: { fp: "SHA256:synthetic-fingerprint-for-the-gate", at: "2026-08-01" },
+      }));
+    });
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+    await page.click("#home .histrow");
+    const live = await page.waitForFunction(() => document.body.classList.contains("live"), null,
+      { timeout: 15_000 }).then(() => true, () => false);
+    if (!ok(live, "the pinned card did not reach a live session against the stub")) {
+      // the rest of the leg cannot run
+    } else {
+      await page.click("#sessions-btn");
+      await page.waitForSelector("#sheet[data-ask='session']", { timeout: 5_000 });
+      const reachable = await page.locator("#sheet button:text-is('settings & keys')").count();
+      if (ok(reachable === 1, "a live session offers no way into settings")) {
+        await page.click("#sheet button:text-is('settings & keys')");
+        await page.waitForSelector("#prefs .backrow", { timeout: 5_000 });
+        await page.click(`#prefs button:has-text("show this browser's public key")`);
+        await page.waitForSelector("#prefs .key code", { timeout: 5_000 });
+        const line = (await page.locator("#prefs .key code").textContent()).trim();
+        await page.click("#prefs button:text-is('type into the session')");
+        await page.waitForTimeout(200);
+        const after = await page.evaluate(() => ({
+          typed: globalThis.__typedAtSession ?? "",
+          chromeHidden: document.getElementById("chrome").hidden,
+        }));
+        if (ok(after.typed.includes(line), `the key never reached the session: ${JSON.stringify(after.typed)}`) &&
+            ok(!/[\r\n]$/.test(after.typed),
+               "the command was submitted with a newline; it must WAIT on the prompt") &&
+            ok(after.chromeHidden, "typing into the session left the settings page covering it")) {
+          console.log("[25e] settings opens from a live session and types the key onto its prompt, unrun");
+        }
+      }
+      // Back to a sessionless page for the legs below.
+      await page.evaluate(() => localStorage.clear());
+      await page.reload({ waitUntil: "load" });
+      await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+    }
+  }
 
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it
   //     arrives: the sheet is top-layer, so it renders over the home
