@@ -58,6 +58,13 @@ jobs:
           tool: just,wasm-tools,cargo-binstall
 
       - name: wac
+        # binstall resolves release artifacts through api.github.com,
+        # and Actions runners share IP pools where the unauthenticated
+        # quota (60/hour) is effectively always exhausted -- the
+        # symptom is a 403 mid-resolution. The workflow token lifts the
+        # step onto the repository's own quota; no extra permissions.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo binstall --no-confirm --locked wac-cli
 
       - name: componentize-go
