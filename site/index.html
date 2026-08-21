@@ -255,6 +255,16 @@
       max-height: calc(100dvh - 40px); overflow-y: auto;
     }
     #sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
+    /* The session sheet is the one ask that is ABOUT the live session,
+       and it is opened from the bar's own button -- so it hangs from
+       under the bar rather than over it, leaving the real status strip
+       (live dot, user@host, link state) visible instead of covering it
+       and drawing a second, staler copy of the same thing. Every other
+       sheet is a question that has nothing to do with the bar and
+       keeps the full height, which short viewports need: at 340px the
+       prompt sheet has no 53px to spare. --bar-h is measured in
+       boot.mjs, because the bar's height follows its font. */
+    #sheet[data-ask="session"] { margin-top: var(--bar-h, 0px); }
     #sheet .close-x {
       position: absolute; top: 8px; right: 8px;
       width: 40px; height: 40px; min-height: 40px;
@@ -310,9 +320,6 @@
     .sessrow .name { font: 15px var(--mono); color: var(--bright); }
     .sessrow .meta { font: 12px var(--sans); color: var(--dim); }
     .sessrow .spacer { flex: 1; }
-    .sheet-title { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-    .sheet-title .who { font: 600 15px var(--mono); color: var(--bright); }
-    .sheet-title .t { margin-left: auto; font: 12px var(--sans); color: var(--dim); }
     .hedge { font: 12px var(--sans); color: #666; margin: 8px 0 0; }
     .newrow { display: flex; gap: 8px; margin-top: 10px; }
     .newrow input { flex: 1; min-height: 44px; }
