@@ -6,6 +6,10 @@ description = "The wosh pairing connection string: iroh pubkey + relay URL + opt
 publish = false
 
 [dependencies]
+# The pairing token's HUMAN encoding (see token_encode): base32 with
+# visual error correction, so a token read aloud survives O/0, I/1/l
+# and B/8 being confused.
+data-encoding = "2"
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 # The pairing proof (`pairing_proof`) and its comparison (`proof_eq`).
 # All three are already in this workspace's tree at these versions, and

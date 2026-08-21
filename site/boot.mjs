@@ -323,12 +323,35 @@ export function connstringDetails(connstring) {
 }
 
 /**
- * A v3 connection string carrying NO pairing token: version byte,
- * pubkey, relay spelled out (`Url` variant -- the well-known-index
- * encoding is an optimization this producer skips), `none` token.
- * What a card dials with; enrollment stands in for the token.
+ * The listener's machine-readable refusal code for "this listener does
+ * not recognise this device".
+ *
+ * CONTRACT: `REFUSE_PAIRING` in tunnel/src/lib.rs. It reaches this
+ * file inside wosh-client's `listener refused the connection:
+ * {reason}`, followed by `": "` and a human sentence. Match the CODE,
+ * never the sentence -- the sentence is prose and may be improved (see
+ * the `passkeyHint` comment in site/app.mjs for what matching wording
+ * cost us last time).
  */
-export function tokenlessConnstring(idHex, relay) {
+export const REFUSE_PAIRING = "pairing-required";
+
+/**
+ * The shared body of this file's v3 encoders: version byte, pubkey,
+ * relay spelled out (`Relay::Url` -- the well-known-index encoding is
+ * an optimization this producer skips), then the token option.
+ *
+ * CONTRACT: connstring/src/lib.rs's `WireV2` is the decoder these
+ * bytes must satisfy, and this is the ONE place this file has to agree
+ * with it. The postcard details that matter: an enum variant is a
+ * varint discriminant (`Relay::Url` = 0), a String is a varint length
+ * then its bytes, and an `Option` is a `0` byte for `None` or a `1`
+ * byte followed by the payload for `Some` -- where a `[u8; 16]` token
+ * is a FIXED-size array, so its 16 bytes ride raw with NO length
+ * prefix in front of them.
+ *
+ * `tokenBytes` is null for `None`, or the 16 raw token bytes.
+ */
+function v3Connstring(idHex, relay, tokenBytes) {
   const relayBytes = new TextEncoder().encode(relay);
   const bytes = [3];
   for (let i = 0; i < 64; i += 2) bytes.push(parseInt(idHex.slice(i, i + 2), 16));
@@ -341,9 +364,75 @@ export function tokenlessConnstring(idHex, relay) {
   }
   bytes.push(len);
   bytes.push(...relayBytes);
-  bytes.push(0); // token: None
+  if (tokenBytes) {
+    bytes.push(1); // token: Some
+    bytes.push(...tokenBytes); // fixed 16 bytes, no length prefix
+  } else {
+    bytes.push(0); // token: None
+  }
   return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * A v3 connection string carrying NO pairing token.
+ * What a card dials with; enrollment stands in for the token.
+ */
+export function tokenlessConnstring(idHex, relay) {
+  return v3Connstring(idHex, relay, null);
+}
+
+/**
+ * The same string WITH a pairing token. What the re-pair sheet rebuilds
+ * when a saved card's enrollment is gone: the card already knows the
+ * endpoint and the relay, so the token is the only missing piece.
+ */
+export function tokenedConnstring(idHex, relay, tokenBytes) {
+  return v3Connstring(idHex, relay, tokenBytes);
+}
+
+/** The base32 alphabet the token's human encoding uses. */
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * A pairing token as a person retypes it -> its 16 bytes, or null.
+ *
+ * CONTRACT: `token_encode`/`token_decode` in connstring/src/lib.rs,
+ * which is `data_encoding`'s BASE32_NOPAD_VISUAL -- base32 with visual
+ * error correction, so the confusions people actually make reading a
+ * code off a terminal are corrected rather than rejected: `0` for `O`,
+ * `1` or lowercase `l` for `I`, `8` for `B`. 26 characters for 16
+ * bytes.
+ *
+ * Note the case fold is not a blanket uppercase: lowercase `l` means
+ * `I`, while uppercase `L` is a symbol in its own right (value 11), so
+ * `l` is resolved BEFORE folding, or a typed `l` would quietly become a
+ * different byte. Same order as the Rust side, for the same reason.
+ */
+export function decodeToken(raw) {
+  const cleaned = [...String(raw ?? "")]
+    .filter((c) => !/[\s:-]/.test(c))
+    .map((c) => (c === "l" ? "I" : c.toUpperCase()))
+    .map((c) => ({ 0: "O", 1: "I", 8: "B" })[c] ?? c)
+    .join("");
+  if (cleaned.length !== 26) return null;
+  const out = [];
+  let acc = 0;
+  let bits = 0;
+  for (const c of cleaned) {
+    const v = TOKEN_ALPHABET.indexOf(c);
+    if (v < 0) return null;
+    acc = (acc << 5) | v;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((acc >> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  // 26 symbols carry 130 bits for a 128-bit token; the 2 left over must
+  // be zero, or this is not something the listener ever printed.
+  if (out.length !== 16 || (acc & ((1 << bits) - 1)) !== 0) return null;
+  return out;
 }
 
 /**
@@ -1767,10 +1856,113 @@ export async function initBoot(chrome, { onConnect }) {
       return { session };
     } catch (e) {
       const msg = `${e.message ?? e}`;
-      if (!quiet) idleHome(msg);
+      if (!quiet) {
+        // "This device is not paired" is the one failure with a
+        // concrete remedy the user can carry out (re-pair with what
+        // the listener printed), so it gets a sheet instead of a
+        // notice nobody can act on. Matched on the CODE only -- see
+        // REFUSE_PAIRING. Everything else still funnels through
+        // idleHome.
+        if (msg.includes(REFUSE_PAIRING)) {
+          // Not awaited: this catch still owes its caller a result,
+          // and the sheet outlives the dial. `dialing` is cleared by
+          // the finally below before any answer can arrive.
+          repairFlow(connstring, { user, method, command }, msg);
+          return { error: msg, handled: true };
+        }
+        idleHome(msg);
+      }
       return { error: msg };
     } finally {
       dialing = false;
+    }
+  }
+
+  /// The re-pair sheet: this listener no longer recognises this
+  /// browser (it ran with --no-token, or its enrollment was wiped), so
+  /// the saved card's tokenless connstring can never be accepted
+  /// again. Everything needed to fix it is printed by the listener at
+  /// startup.
+  ///
+  /// The token field comes FIRST: the card already knows the endpoint
+  /// and the relay, so a bare token is the smallest thing that can
+  /// recover this connection -- and unlike a QR it can be read out
+  /// over a call or pasted from a chat. Scanning again is the
+  /// secondary way round.
+  ///
+  /// Resolves nothing; on a successful re-pair it dials exactly as any
+  /// other dial does, so the listener enrols this device and the saved
+  /// card works unaided afterwards.
+  async function repairFlow(connstring, params, error) {
+    const details = connstringDetails(connstring);
+    const redial = await showSheet("repair", ({ append, done }) => {
+      const wrap = el("div", { className: "confirm" });
+      wrap.append(
+        el("h2", { textContent: "this machine no longer recognises this browser" }),
+        el("p", {
+          textContent: "saved connections carry no token — they rely on this browser " +
+            "having been paired. that pairing is gone (the listener was started " +
+            "without a token, or its data was wiped), so it has to be done once more.",
+        }),
+        el("div", {
+          className: "hedge",
+          textContent: "the listener prints what is needed when it starts: a wosh link, " +
+            "and the line “pairing token required: …”. either one works below.",
+        }),
+      );
+      if (details) {
+        wrap.append(el("div", {
+          className: "target",
+          textContent: `${details.id.slice(0, 16)}… via ${details.relay}`,
+        }));
+      }
+      const notice = el("div", { className: "notice", textContent: "" });
+      wrap.append(
+        el("div", { className: "fieldlabel", textContent: "pairing token, or the whole link" }),
+      );
+      const field = el("input", { type: "text", placeholder: "pairing token or wosh link" });
+      // The token is printed in uppercase, and the alphabet's one trap
+      // is that lowercase `l` means `I` while uppercase `L` is its own
+      // symbol -- so ask the keyboard for the form that was printed.
+      field.setAttribute("autocapitalize", "characters");
+      field.setAttribute("autocorrect", "off");
+      field.setAttribute("spellcheck", "false");
+      wrap.append(field, notice);
+
+      const submit = () => {
+        const raw = field.value;
+        // A link (or a pasted connstring) is self-contained: use it
+        // verbatim, endpoint and relay included -- it may well be a
+        // different listener, and that is the user's call to make.
+        const asLink = connstringFrom(raw);
+        if (asLink && connstringDetails(asLink)) return done(asLink);
+        // Otherwise: a bare pairing token, in the encoding the listener
+        // prints (see decodeToken -- it forgives case, separators and
+        // the classic misreadings).
+        const token = decodeToken(raw);
+        if (token && details) {
+          return done(tokenedConnstring(details.id, details.relay, token));
+        }
+        notice.textContent = details
+          ? "that is neither a wosh link nor a pairing token (26 characters, as the listener prints it)"
+          : "this connection has no saved endpoint to attach a token to — paste the whole link";
+      };
+      const go = el("button", { className: "primary", textContent: "re-pair and connect" });
+      go.addEventListener("click", submit);
+      const scan = el("button", { className: "quiet", textContent: "scan the QR again" });
+      scan.addEventListener("click", () => done("scan"));
+      wrap.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && e.target === field) submit();
+      });
+      wrap.append(el("div", { className: "stack" }, go, scan));
+      append(wrap);
+      setTimeout(() => field.focus(), 0);
+    });
+    if (!redial) return idleHome(error); // dismissed: home tells the story
+    if (redial === "scan") return scanFlow();
+    const outcome = await doConnect({ connstring: redial, ...params });
+    if (outcome.error && !outcome.handled) {
+      dialWithSheet(redial, params, outcome.error);
     }
   }
 
@@ -1781,6 +1973,7 @@ export async function initBoot(chrome, { onConnect }) {
     while (params) {
       const outcome = await doConnect({ connstring, ...params });
       if (outcome.session) return outcome.session;
+      if (outcome.handled) return null; // the re-pair sheet owns the retry now
       if (!outcome.error) return null; // rejected host key or cancelled: home has the story
       params = await connectSheet({ connstring, error: outcome.error, prefill: params });
     }
@@ -1795,7 +1988,7 @@ export async function initBoot(chrome, { onConnect }) {
     const cmd = command !== undefined ? command : (entry.command ?? "");
     const method = entry.method ?? "auto";
     const outcome = await doConnect({ connstring: cs, user: entry.user, method, command: cmd });
-    if (outcome.error) {
+    if (outcome.error && !outcome.handled) {
       dialWithSheet(cs, { user: entry.user, method, command: cmd }, outcome.error);
     }
   }

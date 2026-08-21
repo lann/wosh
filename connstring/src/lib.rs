@@ -126,6 +126,52 @@ pub struct ConnString {
     pub token: Option<[u8; TOKEN_LEN]>,
 }
 
+/// The pairing token as a human passes it around: 26 characters of
+/// base32 with visual error correction (`data_encoding`'s
+/// `BASE32_NOPAD_VISUAL`).
+///
+/// This is the form the listener prints and a person retypes -- into
+/// `--token`, or into the browser's re-pair field when a saved
+/// connection has lost its enrollment. Hex was 32 characters and had
+/// no notion of the mistakes people actually make reading a code off a
+/// terminal, so the alphabet here corrects the classic confusions on
+/// the way in: `0`/`O`, `1`/`l`/`I`, `8`/`B`. It is NOT the wire
+/// encoding -- inside a connection string the token is 16 raw bytes
+/// (see `WireV2`), and nothing about this affects the protocol.
+pub fn token_encode(token: &[u8; TOKEN_LEN]) -> String {
+    data_encoding::BASE32_NOPAD_VISUAL.encode(token)
+}
+
+/// The inverse, tolerant of how a person types: separators they add
+/// while reading it out (spaces, `-`, `:`) are dropped, and case is
+/// accepted either way.
+///
+/// One subtlety, and it is why the case fold is not a blanket
+/// `to_uppercase`: the visual table maps LOWERCASE `l` to `I`, while
+/// UPPERCASE `L` is a symbol in its own right (value 11). So `l` is
+/// resolved first and the rest folded after, or a typed `l` would
+/// silently become a different byte.
+pub fn token_decode(s: &str) -> Result<[u8; TOKEN_LEN], String> {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != ':')
+        .map(|c| if c == 'l' { 'I' } else { c.to_ascii_uppercase() })
+        .collect();
+    let bytes = data_encoding::BASE32_NOPAD_VISUAL
+        .decode(cleaned.as_bytes())
+        .map_err(|e| format!("not a pairing token: {e}"))?;
+    if bytes.len() != TOKEN_LEN {
+        return Err(format!(
+            "a pairing token is {} characters ({TOKEN_LEN} bytes); that decoded to {}",
+            token_encode(&[0u8; TOKEN_LEN]).len(),
+            bytes.len()
+        ));
+    }
+    let mut t = [0u8; TOKEN_LEN];
+    t.copy_from_slice(&bytes);
+    Ok(t)
+}
+
 /// The v2 wire shape. Private on purpose: the relay specialization is
 /// an encoding detail, resolved to a plain URL on the way in and out.
 #[derive(Serialize, Deserialize)]
@@ -474,6 +520,94 @@ mod tests {
     }
 
     #[test]
+    fn a_token_round_trips_through_its_human_encoding() {
+        let token = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let text = token_encode(&token);
+        // 16 bytes of base32 with no padding is 26 characters -- six
+        // fewer than hex, and the point of the change.
+        assert_eq!(text.len(), 26, "{text}");
+        assert!(text.chars().all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)), "{text}");
+        assert_eq!(token_decode(&text), Ok(token));
+    }
+
+    #[test]
+    fn the_confusable_characters_are_corrected() {
+        let token = [0u8; TOKEN_LEN]; // encodes as all 'A's -- no confusables
+        let text = token_encode(&token);
+        // Take a token whose text HAS the confusable symbols, then type
+        // it the way a person would get it wrong.
+        let real = [
+            0x7f, 0xff, 0x0e, 0x88, 0x21, 0x00, 0x44, 0x99, 0x2a, 0xbc, 0xde, 0xf0, 0x13, 0x57,
+            0x9b, 0xdf,
+        ];
+        let good = token_encode(&real);
+        let typed = good
+            .replace('O', "0")
+            .replace('I', "1")
+            .replace('B', "8");
+        assert_eq!(token_decode(&typed), Ok(real), "typed {typed} for {good}");
+        // ...and a lowercase `l` means `I`, while an uppercase `L` does
+        // not (it is symbol 11): the reason the fold is not blanket.
+        assert_eq!(token_decode(&good.replace('I', "l")), Ok(real));
+        let _ = text;
+    }
+
+    #[test]
+    fn separators_are_forgiven_but_length_is_not() {
+        let token = [9u8; TOKEN_LEN];
+        let text = token_encode(&token);
+        let spaced = format!("{} {} {}", &text[..8], &text[8..16], &text[16..]);
+        assert_eq!(token_decode(&spaced), Ok(token));
+        assert_eq!(token_decode(&text.replace("", "-")), Ok(token));
+        assert!(token_decode(&text[..20]).is_err(), "a short token must not decode");
+        assert!(token_decode("").is_err());
+        assert!(token_decode("not a token at all!!").is_err());
+    }
+
+    /// The one place this encoding bites, pinned rather than
+    /// discovered later: `l` and `L` are NOT the same symbol.
+    ///
+    /// The visual table reads lowercase `l` as `I` (the misreading it
+    /// exists to correct), while uppercase `L` is symbol 11 in its own
+    /// right. So lowercase input round-trips only for tokens whose
+    /// text contains no `L` -- blanket-lowercasing one that does
+    /// changes it. The listener prints uppercase and the browser's
+    /// field asks for uppercase; this test is here so nobody "fixes"
+    /// the fold without knowing what it costs.
+    #[test]
+    fn lowercase_l_means_i_and_uppercase_l_does_not() {
+        // A token whose encoding contains an 'L'.
+        let mut with_l = None;
+        for n in 0u8..64 {
+            let t = [n; TOKEN_LEN];
+            if token_encode(&t).contains('L') {
+                with_l = Some(t);
+                break;
+            }
+        }
+        let token = with_l.expect("some byte pattern encodes with an L");
+        let text = token_encode(&token);
+        assert_eq!(token_decode(&text), Ok(token), "as printed");
+        assert_ne!(
+            token_decode(&text.to_lowercase()),
+            Ok(token),
+            "lowercasing an L must NOT silently survive: {text}"
+        );
+
+        // A token WITHOUT an 'L' is case-insensitive, which is what
+        // makes the caveat narrow rather than general.
+        let plain = [9u8; TOKEN_LEN];
+        assert!(!token_encode(&plain).contains('L'));
+        assert_eq!(token_decode(&token_encode(&plain).to_lowercase()), Ok(plain));
+
+        // And the misreading the table is FOR still works.
+        assert_eq!(token_decode(&text.replace('I', "l")), Ok(token));
+    }
+
+    #[test]
     fn round_trips_every_well_known_relay() {
         for (i, url) in WELL_KNOWN_RELAYS.iter().enumerate() {
             let cs = ConnString {
@@ -547,6 +681,32 @@ mod tests {
         let v2 = decode_b64(&cs.encode());
         assert_eq!(v2[0], VERSION);
         assert_eq!(&v2[1..1 + PUBKEY_LEN], &sample_pubkey());
+    }
+
+    /// The BROWSER's encoder, decoded by the real thing.
+    ///
+    /// site/boot.mjs hand-rolls this format (it has no Rust, and the
+    /// page must be able to rebuild a connstring for a saved card --
+    /// tokenless for an ordinary tap, TOKENED for the re-pair sheet).
+    /// A silent disagreement there is not a parse error the user ever
+    /// sees: it is a pairing that simply never succeeds. So the JS
+    /// output is pinned here as a literal.
+    ///
+    /// The literal was produced by running boot.mjs's
+    /// `tokenedConnstring()` under node with pubkey = 00 01 .. 1f
+    /// (`sample_pubkey`) and token = 01 02 .. 10; regenerate it the
+    /// same way if the encoder ever changes.
+    #[test]
+    fn decodes_the_browsers_tokened_connstring() {
+        const FROM_BOOT_MJS: &str = "AwABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fABVodHRwOi8vMTI3LjAuMC4xOjMzNDABAQIDBAUGBwgJCgsMDQ4PEA";
+        let cs = ConnString::decode(FROM_BOOT_MJS).expect("boot.mjs's tokened connstring must decode");
+        assert_eq!(cs.pubkey, sample_pubkey());
+        assert_eq!(cs.relay_url, "http://127.0.0.1:3340");
+        let mut token = [0u8; TOKEN_LEN];
+        for (i, b) in token.iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        assert_eq!(cs.token, Some(token));
     }
 
     /// A v2 blob still decodes, and means the same connection: the
