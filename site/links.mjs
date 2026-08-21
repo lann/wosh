@@ -69,7 +69,15 @@ export const linkHandler = (dialog, { refocus = () => {}, hasSelection = () => f
   document.addEventListener(
     "pointerdown",
     (e) => {
-      pressedAt = { x: e.clientX, y: e.clientY };
+      pressedAt = {
+        x: e.clientX,
+        y: e.clientY,
+        // Whether a selection was already up when the press landed.
+        // Read from the DOCUMENT, not the terminal: the touch overlay
+        // (touch-select.mjs) selects real DOM text, which the
+        // terminal's own hasSelection() cannot see at all.
+        hadSelection: !(document.getSelection()?.isCollapsed ?? true),
+      };
     },
     true,
   );
@@ -79,6 +87,12 @@ export const linkHandler = (dialog, { refocus = () => {}, hasSelection = () => f
   // xterm clears any previous selection on mousedown, so anything left
   // at activation time belongs to THIS gesture.
   if (hasSelection()) return;
+  // ...and a tap whose job was to DISMISS a selection is not a click
+  // on whatever it happened to land on. The press itself clears the
+  // selection, so by activation time there is nothing left for the
+  // check above to see -- which is why the state is recorded at press
+  // time instead.
+  if (pressedAt?.hadSelection) return;
   // ...and the same for a drag that selected nothing (an empty region,
   // a drag that ends where it started on a different cell): travel is
   // the honest signal, independent of what the selection ended up

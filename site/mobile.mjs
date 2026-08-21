@@ -1,4 +1,4 @@
-// Mobile UX for the wosh page. Four pieces, all inert on desktop:
+// Mobile UX for the wosh page. Six pieces, all inert on desktop:
 //
 //  - visual-viewport fit: soft keyboards don't resize the window on
 //    iOS Safari (the keyboard overlays the page and `resize` never
@@ -33,8 +33,32 @@
 //    initTouchScroll drives it from pointer events, and the CSS says
 //    (touch-action) that vertical drags in the terminal are ours.
 //
+//  - touch selection: the screen is a webgl canvas under
+//    `user-select: none` and xterm's selection answers only to a
+//    mouse, so a finger cannot select terminal text at all. An
+//    invisible, selectable DOM mirror of the visible viewport is
+//    mounted inside .xterm-screen, and the platform's OWN selection
+//    machinery -- long-press word select, drag handles, the
+//    magnifier, the floating Copy toolbar -- works on that. See
+//    touch-select.mjs.
+//
+//  - long-press selection (the fallback): the overlay above owns real
+//    touch long-presses on phones now, since the platform handles
+//    those on the DOM text before xterm ever hears about them. What
+//    is left for rightClickSelectsWord is every OTHER contextmenu
+//    path -- a mouse right-click on a touchscreen device, a synthetic
+//    dispatch -- none of which pass through the overlay. Android
+//    reports a long-press as a `contextmenu` event, and xterm's own
+//    handler for it will select the word under the finger when
+//    rightClickSelectsWord is set, mirroring the text into the hidden
+//    textarea the platform's Copy toolbar acts on. Off phones the
+//    option keeps its default, so desktop right-click behavior does
+//    not change.
+//
 // No framework, no dependencies; loaded by app.mjs next to the
 // terminal it drives.
+
+import { initTouchSelect } from "./touch-select.mjs";
 
 // --- sticky one-shot modifiers (Ctrl/Alt) ------------------------------------
 
@@ -117,6 +141,8 @@ export const initMobile = (term) => {
   initViewportFit();
   initTouchScroll(term);
   initKeysBar(term);
+  initLongPressSelect(term);
+  initTouchSelect(term);
 };
 
 const initViewportFit = () => {
@@ -142,6 +168,37 @@ const initViewportFit = () => {
   };
   vv.addEventListener("resize", schedule);
   vv.addEventListener("scroll", schedule);
+};
+
+// --- long-press selection -------------------------------------------------------
+
+/**
+ * Enable long-press word selection on coarse-pointer devices -- as the
+ * FALLBACK path.
+ *
+ * The touch overlay (touch-select.mjs) owns real long-presses on a
+ * phone: the platform's selection machinery acts on its DOM text and
+ * the event never reaches xterm (the overlay stops the contextmenu
+ * from propagating, precisely so this handler does not fight it). What
+ * this option still covers is every contextmenu that does NOT
+ * originate on the overlay -- a mouse right-click on a touchscreen
+ * device, a synthetic dispatch -- where selecting the word under the
+ * pointer remains the only selection a coarse-pointer page can offer.
+ *
+ * xterm reads `rightClickSelectsWord` at event time (not just at
+ * term.open()), so setting it here after the terminal is already open
+ * still takes effect on the very next contextmenu. Upstream's handler
+ * (rightClickSelect) also preserves an existing selection when the
+ * press lands inside it, replacing it only when it lands outside --
+ * so a long-press inside a selection the user already made keeps that
+ * selection rather than collapsing it to one word.
+ *
+ * Gated on the same predicate as the rest of the mobile layer, so
+ * desktop right-click behavior is untouched (the option keeps whatever
+ * default xterm ships).
+ */
+const initLongPressSelect = (term) => {
+  if (matchMedia("(pointer: coarse)").matches) term.options.rightClickSelectsWord = true;
 };
 
 // --- touch scrolling ----------------------------------------------------------
