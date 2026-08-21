@@ -403,6 +403,112 @@ try {
     console.log("[7] scrollback dumps carry content only; the restore reset returns a dirtied terminal to defaults; saves wait out the alt screen");
   }
 
+  // [E] esc-intercept hint (site/esc-watch.mjs): a vim-keys extension
+  // suppresses Esc's key events entirely and blurs the field, so the
+  // only observable signature is the blur's shape. The gate drives
+  // that shape directly with a real, programmatic textarea.blur() --
+  // exactly what the detector is built to catch, and the reason it
+  // does not check event.isTrusted (see esc-watch.mjs's header).
+  const settleWait = () => page.waitForTimeout(350); // past the 300ms explaining-event window
+
+  // [E1] an uncaused blur (no precursor within the window) shows the
+  // banner with both of its buttons.
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await page.waitForFunction(() => !document.getElementById("escbanner")?.hidden, null, { timeout: 5_000 })
+    .then(
+      async () => {
+        const buttons = await page.evaluate(() => ({
+          dismiss: !!document.querySelector("#escbanner .dismiss"),
+          never: !!document.querySelector("#escbanner .never"),
+        }));
+        if (!buttons.dismiss || !buttons.never) fail(`escbanner missing a button: ${JSON.stringify(buttons)}`);
+        else console.log("[E1] an uncaused blur on the terminal shows the esc-intercept banner");
+      },
+      () => fail("an uncaused blur (no click, no Tab) did not show the esc-intercept banner"),
+    );
+
+  // [E2] dismiss hides it and returns focus; the detector then STAYS
+  // disarmed for the rest of the page load (one nag per load, not one
+  // per Esc -- Esc-in-vim would otherwise nag on every keystroke).
+  await page.click("#escbanner .dismiss");
+  const afterDismiss = await page.evaluate(() => ({
+    hidden: document.getElementById("escbanner").hidden,
+    focused: document.activeElement === window.__wosh.term.textarea,
+  }));
+  if (!afterDismiss.hidden) fail("dismiss did not hide the banner");
+  else if (!afterDismiss.focused) fail("dismiss did not return focus to the terminal");
+  else console.log("[E2] dismiss hides the banner and returns focus to the terminal");
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await page.waitForTimeout(400);
+  if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
+    console.log("[E2] disarmed for the rest of the page load: a second uncaused blur shows nothing");
+  } else {
+    fail("the banner reappeared after dismiss -- the detector should disarm for the page load");
+    await page.evaluate(() => { document.getElementById("escbanner").hidden = true; });
+  }
+
+  // [E3] a fresh load, so the detector is armed again: an EXPLAINED
+  // blur (a click elsewhere, or Tab-away) must never show the banner,
+  // and arming survives explained blurs -- only the next UNCAUSED one
+  // fires.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  // A click on #bar: pointerdown precedes the blur.
+  const bar = await page.locator("#bar").boundingBox();
+  await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2);
+  await page.waitForTimeout(400);
+  let stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
+  if (!stillHidden) fail("a click-away blur (pointerdown precedes it) showed the banner");
+
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.keyboard.press("Tab"); // keydown:Tab precedes the blur
+  await page.waitForTimeout(400);
+  stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
+  if (!stillHidden) fail("a Tab-away blur (keydown precedes it) showed the banner");
+  else console.log("[E3] click-away and Tab-away blurs are explained and never show the banner");
+
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  if (await page.waitForFunction(() => !document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
+    console.log("[E3] arming survives explained blurs: the next uncaused one still shows the banner");
+  } else {
+    fail("after two explained blurs, an uncaused blur no longer showed the banner");
+  }
+
+  // [E4] "don't show again" hides it AND persists the opt-out; a fresh
+  // load then never shows the banner again, uncaused blur included.
+  await page.click("#escbanner .never");
+  const escPref = await page.evaluate(() => localStorage.getItem("wosh.eschint.v1"));
+  if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
+    if (escPref !== "off") fail(`"don't show again" did not persist the preference (got ${JSON.stringify(escPref)})`);
+    else console.log("[E4] \"don't show again\" hides the banner and persists the preference");
+  } else {
+    fail("\"don't show again\" did not hide the banner");
+  }
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await page.waitForTimeout(400);
+  if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
+    console.log("[E4] the opt-out sticks across a reload: the banner never returns");
+  } else {
+    fail("the \"don't show again\" preference did not survive a reload");
+  }
+  // Clean up so later runs (and other gates sharing localStorage
+  // fixtures) are unaffected.
+  await page.evaluate(() => localStorage.removeItem("wosh.eschint.v1"));
+
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
     console.log("\nBROWSER LINKS PASS: addon family wired (unicode 11 widths, write-only OSC 52," +

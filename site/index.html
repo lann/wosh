@@ -70,6 +70,19 @@
       background: var(--surface2); border: 1px solid var(--line2);
       color: var(--text); font-size: 17px;
     }
+    /* Esc-intercept hint (site/esc-watch.mjs): a slim row, not a modal
+       -- the user may be running the extension deliberately, so this
+       is information, not an error to force past. [hidden] collapses
+       the flex row cleanly; #term's own ResizeObserver refits the
+       terminal when it does. */
+    #escbanner {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; background: var(--surface);
+      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    }
+    #escbanner[hidden] { display: none; }
+    #escbanner .msg { flex: 1; min-width: 0; font: 13px var(--sans); color: var(--warn); }
+    #escbanner button { flex: none; }
     #term { flex: 1; min-height: 0; padding: 2px; }
     /* Vertical drags in the terminal belong to mobile.mjs, which scrolls
        the scrollback with them -- xterm itself answers only to a mouse
@@ -411,6 +424,11 @@
         <span id="status">idle</span>
       </span>
       <button id="sessions-btn" title="sessions">⇆</button>
+    </div>
+    <div id="escbanner" hidden>
+      <span class="msg">⚠ esc never reached the terminal — a browser extension intercepted it (vim-keys extensions like Vimium do this). exclude this site in the extension's settings to use esc here.</span>
+      <button class="dismiss small">dismiss</button>
+      <button class="never small">don't show again</button>
     </div>
     <div id="term"></div>
     <div id="keys"></div>
