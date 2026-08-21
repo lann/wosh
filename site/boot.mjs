@@ -581,6 +581,18 @@ export async function initBoot(chrome, { onConnect }) {
   const who = document.getElementById("who");
   const sessionsBtn = document.getElementById("sessions-btn");
 
+  // The bar's height, published for the session sheet to hang beneath
+  // (see index.html). Measured rather than assumed: the bar grows with
+  // the font, and the coarse-pointer rules make it taller on a phone.
+  const publishBarHeight = () => {
+    const bar = document.getElementById("bar");
+    if (bar) {
+      document.documentElement.style.setProperty("--bar-h", `${Math.round(bar.getBoundingClientRect().height)}px`);
+    }
+  };
+  publishBarHeight();
+  new ResizeObserver(publishBarHeight).observe(document.getElementById("bar"));
+
   // --- the sheet: one ask at a time --------------------------------------
   //
   // showSheet(builder) opens the dialog with the builder's content and
@@ -1665,9 +1677,10 @@ export async function initBoot(chrome, { onConnect }) {
     const label = entry ? labelOf(entry) : `${details?.id.slice(0, 8) ?? "????????"}…`;
     const m = matchCommand(lc.command ?? "");
     const action = await showSheet("session", ({ append, done }) => {
-      append(el("div", { className: "sheet-title" },
-        el("span", { className: "who", textContent: `${lc.user}@${label}` }),
-        el("span", { className: "t", textContent: "connected" })));
+      // No title: this sheet hangs from under the bar, which is already
+      // showing `user@host` and the live link state. Repeating them here
+      // in a different font was a second, staler copy of the one thing
+      // the bar is for -- and it collided with the close button.
       if (m) {
         append(el("div", { className: "fieldlabel", textContent: `${m.preset.label} sessions on ${label}` }));
         const rowsHost = el("div", { className: "hedge", textContent: "listing sessions…" });
