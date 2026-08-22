@@ -128,6 +128,13 @@ gates-down:
 # browser, no listener, no target -- because the parsers are the part
 # most likely to be subtly wrong and the part a browser gate can least
 # easily reach.
+# The ssh-copy-id command the page installs keys with, run against a
+# real shell: permissions, the missing-newline case, and comments people
+# type. No browser -- site/authorized-keys.mjs is DOM-free so this can
+# import the real function.
+test-install-command:
+    node host-test/install-command.mjs
+
 test-sessions:
     node host-test/sessions-parse.mjs
 
@@ -679,7 +686,7 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-sessions test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-repair browser-resume
+check: test-gate-proc test-sessions test-install-command test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-repair browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
