@@ -1354,19 +1354,26 @@ try {
 
   // 28b. esc-watch.mjs gates itself off entirely under a coarse
   //     pointer -- the system "hide keyboard" button on a phone
-  //     produces the exact same uncaused, relatedTarget-null blur a
-  //     vim-keys extension does, and there is no way to tell them
-  //     apart from the page. This context is touch-only (viewport
-  //     390x780, hasTouch), so the detector must be INERT here: an
-  //     uncaused blur on the terminal must never show the banner.
+  //     produces the exact same blur shape a vim-keys extension does,
+  //     and there is no way to tell them apart from the page. This
+  //     context is touch-only (viewport 390x780, hasTouch), so the
+  //     detector must be INERT here: drive the FULL would-be trigger
+  //     (arm, then fire -- typing-correlated blur, refocus, typing-
+  //     correlated blur again, exactly what would banner on a fine
+  //     pointer) and confirm the coarse-pointer gate, not some other
+  //     clause, is what's masking it.
   await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
   await page.evaluate(() => window.__wosh.term.focus());
   await page.waitForTimeout(350);
-  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await page.evaluate(() => { window.__wosh.term.input("x"); window.__wosh.term.textarea.blur(); });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await page.waitForTimeout(350);
+  await page.evaluate(() => { window.__wosh.term.input("x"); window.__wosh.term.textarea.blur(); });
   await page.waitForTimeout(400);
   const escBannerHidden = await page.evaluate(() => document.getElementById("escbanner")?.hidden);
   if (ok(escBannerHidden !== false, "the esc-intercept banner appeared under a coarse pointer (should be inert: soft-keyboard dismiss looks identical)")) {
-    console.log("[28b] esc-watch is inert on a coarse pointer: an uncaused blur shows nothing");
+    console.log("[28b] esc-watch is inert on a coarse pointer: a full arm+fire pattern still shows nothing");
   }
 
   if (consoleErrors.length) fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);
