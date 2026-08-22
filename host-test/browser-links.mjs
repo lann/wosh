@@ -408,14 +408,36 @@ try {
   // only observable signature is the blur's shape. The gate drives
   // that shape directly with a real, programmatic textarea.blur() --
   // exactly what the detector is built to catch, and the reason it
-  // does not check event.isTrusted (see esc-watch.mjs's header).
+  // does not check event.isTrusted (see esc-watch.mjs's header). Typing
+  // correlation is driven with term.input("x"), which routes through
+  // onData exactly like real keystrokes but dispatches no DOM key
+  // event, so it never touches the 300ms explain window either.
   const settleWait = () => page.waitForTimeout(350); // past the 300ms explaining-event window
+  const typeAndBlur = () =>
+    page.evaluate(() => {
+      window.__wosh.term.input("x");
+      window.__wosh.term.textarea.blur();
+    });
 
-  // [E1] an uncaused blur (no precursor within the window) shows the
-  // banner with both of its buttons.
+  // [E1] a single typing-correlated unattributed blur only ARMS the
+  // detector -- it alone still looks like a password manager's
+  // post-popup cleanup blur, so no banner yet.
   await page.evaluate(() => window.__wosh.term.focus());
   await settleWait();
-  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
+    console.log("[E1] a single typing-correlated unattributed blur arms but shows nothing");
+  } else {
+    fail("a single typing-correlated unattributed blur showed the banner -- it should only arm");
+  }
+
+  // [E1] path (a): refocus, type, blur again -- two typing-correlated
+  // unattributed blurs in a row is the pattern: banner shown, with
+  // both of its buttons.
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
   await page.waitForFunction(() => !document.getElementById("escbanner")?.hidden, null, { timeout: 5_000 })
     .then(
       async () => {
@@ -424,9 +446,9 @@ try {
           never: !!document.querySelector("#escbanner .never"),
         }));
         if (!buttons.dismiss || !buttons.never) fail(`escbanner missing a button: ${JSON.stringify(buttons)}`);
-        else console.log("[E1] an uncaused blur on the terminal shows the esc-intercept banner");
+        else console.log("[E1] path (a): a second typing-correlated unattributed blur shows the esc-intercept banner");
       },
-      () => fail("an uncaused blur (no click, no Tab) did not show the esc-intercept banner"),
+      () => fail("a second typing-correlated unattributed blur (arm then fire) did not show the esc-intercept banner"),
     );
 
   // [E2] dismiss hides it and returns focus; the detector then STAYS
@@ -441,29 +463,97 @@ try {
   else if (!afterDismiss.focused) fail("dismiss did not return focus to the terminal");
   else console.log("[E2] dismiss hides the banner and returns focus to the terminal");
   await settleWait();
-  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
   await page.waitForTimeout(400);
   if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
-    console.log("[E2] disarmed for the rest of the page load: a second uncaused blur shows nothing");
+    console.log("[E2] disarmed for the rest of the page load: further arm+fire pairs show nothing");
   } else {
     fail("the banner reappeared after dismiss -- the detector should disarm for the page load");
     await page.evaluate(() => { document.getElementById("escbanner").hidden = true; });
   }
 
-  // [E3] a fresh load, so the detector is armed again: an EXPLAINED
-  // blur (a click elsewhere, or Tab-away) must never show the banner,
-  // and arming survives explained blurs -- only the next UNCAUSED one
-  // fires.
+  // [E1] path (b): fresh reload, so the detector is armed again.
+  // Type+blur arms; refocus; WITHOUT further typing, blur again
+  // inside the 30s retry window -- still a pattern (the second Esp
+  // attempt need not itself follow fresh typing).
   await page.reload({ waitUntil: "load" });
   await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
   await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur()); // no term.input() here: fires on the retry window alone
+  if (await page.waitForFunction(() => !document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
+    console.log("[E1] path (b): an arming blur followed by an untyped blur within the retry window shows the banner");
+  } else {
+    fail("path (b): an untyped blur within the retry window of an arming blur did not show the banner");
+  }
+
+  // [E] the reported false positive: 1Password's native "save this
+  // password?" popup is browser-level UI (no page events at all); when
+  // it's dismissed, focus returns to the page and the extension's
+  // content script does a cleanup blur() -- identical shape to an
+  // eaten Esc, but it never followed typing and never repeats. A
+  // fresh load: two uncaused blurs in succession (no term.input()
+  // anywhere) must never arm and so must never banner. Then prove the
+  // detector still works on the very same page load: a typing-
+  // correlated blur arms, and a follow-up blur fires via path (b).
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur()); // uncorrelated: never arms
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await page.evaluate(() => window.__wosh.term.textarea.blur()); // a second one, still uncorrelated
+  await page.waitForTimeout(400);
+  if (!(await page.evaluate(() => document.getElementById("escbanner").hidden))) {
+    fail("two uncorrelated programmatic blurs (the 1Password shape) showed the banner -- they must never arm");
+  } else {
+    await page.evaluate(() => window.__wosh.term.focus());
+    await settleWait();
+    await typeAndBlur(); // now arm for real
+    await page.waitForTimeout(400);
+    await page.evaluate(() => window.__wosh.term.focus());
+    await settleWait();
+    await page.evaluate(() => window.__wosh.term.textarea.blur()); // fires via the retry window
+    if (await page.waitForFunction(() => !document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
+      console.log("[E] single or repeated programmatic blurs that do not interrupt typing never banner (the reported password-manager false positive), and detection still works after");
+    } else {
+      fail("after the uncorrelated-blur false-positive shape, the detector no longer fired on a real arm+fire pair");
+    }
+  }
+
+  // [E3] a fresh load, so the detector is armed again: an EXPLAINED
+  // blur (a click elsewhere, or Tab-away) must never trigger, arm, or
+  // break arming -- it is churn BETWEEN an arming blur and the firing
+  // one, and the banner must stay hidden until the firing blur.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur(); // arm
+  await page.waitForTimeout(400);
+  let stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
+  if (!stillHidden) fail("the arming blur alone showed the banner");
+
   await page.evaluate(() => window.__wosh.term.focus());
   await settleWait();
   // A click on #bar: pointerdown precedes the blur.
   const bar = await page.locator("#bar").boundingBox();
   await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2);
   await page.waitForTimeout(400);
-  let stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
+  stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
   if (!stillHidden) fail("a click-away blur (pointerdown precedes it) showed the banner");
 
   await page.evaluate(() => window.__wosh.term.focus());
@@ -472,19 +562,19 @@ try {
   await page.waitForTimeout(400);
   stillHidden = await page.evaluate(() => document.getElementById("escbanner").hidden);
   if (!stillHidden) fail("a Tab-away blur (keydown precedes it) showed the banner");
-  else console.log("[E3] click-away and Tab-away blurs are explained and never show the banner");
+  else console.log("[E3] click-away and Tab-away blurs are explained and never trigger, arm, or break arming");
 
   await page.evaluate(() => window.__wosh.term.focus());
   await settleWait();
-  await page.evaluate(() => window.__wosh.term.textarea.blur());
+  await page.evaluate(() => window.__wosh.term.textarea.blur()); // the arming blur is still live: this fires via the retry window
   if (await page.waitForFunction(() => !document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
-    console.log("[E3] arming survives explained blurs: the next uncaused one still shows the banner");
+    console.log("[E3] arming survives explained blurs in between: the next unattributed one still shows the banner");
   } else {
-    fail("after two explained blurs, an uncaused blur no longer showed the banner");
+    fail("after explained blurs following the arming blur, the next unattributed blur no longer showed the banner");
   }
 
   // [E4] "don't show again" hides it AND persists the opt-out; a fresh
-  // load then never shows the banner again, uncaused blur included.
+  // load then never shows the banner again, even an arm+fire attempt.
   await page.click("#escbanner .never");
   const escPref = await page.evaluate(() => localStorage.getItem("wosh.eschint.v1"));
   if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
@@ -498,10 +588,14 @@ try {
   await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
   await page.evaluate(() => window.__wosh.term.focus());
   await settleWait();
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
   await page.evaluate(() => window.__wosh.term.textarea.blur());
   await page.waitForTimeout(400);
   if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
-    console.log("[E4] the opt-out sticks across a reload: the banner never returns");
+    console.log("[E4] the opt-out sticks across a reload: an arm+fire attempt never shows the banner");
   } else {
     fail("the \"don't show again\" preference did not survive a reload");
   }
