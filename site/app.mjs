@@ -16,6 +16,7 @@
 // interleave screen bytes out of order.
 
 import { autofocusTerminal, initMobile, transformInput } from "./mobile.mjs";
+import { initEscWatch } from "./esc-watch.mjs";
 import { initLifecycle } from "./lifecycle.mjs";
 import { linkHandler } from "./links.mjs";
 import { markSessionEnd, markSessionStart } from "./separator.mjs";
@@ -166,6 +167,12 @@ window.__wosh.term = term;
 new ResizeObserver(() => fit.fit()).observe(document.getElementById("term"));
 addEventListener("resize", () => fit.fit()); // zoom edge cases; harmless overlap
 initMobile(term); // soft-keyboard viewport glue + extra-keys bar
+// A vim-keys extension (Vimium et al.) can eat Esc entirely before the
+// page ever sees it; see esc-watch.mjs for the detection signature.
+initEscWatch(term, {
+  banner: document.getElementById("escbanner"),
+  refocus: () => autofocusTerminal(term),
+});
 term.onResize(({ cols, rows }) => overlay.showOverlay(`${cols}×${rows}`, 500));
 
 // --- painting ---------------------------------------------------------------
