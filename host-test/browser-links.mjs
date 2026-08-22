@@ -603,6 +603,97 @@ try {
   // fixtures) are unaffected.
   await page.evaluate(() => localStorage.removeItem("wosh.eschint.v1"));
 
+  // [E5] counter-evidence: an Escape keydown that reaches the terminal
+  // disproves the premise for the rest of the page load. The detector
+  // deliberately ignores isTrusted (see esc-watch.mjs's header), so a
+  // synthetic KeyboardEvent dispatched on the focused textarea drives
+  // the mute the same way an unsuppressed real Escape would.
+  const dispatchEscOn = (selector) =>
+    page.evaluate((sel) => {
+      const target = sel === "textarea" ? window.__wosh.term.textarea : document.body;
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    }, selector);
+
+  // [E5] a through-going Escape in the terminal mutes detection for
+  // the rest of the load: a full arm+fire pair afterward must show
+  // nothing, even though it is exactly the same typing+blur shape
+  // that fired unmuted in [E1] path (a). The synthetic Escape is not
+  // Tab, so it must not touch the 300ms explain window on its own --
+  // but the mute makes that moot; only the muting is asserted here.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await dispatchEscOn("textarea");
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  if (await page.evaluate(() => document.getElementById("escbanner").hidden)) {
+    console.log("[E5] an Escape reaching the focused terminal mutes detection: a subsequent arm+fire pair shows nothing");
+  } else {
+    fail("an Escape that reached the terminal did not mute detection -- a later arm+fire pair still banner");
+  }
+
+  // [E5] the activeElement qualifier: an Escape seen anywhere else on
+  // the page (terminal not focused) proves nothing about the terminal
+  // and must not mute -- a normal arm+fire pair afterward still fires.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  // The page auto-focuses the terminal on load (mobile.mjs), so move
+  // focus off it first with a real click -- otherwise activeElement
+  // === term.textarea would still hold at dispatch time no matter
+  // what e.target is, and the qualifier this leg exists to test would
+  // not actually be exercised. document.body.focus() is a no-op here
+  // (body has no tabindex), so a click on #bar is used instead.
+  const bar5 = await page.locator("#bar").boundingBox();
+  await page.mouse.click(bar5.x + bar5.width / 2, bar5.y + bar5.height / 2);
+  await dispatchEscOn("body"); // terminal is not focused: does not qualify
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  if (await page.waitForFunction(() => !document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
+    console.log("[E5] an Escape seen elsewhere on the page (terminal not focused) does not mute: an arm+fire pair still fires");
+  } else {
+    fail("an Escape dispatched while the terminal was not focused wrongly muted detection");
+  }
+
+  // [E5] banner retraction: with the banner already showing, an
+  // Escape reaching the focused terminal hides it -- a through-going
+  // Esc means the user just fixed it (excluded the site), so stale
+  // advice should not linger. Fresh reload: the previous leg's fire
+  // already disarmed detection for that page load.
+  await page.click("#escbanner .dismiss"); // clear from the previous leg's fire
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => !!window.__wosh?.term, null, { timeout: 30_000 });
+  await page.evaluate(() => { document.getElementById("chrome").hidden = true; });
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await typeAndBlur();
+  await page.waitForFunction(() => !document.getElementById("escbanner")?.hidden, null, { timeout: 5_000 })
+    .catch(() => fail("setup for the retraction leg did not show the banner"));
+  await page.evaluate(() => window.__wosh.term.focus());
+  await settleWait();
+  await dispatchEscOn("textarea");
+  if (await page.waitForFunction(() => document.getElementById("escbanner").hidden, null, { timeout: 5_000 }).then(() => true, () => false)) {
+    console.log("[E5] an Escape reaching the focused terminal retracts an already-showing banner");
+  } else {
+    fail("an Escape that reached the terminal did not retract the already-showing banner");
+  }
+  await page.evaluate(() => localStorage.removeItem("wosh.eschint.v1"));
+
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
     console.log("\nBROWSER LINKS PASS: addon family wired (unicode 11 widths, write-only OSC 52," +

@@ -62,6 +62,33 @@
 // the retry window of the first) catches both. The hint may land one
 // attempt late; it should never land wrong.
 //
+// Counter-evidence, not just supporting evidence: an Escape keydown
+// that reaches the page WHILE the terminal is focused disproves the
+// premise outright. Measured against real Vimium, Esc is suppressed
+// at window capture in both insert mode and normal mode -- the page
+// never sees it, ever, while an interceptor is active. So a through-
+// going Escape keydown in the terminal means no interceptor is acting
+// on this field this page load, full stop: mute detection for the
+// rest of the load, and if the banner is already up, hide it too --
+// an Esc that just got through means the user already fixed it
+// (excluded the site), and stale advice is worse than none.
+//
+// The activeElement qualifier matters: the claim is about Esc IN the
+// terminal specifically. An interceptor's normal-mode behavior
+// elsewhere on the page is not part of what was measured -- Vimium
+// happens to suppress there too, but its forks were not checked, so
+// an Escape seen elsewhere proves nothing about this field.
+//
+// Deliberately NOT persisted to localStorage, unlike the "don't show
+// again" opt-out below: Esc-in-a-terminal is common enough that
+// persisting the mute would have every clean user (no extension at
+// all) write a permanent kill switch within minutes of first use --
+// and then a Vimium install next month would hit dead Esc with the
+// hint silenced forever, exactly the moment the feature exists for.
+// Per-load muting buys the same false-positive protection (a real
+// session sees a through-going Esc long before a false pattern could
+// assemble) without blinding future installs.
+//
 // Deliberately NOT checking event.isTrusted: the gates that pin this
 // drive the predicate with a real, programmatic `term.textarea.blur()`
 // call, which is exactly the shape an intercepted Esc produces and the
@@ -105,6 +132,16 @@ export function initEscWatch(term, { banner, refocus }) {
     "keydown",
     (e) => {
       if (e.key === "Tab") explain();
+      // A through-going Escape in the terminal disproves the premise
+      // for this page load, regardless of armed/detecting state --
+      // check this unconditionally, not gated behind `if (detecting)`,
+      // so it also mutes an already-armed detector. Not e.repeat-
+      // filtered: a held Escape that reaches the page is just as much
+      // counter-evidence as a single press.
+      if (e.key === "Escape" && document.activeElement === term.textarea) {
+        detecting = false;
+        if (!banner.hidden) banner.hidden = true; // the user just fixed it: stale advice helps no one
+      }
     },
     { capture: true },
   );
