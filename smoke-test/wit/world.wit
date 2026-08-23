@@ -2,15 +2,18 @@ package wosh:terminal;
 
 /// The composed browser-client artifact as a NATIVE host sees it:
 /// `wac plug` has already fused the iroh endpoint in, so only the
-/// terminal surface remains to drive -- plus `identity-store` and
-/// `passkey-store`, which stay host imports by design (persistence is
-/// a host concern; the native gate mints a fresh identity, and a fresh
-/// software passkey, per run). This is what lets the browser client be
-/// exercised end to end under wasmtime, against a real OpenSSH sshd,
-/// without a browser in the loop.
+/// terminal surface remains to drive -- plus `identity-store`,
+/// `passkey-store`, `pairing-store` and `transfer-io`, which stay host
+/// imports by design (persistence and file storage are host concerns;
+/// the native gate mints a fresh identity, and a fresh software
+/// passkey, per run, and backs transfers with temp files instead of a
+/// browser's OPFS). This is what lets the browser client be exercised
+/// end to end under wasmtime, against a real OpenSSH sshd, without a
+/// browser in the loop.
 world composed-client {
   import identity-store;
   import passkey-store;
   import pairing-store;
+  import transfer-io;
   export terminal;
 }

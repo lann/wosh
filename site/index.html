@@ -405,6 +405,64 @@
     #linkdialog .row .spacer { flex: 1; }
     #linkdialog label { display: flex; align-items: center; gap: 6px; }
     #linkdialog button { font-size: 14px; min-height: 40px; padding: 0 14px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; }
+
+    /* ---- the transfer panel (transfer-ui.mjs): mobile-first, one
+       column, no framework -- see that module's file comment for the
+       full design. Reuses --bar-h the same way #sheet does, since it
+       is another full-height ask over the terminal. */
+    #transfers-btn {
+      flex: none; min-width: 44px; min-height: 40px; border-radius: 8px;
+      background: var(--surface2); border: 1px solid var(--line2);
+      color: var(--text); font-size: 17px;
+    }
+    #transfers-sheet {
+      position: fixed; inset: 0; margin: 0; padding: 0; border: none;
+      width: 100%; height: 100%; max-width: none; max-height: none;
+      background: var(--bg); color: var(--text);
+    }
+    #transfers-sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
+    #transfers-sheet .txbar {
+      display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+      background: #0d0d0d; border-bottom: 1px solid var(--line);
+    }
+    #transfers-sheet .txbar h1 { font: 600 16px var(--sans); color: var(--bright); margin: 0; flex: 1; min-width: 0; }
+    #transfers-sheet .txbar button { min-height: 40px; padding: 0 12px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; color: var(--text); }
+    #transfers-sheet .crumbs {
+      display: flex; align-items: center; gap: 4px; padding: 8px 12px;
+      overflow-x: auto; white-space: nowrap; font: 13px var(--mono); color: var(--dim);
+      border-bottom: 1px solid var(--line);
+    }
+    #transfers-sheet .crumbs button { background: none; border: none; color: var(--dim); font: 13px var(--mono); padding: 4px 2px; min-height: 32px; }
+    #transfers-sheet .crumbs button.here { color: var(--bright); }
+    #transfers-sheet .panes { flex: 1; overflow: hidden auto; display: flex; flex-direction: column; }
+    #transfers-sheet .entry-row, #transfers-sheet .transfer-row {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-bottom: 1px solid var(--line); min-height: 44px;
+    }
+    #transfers-sheet .entry-row button.namebtn {
+      flex: 1; min-width: 0; text-align: left; background: none; border: none;
+      color: var(--text); font: 14px var(--sans); padding: 4px 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #transfers-sheet .entry-row .icon { flex: none; width: 18px; text-align: center; color: var(--dim); }
+    #transfers-sheet .entry-row .meta { flex: none; font: 12px var(--mono); color: var(--dim); }
+    #transfers-sheet .transfer-row { flex-direction: column; align-items: stretch; gap: 4px; }
+    #transfers-sheet .transfer-row .t { display: flex; gap: 8px; align-items: center; font: 13px var(--sans); }
+    #transfers-sheet .transfer-row .t .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bright); }
+    #transfers-sheet .transfer-row .t .bytes { flex: none; color: var(--dim); font: 12px var(--mono); }
+    #transfers-sheet .transfer-row .bar { height: 4px; border-radius: 2px; background: var(--surface2); overflow: hidden; }
+    #transfers-sheet .transfer-row .fill { display: block; height: 100%; background: var(--accent-line); transition: width 0.2s linear; }
+    #transfers-sheet .transfer-row.err .fill { background: var(--danger); }
+    #transfers-sheet .transfer-row .err-msg { color: var(--danger); font: 12px var(--sans); }
+    #transfers-sheet .transfer-row .actions { display: flex; gap: 8px; }
+    #transfers-sheet .transfer-row .actions button { font-size: 12px; min-height: 32px; padding: 0 10px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 6px; color: var(--text); }
+    #transfers-sheet .upload-drop {
+      margin: 10px 12px; padding: 16px; border: 2px dashed var(--line2); border-radius: 10px;
+      text-align: center; color: var(--dim); font: 13px var(--sans);
+    }
+    #transfers-sheet .upload-drop.over { border-color: var(--accent-line); color: var(--bright); }
+    #transfers-sheet .empty { padding: 16px 12px; color: var(--dim); font: 13px var(--sans); }
+    #transfers-sheet .section-label { padding: 10px 12px 4px; font: 600 11px var(--sans); letter-spacing: 0.4px; color: var(--dim); text-transform: uppercase; }
   </style>
   <script src="./xterm/xterm.js"></script>
   <script src="./xterm/addon-fit.js"></script>
@@ -424,6 +482,7 @@
         <span id="status">idle</span>
       </span>
       <button id="sessions-btn" title="sessions">⇆</button>
+      <button id="transfers-btn" title="files" hidden>⇅</button>
     </div>
     <div id="escbanner" hidden>
       <span class="msg">⚠ detected a pattern of events consistent with a browser extension (such as Vimium) capturing the esc key — you might need to exclude this site in the extension's settings.</span>
@@ -446,10 +505,13 @@
        form, the session sheet, card menus. boot.mjs owns it. -->
   <dialog id="sheet"></dialog>
   <dialog id="linkdialog"></dialog>
+  <dialog id="transfers-sheet"></dialog>
   <script type="module">
-    import { connect } from "./app.mjs";
+    import { activeSession, connect } from "./app.mjs";
     import { initBoot } from "./boot.mjs";
+    import { initTransfers } from "./transfer-ui.mjs";
     window.__woshBoot = await initBoot(document.getElementById("chrome"), { onConnect: connect });
+    window.__woshTransfers = initTransfers({ getSession: activeSession });
     // PWA shell: https only. Local serving stays http, so development
     // and the browser gate never install the worker and a stale cache
     // can never confuse them. The deployed sw.js is version-keyed by

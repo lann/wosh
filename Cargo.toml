@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "connstring",
     "hostkey",
+    "sftp",
     "tunnel",
     "webauthn-ssh",
     "listener-core",
@@ -26,6 +27,7 @@ members = [
 default-members = [
     "connstring",
     "hostkey",
+    "sftp",
     "tunnel",
     "webauthn-ssh",
     "webauthn-ssh",

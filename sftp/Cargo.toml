@@ -1,0 +1,18 @@
+[package]
+name = "wosh-sftp"
+version = "0.1.0"
+edition = "2021"
+description = "SFTP v3 (draft-ietf-secsh-filexfer-02) wire codec and request/response correlation for wosh-client's in-browser file transfer, layered over openssh-sftp-protocol."
+publish = false
+
+[dependencies]
+# Verified sans-I/O: 18 crates on wasm32-wasip2, none of tokio/mio/libc/
+# getrandom/ring/bytes (see crate doc header for the audit and why that
+# matters for a wasm32-wasip2 component).
+openssh-sftp-protocol = "0.24.2"
+ssh_format = "0.14.1"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lib]
+name = "wosh_sftp"
+path = "src/lib.rs"

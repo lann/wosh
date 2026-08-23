@@ -87,6 +87,7 @@ mod bindings {
 
 mod pairing;
 mod passkey;
+mod transfer;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -95,8 +96,8 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use bindings::exports::wosh::terminal::terminal::{
-    CloseKind as WitCloseKind, Guest, GuestSession, LinkState, Prompt, PromptBatch, ProbeResult,
-    Status,
+    CloseKind as WitCloseKind, DirEntry, Guest, GuestSession, LinkState, Prompt, PromptBatch,
+    ProbeResult, Status, Transfer,
 };
 use bindings::polymorph::iroh::endpoint::{Connection, Endpoint, EndpointOptions, RecvStream, SendStream};
 use bindings::polymorph::iroh::identity::Identity;
@@ -106,6 +107,7 @@ use bindings::wosh::ssh_core::core::{
     Signature as CoreSignature, Status as CoreStatus,
 };
 use bindings::wosh::terminal::identity_store;
+use bindings::wosh::terminal::transfer_io::{Sink, Source};
 
 use wosh_connstring::ConnString;
 use wosh_tunnel::{
@@ -115,6 +117,29 @@ use wosh_tunnel::{
 /// Read size for the reader task. Sized to comfortably hold a
 /// full-size ssh packet; the core reassembles regardless.
 const READ_CHUNK: u32 = 16 * 1024;
+
+/// The most SSH bytes this client puts in ONE tunnel DATA frame.
+///
+/// `wosh_tunnel::MAX_FRAME` (1 MiB) is a hard ceiling, not a hint: the
+/// peer's `Decoder` treats a longer frame as a corrupt stream and fails
+/// the connection, and because the offending bytes are already in the
+/// replay buffer, every resume retransmits the same oversized frame and
+/// is refused again -- a session that cannot die and cannot recover.
+/// (Observed: a 1,050,004-byte frame, then seventy-one identical resume
+/// attempts.)
+///
+/// Nothing upstream bounds a single write. The core hands over
+/// everything it has produced since the last `drain`, which is whatever
+/// the ssh stack buffered -- a file transfer's worth, a monster paste's
+/// worth. So the bound lives HERE, at the point where bytes become
+/// frames, and it covers the resume tail as well: that path never
+/// touches the outbox, so a bound applied when queueing would miss it
+/// entirely, and a replay tail is exactly the thing most likely to be
+/// large.
+///
+/// 256 KiB leaves the ceiling a factor of four of headroom while
+/// keeping the per-frame overhead (five bytes) irrelevant.
+const MAX_WIRE_CHUNK: usize = 256 * 1024;
 
 /// Backoff for the resume machine: 500ms doubling to a 15s cap, giving
 /// up once 600s of TRYING have been spent. Long enough to ride out a
@@ -416,6 +441,25 @@ struct State {
     /// `connect`. Empty in open mode. Held even on a v1 dial, where it
     /// is never sent -- v1 has no second Hello, and resume is v2-only.
     pairing: Vec<u8>,
+    /// The session's SFTP connection, opened lazily by the first file
+    /// operation and kept for every later one (terminal.wit's
+    /// `list-dir`). `None` before the first operation and again after
+    /// the channel dies; see `transfer::ensure_open`, which is the only
+    /// thing that installs one.
+    sftp: RefCell<Option<transfer::Sftp>>,
+    /// One task is opening that channel right now. Without this, two
+    /// concurrent first operations would each open a channel and one
+    /// would be orphaned on the server.
+    sftp_opening: Cell<bool>,
+    /// The in-flight allowance every transfer on this session shares.
+    ///
+    /// Session-scoped rather than per-transfer because the thing it
+    /// protects is: `replay` above is one buffer for the whole session,
+    /// and overflowing it makes the session unresumable. A page may
+    /// start any number of transfers at once (one per dropped file), so
+    /// an allowance handed out per transfer would multiply by a number
+    /// nothing bounds. See `transfer::REPLAY_BUDGET_BYTES`.
+    transfer_budget: Rc<RefCell<transfer::Budget>>,
     /// Fires when the writer task has bytes to send (or must retire).
     writer_signal: Signal,
     /// Fires when the core's status may have changed. Nothing parks on
@@ -742,6 +786,30 @@ async fn keepalive_task(state: Rc<State>, generation: u64) {
     }
 }
 
+/// Put `bytes` on the wire as DATA, split so that no single frame
+/// exceeds [`MAX_WIRE_CHUNK`] -- the one place that invariant is
+/// enforced, for both the outbox and the resume tail.
+///
+/// Splitting is free at the protocol level: DATA frames are a byte
+/// stream, the peer concatenates payloads in arrival order, and the
+/// receiver's accounting (`received`, and the ACKs it drives) counts
+/// payload bytes, not frames. In legacy v1 there is no framing at all,
+/// so the bytes go as they are.
+///
+/// Called only from the writer task, which is the sole owner of `send`
+/// (module header).
+async fn write_data(send: &SendStream, framed: bool, bytes: &[u8]) -> Result<(), ()> {
+    if !framed {
+        return send.write(bytes.to_vec()).await.map_err(|_| ());
+    }
+    for chunk in bytes.chunks(MAX_WIRE_CHUNK) {
+        send.write(wosh_tunnel::encode_data(chunk))
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(())
+}
+
 /// The writer task: the sole owner of `send` for ONE connection. It
 /// parks on `writer_signal` and drains the outbox in order.
 ///
@@ -757,12 +825,9 @@ async fn writer_task(
     tail: Vec<u8>,
 ) {
     let framed = state.proto.framed();
-    if !tail.is_empty() {
-        let frame = if framed { wosh_tunnel::encode_data(&tail) } else { tail };
-        if send.write(frame).await.is_err() {
-            link_lost(&state, generation, "connection closed: replay write failed").await;
-            return;
-        }
+    if !tail.is_empty() && write_data(&send, framed, &tail).await.is_err() {
+        link_lost(&state, generation, "connection closed: replay write failed").await;
+        return;
     }
     loop {
         state.writer_signal.wait().await;
@@ -852,8 +917,7 @@ async fn writer_task(
                 bytes
             };
             let Some(bytes) = next else { break };
-            let frame = if framed { wosh_tunnel::encode_data(&bytes) } else { bytes };
-            if send.write(frame).await.is_err() {
+            if write_data(&send, framed, &bytes).await.is_err() {
                 link_lost(&state, generation, "connection closed: write failed").await;
                 return;
             }
@@ -1329,6 +1393,7 @@ struct Component;
 
 impl Guest for Component {
     type Session = Session;
+    type Transfer = transfer::TransferHandle;
 
     /// This browser's SSH identity as an OpenSSH `authorized_keys`
     /// line. Only the public half crosses `identity-store`; the private
@@ -1593,6 +1658,11 @@ impl GuestSession for Session {
             // (`State.proto`), and the proof binds the ALPN, so the
             // one stored here is the one every resume replays.
             pairing: prove(proto.alpn()),
+            sftp: RefCell::new(None),
+            sftp_opening: Cell::new(false),
+            transfer_budget: Rc::new(RefCell::new(transfer::Budget::new(
+                transfer::REPLAY_BUDGET_BYTES,
+            ))),
             writer_signal: Signal::default(),
             status_signal: Signal::default(),
         });
@@ -2013,6 +2083,42 @@ impl GuestSession for Session {
         wit_bindgen::spawn_local(async move {
             resume_loop(&state, generation).await;
         });
+    }
+
+    // --- file transfer ---------------------------------------------
+    //
+    // All three delegate to `transfer`, which owns the SFTP channel, the
+    // pump cadence, the replay-budget bound and every resume decision.
+    // See that module's header.
+
+    /// List a remote directory. Runs inline: a listing is bounded, so
+    /// unlike a transfer it has no engine task of its own.
+    async fn list_dir(&self, path: Vec<u8>) -> Result<Vec<DirEntry>, String> {
+        transfer::list_dir(&self.state, path).await
+    }
+
+    /// Start an upload and return as soon as it is UNDERWAY
+    /// (terminal.wit): everything after this point -- including every
+    /// resume decision and every failure -- is reported through the
+    /// returned resource's `progress`.
+    async fn upload(
+        &self,
+        source: Source,
+        remote_path: Vec<u8>,
+        overwrite: bool,
+    ) -> Result<Transfer, String> {
+        transfer::start_upload(&self.state, source, remote_path, overwrite).await
+    }
+
+    /// The mirror image. Same contract: underway on return, outcome on
+    /// the resource.
+    async fn download(
+        &self,
+        remote_path: Vec<u8>,
+        sink: Sink,
+        overwrite: bool,
+    ) -> Result<Transfer, String> {
+        transfer::start_download(&self.state, remote_path, sink, overwrite).await
     }
 
     /// Stop the session and close the iroh connection. The core is

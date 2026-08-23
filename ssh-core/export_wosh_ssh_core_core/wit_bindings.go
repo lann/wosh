@@ -6,8 +6,9 @@
 package export_wosh_ssh_core_core
 
 import (
-	"unsafe"
+        "unsafe"
 )
+
 
 //go:wasmimport [export]wosh:ssh-core/core [resource-new]session
 func resourceNewSession(pointer unsafe.Pointer) int32
@@ -20,10 +21,10 @@ func resourceDropSession(handle int32)
 
 //go:wasmexport wosh:ssh-core/core#[dtor]session
 func resourceDtorSession(rep int32) {
-	val := (*Session)(unsafe.Pointer(uintptr(rep)))
-	val.handle = 0
-	val.pinner.Unpin()
-	val.OnDrop()
+        val := (*Session)(unsafe.Pointer(uintptr(rep)))
+        val.handle = 0
+        val.pinner.Unpin()
+        val.OnDrop()
 }
 
 func (self *Session) TakeHandle() int32 {
@@ -33,9 +34,9 @@ func (self *Session) TakeHandle() int32 {
 }
 
 func (self *Session) SetHandle(handle int32) {
-	if self.handle != handle {
-		panic("invalid handle")
-	}
+        if self.handle != handle {
+                panic("invalid handle")
+        }
 }
 
 func (self *Session) Drop() {
@@ -44,7 +45,7 @@ func (self *Session) Drop() {
 		self.handle = 0
 		resourceDropSession(handle)
 		self.pinner.Unpin()
-		self.OnDrop()
+                self.OnDrop()
 	}
 }
 
@@ -55,3 +56,52 @@ func SessionFromOwnHandle(handle int32) *Session {
 func SessionFromBorrowHandle(rep int32) *Session {
 	return (*Session)(unsafe.Pointer(uintptr(rep)))
 }
+
+
+//go:wasmimport [export]wosh:ssh-core/core [resource-new]channel
+func resourceNewChannel(pointer unsafe.Pointer) int32
+
+//go:wasmimport [export]wosh:ssh-core/core [resource-rep]channel
+func resourceRepChannel(handle int32) unsafe.Pointer
+
+//go:wasmimport [export]wosh:ssh-core/core [resource-drop]channel
+func resourceDropChannel(handle int32)
+
+//go:wasmexport wosh:ssh-core/core#[dtor]channel
+func resourceDtorChannel(rep int32) {
+        val := (*Channel)(unsafe.Pointer(uintptr(rep)))
+        val.handle = 0
+        val.pinner.Unpin()
+        val.OnDrop()
+}
+
+func (self *Channel) TakeHandle() int32 {
+	self.pinner.Pin(self)
+	self.handle = resourceNewChannel(unsafe.Pointer(self))
+	return self.handle
+}
+
+func (self *Channel) SetHandle(handle int32) {
+        if self.handle != handle {
+                panic("invalid handle")
+        }
+}
+
+func (self *Channel) Drop() {
+	handle := self.handle
+	if self.handle != 0 {
+		self.handle = 0
+		resourceDropChannel(handle)
+		self.pinner.Unpin()
+                self.OnDrop()
+	}
+}
+
+func ChannelFromOwnHandle(handle int32) *Channel {
+	return (*Channel)(unsafe.Pointer(resourceRepChannel(handle)))
+}
+
+func ChannelFromBorrowHandle(rep int32) *Channel {
+	return (*Channel)(unsafe.Pointer(uintptr(rep)))
+}
+

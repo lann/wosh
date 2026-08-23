@@ -22,6 +22,7 @@ use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 
 mod passkey;
+mod transfer;
 
 mod bindings {
     wasmtime::component::bindgen!({
@@ -29,6 +30,15 @@ mod bindings {
         world: "composed-client",
         imports: { default: async | store | trappable },
         exports: { default: async },
+        // `transfer-io`'s two resources are HOST resources: the
+        // component holds handles, the host holds the actual bytes.
+        // Naming the concrete types here is what lets this host push
+        // them into its own `ResourceTable` (an unmapped resource
+        // binds to an uninhabited enum, which nothing can construct).
+        with: {
+            "wosh:terminal/transfer-io.source": crate::transfer::MemSource,
+            "wosh:terminal/transfer-io.sink": crate::transfer::FileSink,
+        },
     });
 }
 
@@ -36,6 +46,7 @@ use bindings::exports::wosh::terminal::terminal::Status;
 use bindings::wosh::terminal::identity_store;
 use bindings::wosh::terminal::pairing_store;
 use bindings::wosh::terminal::passkey_store;
+use bindings::wosh::terminal::transfer_io;
 
 struct Ctx {
     wasi: WasiCtx,
@@ -271,6 +282,20 @@ struct Args {
     probe_expect_exit: Option<i32>,
     /// A substring that must appear in the probe's output.
     probe_expect_output: Option<String>,
+    /// Run the FILE TRANSFER legs against this directory on the target
+    /// (absolute path; it is wiped and re-seeded server-side). Rides
+    /// the same live publickey session as `--probe`, after the shell
+    /// round-trip, so the transfer plane is exercised alongside a
+    /// working interactive channel rather than instead of one.
+    transfer_dir: Option<String>,
+    /// Where this host stages the bytes a download's `sink` keeps.
+    /// Defaults to a temp directory.
+    transfer_stage: Option<PathBuf>,
+    /// A host shell command run ONCE, partway through the transfer
+    /// leg's final upload, to tear the transport out from under a live
+    /// transfer (the gate supplies the relay kill/restart). Its
+    /// presence is what selects the resume leg.
+    mid_transfer_cmd: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -291,6 +316,9 @@ fn parse_args() -> Result<Args> {
         probe: None,
         probe_expect_exit: None,
         probe_expect_output: None,
+        transfer_dir: None,
+        transfer_stage: None,
+        mid_transfer_cmd: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -319,6 +347,9 @@ fn parse_args() -> Result<Args> {
                     Some(v()?.parse().map_err(|e| anyhow!("--probe-expect-exit: {e}"))?)
             }
             "--probe-expect-output" => a.probe_expect_output = Some(v()?),
+            "--transfer-dir" => a.transfer_dir = Some(v()?),
+            "--transfer-stage" => a.transfer_stage = Some(PathBuf::from(v()?)),
+            "--mid-transfer-cmd" => a.mid_transfer_cmd = Some(v()?),
             other => bail!("unknown flag {other}"),
         }
     }
@@ -370,6 +401,7 @@ async fn main() -> Result<()> {
     identity_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
     passkey_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
     pairing_store::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
+    transfer_io::add_to_linker::<Ctx, HasSelf<Ctx>>(&mut linker, |ctx| ctx)?;
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_network();
@@ -1009,6 +1041,29 @@ async fn main() -> Result<()> {
                 }
                 println!("[8] interactive shell still answers after the probe -- channels are independent");
                 println!("\nE2E-PROBE PASS: second-channel probe ran mid-session without disturbing the interactive shell");
+            }
+
+            if let Some(dir) = &args.transfer_dir {
+                // --- 9. the file-transfer plane, mid-session --------
+                // Deliberately on the SAME live session as the shell
+                // above: SFTP rides a second bulk channel, and the
+                // interactive channel must be no more disturbed by a
+                // multi-megabyte transfer than it was by the probe.
+                let stage = match &args.transfer_stage {
+                    Some(p) => p.clone(),
+                    None => std::env::temp_dir()
+                        .join(format!("wosh-transfer-{}", std::process::id())),
+                };
+                std::fs::create_dir_all(&stage)?;
+                transfer::run(
+                    acc,
+                    iface,
+                    s,
+                    dir,
+                    &stage,
+                    args.mid_transfer_cmd.as_deref(),
+                )
+                .await?;
             }
 
             if args.hold_ms > 0 {

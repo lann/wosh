@@ -111,7 +111,7 @@ func start(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel)) *rig {
 // start's plain-shell behaviour exactly.
 func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string) *rig {
 	t.Helper()
-	return startFull(t, cfg, shell, command, nil)
+	return startFull(t, cfg, shell, command, nil, nil)
 }
 
 // startWithProbe is start, but the fixture server also answers a
@@ -121,12 +121,27 @@ func startWithCommand(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channe
 // serves.
 func startWithProbe(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), probeShell func(command string, ch ssh.Channel)) *rig {
 	t.Helper()
-	return startFull(t, cfg, shell, "", probeShell)
+	return startFull(t, cfg, shell, "", probeShell, nil)
 }
 
+// startWithBulk is start, but the fixture server answers the SUBSYSTEM
+// and exec requests a bulk channel makes (see channel_test.go) through
+// `bulk`. Refusing there is how a server with no matching `Subsystem`
+// line is reproduced.
+func startWithBulk(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), bulk bulkServer) *rig {
+	t.Helper()
+	return startFull(t, cfg, shell, "", nil, bulk)
+}
+
+// bulkServer decides what a non-interactive channel's `subsystem` or
+// `exec` request is granted. Returning nil REFUSES the request, which
+// is what an sshd without the named subsystem does; otherwise the
+// returned func serves the channel once the grant has been replied.
+type bulkServer func(kind, arg string, ch ssh.Channel) func(ssh.Channel)
+
 // startFull is the shared setup behind start / startWithCommand /
-// startWithProbe.
-func startFull(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string, probeShell func(command string, ch ssh.Channel)) *rig {
+// startWithProbe / startWithBulk.
+func startFull(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), command string, probeShell func(command string, ch ssh.Channel), bulk bulkServer) *rig {
 	t.Helper()
 
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -149,7 +164,7 @@ func startFull(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), com
 
 	requests := &requestLog{}
 	execCommand := &stringBox{}
-	go serveOne(srvSide, cfg, shell, requests, execCommand, probeShell)
+	go serveOne(srvSide, cfg, shell, requests, execCommand, probeShell, bulk)
 
 
 	stop := make(chan struct{})
@@ -205,7 +220,7 @@ func startFull(t *testing.T, cfg *ssh.ServerConfig, shell func(ssh.Channel), com
 	}
 }
 
-func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), requests *requestLog, execCommand *stringBox, probeShell func(command string, ch ssh.Channel)) {
+func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), requests *requestLog, execCommand *stringBox, probeShell func(command string, ch ssh.Channel), bulk bulkServer) {
 	defer c.Close()
 	sconn, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
@@ -252,6 +267,20 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 						if isFirst {
 							execCommand.set_(payload.Command)
 						}
+						// A later channel's exec belongs to whichever
+						// plane the test installed: the probe plane's
+						// one-shot command, or the bulk plane's
+						// long-lived pipe (the `sftp -s` fallback).
+						if !isFirst && probeShell == nil && bulk != nil {
+							serve := bulk("exec", payload.Command, ch)
+							if req.WantReply {
+								_ = req.Reply(serve != nil, nil)
+							}
+							if serve != nil {
+								go serve(ch)
+							}
+							continue
+						}
 						if req.WantReply {
 							_ = req.Reply(true, nil)
 						}
@@ -262,6 +291,22 @@ func serveOne(c net.Conn, cfg *ssh.ServerConfig, shell func(ssh.Channel), reques
 					}
 					if req.WantReply {
 						_ = req.Reply(true, nil)
+					}
+				case "subsystem":
+					// RFC 4254 s6.5 again, one string: the subsystem
+					// name. A server with no matching `Subsystem`
+					// line replies false HERE, which is exactly what
+					// a nil bulk handler reproduces.
+					var payload struct{ Name string }
+					var serve func(ssh.Channel)
+					if err := ssh.Unmarshal(req.Payload, &payload); err == nil && bulk != nil {
+						serve = bulk("subsystem", payload.Name, ch)
+					}
+					if req.WantReply {
+						_ = req.Reply(serve != nil, nil)
+					}
+					if serve != nil {
+						go serve(ch)
 					}
 				default:
 					if req.WantReply {
