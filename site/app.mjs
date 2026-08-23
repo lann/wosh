@@ -693,7 +693,7 @@ const wireInput = (session, fail) => {
 // A10). STRICT on purpose: this page once read `.tag` from an older
 // convention, every status quietly became "unknown", and the host-key
 // prompt was skipped -- the failure mode must be loud, never a default.
-const statusOf = (s) => {
+export const statusOf = (s) => {
   const kind = s?.kind;
   if (typeof kind !== "string") {
     throw new Error(`unrecognized session status shape: ${JSON.stringify(s)}`);
@@ -736,6 +736,7 @@ const GATED = [
   "pendingPrompts", "answerPrompts", "writeInput", "resize",
   "drainOutput", "exited", "exitStatus", "detach", "suspend", "wake",
   "authenticate", // the pre-split spelling older component builds export
+  "listDir", "upload", "download", // file transfer (wit/terminal.wit)
 ];
 function serializeSession(session) {
   let chain = Promise.resolve();
@@ -1226,6 +1227,15 @@ function sessionEnded(session, why, extra) {
 export const note = (text) => {
   term.write(`\r\n\x1b[2m[wosh] ${text}\x1b[0m\r\n`);
 };
+
+/** The live wrapped session, for the transfer panel (site/transfer-ui.mjs)
+ * -- `null` when there is none. Exposed read-only: the panel drives the
+ * same gated `listDir`/`upload`/`download` calls the terminal itself
+ * queues behind, so a transfer's start-call can never race a resize or
+ * a keystroke into the instance. */
+export function activeSession() {
+  return currentSession;
+}
 
 /** Tear the session down and close the iroh connection. */
 export async function detach() {

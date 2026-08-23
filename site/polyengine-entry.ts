@@ -44,6 +44,16 @@ import { socketsImports } from "@polymorph/iroh";
 import { identityStoreImports } from "./identity-store.ts";
 import { pairingStoreImports } from "./pairing-store.ts";
 import { passkeyStoreImports, setCeremonyGate } from "./passkey-store.ts";
+import { transferIoImports } from "./transfer-io.ts";
+export {
+  newStagingId,
+  stagedBlob,
+  closeStaged,
+  removeStaged,
+  Source as TransferSource,
+  Sink as TransferSink,
+  useTransferWorker,
+} from "./transfer-io.ts";
 
 export { ComponentException, isComponentException, setCeremonyGate };
 
@@ -93,6 +103,7 @@ export async function loadClient(wasmUrl: string, translatorUrl: string): Promis
     ...identityStoreImports(),
     ...pairingStoreImports(),
     ...passkeyStoreImports(),
+    ...transferIoImports(),
   };
   const instance = await instantiate(artifacts, imports);
   const api = instance.exports[TERMINAL_INTERFACE];

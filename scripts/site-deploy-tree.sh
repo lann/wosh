@@ -41,7 +41,8 @@ done
 cp site/index.html site/app.mjs site/boot.mjs site/overlay.mjs site/mobile.mjs \
    site/lifecycle.mjs site/links.mjs site/separator.mjs site/qr.mjs \
    site/touch-select.mjs site/esc-watch.mjs \
-   site/buffer-store.mjs site/sessions.mjs site/authorized-keys.mjs "$dest/"
+   site/buffer-store.mjs site/sessions.mjs site/authorized-keys.mjs \
+   site/transfer-ui.mjs site/transfer-worker.mjs "$dest/"
 cp site/manifest.json "$dest/"
 cp site/icons/*.png "$dest/icons/"
 
