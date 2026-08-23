@@ -1,0 +1,142 @@
+name: ci
+
+# The repo's own definition of green: `just check`, the full gate
+# stack -- unit gates, the native e2e legs (real iroh through a local
+# relay, a throwaway user-mode sshd), and the browser gates (the real
+# assembled site in headless Chromium). Nothing here is CI-specific:
+# every gate runs the same way on a workstation, and the justfile owns
+# the orchestration, so this workflow is only toolchain + `just check`.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref; a newer push to a PR supersedes the in-flight run.
+# main runs are never cancelled -- they are what saves the caches PRs
+# restore from.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Cold (nothing cached): the polymorph-iroh endpoint build plus two
+    # wasmtime-linking host crates dominate; warm runs are mostly gates.
+    timeout-minutes: 120
+    steps:
+      # Full history: the site's build number is the commit count
+      # (scripts/site-deploy-tree.sh), which a shallow checkout would
+      # report as 1.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rust + wasm targets
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add wasm32-wasip2 wasm32-unknown-unknown
+
+      # componentize-go needs a Go newer than the runner ships, and for
+      # async worlds it downloads its own patched toolchain on first
+      # build (cached below with .deps).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: false
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # The wasmtime CLI is pinned to the same release line as the
+      # wasmtime crate in Cargo.lock: `just spike-async` invokes it
+      # directly with -W component-model-async, and the two moving
+      # together is the point of the spike.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,wasm-tools,cargo-binstall,wasmtime@47.0.3
+
+      - name: wac
+        # binstall resolves release artifacts through api.github.com,
+        # and Actions runners share IP pools where the unauthenticated
+        # quota (60/hour) is effectively always exhausted -- the
+        # symptom is a 403 mid-resolution. The workflow token lifts the
+        # step onto the repository's own quota; no extra permissions.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall --no-confirm --locked wac-cli
+
+      - name: componentize-go
+        run: go install github.com/bytecodealliance/componentize-go@latest
+
+      # The e2e gates stand up a throwaway sshd as the invoking user on
+      # a high port (scripts/test-sshd.sh); the runner image ships only
+      # the client half of OpenSSH.
+      - name: sshd
+        run: |
+          command -v /usr/sbin/sshd >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openssh-server
+          }
+          /usr/sbin/sshd -? 2>&1 | head -1 || true
+
+      # The expensive half is .deps/: polymorph-iroh's endpoint
+      # component. Keyed on setup.sh, which owns every pin; shared with
+      # the pages workflow, whose setup produces the same tree.
+      - name: Cache .deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps
+            ~/.cache/componentize-go
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/setup.sh') }}
+
+      # A separate key from the pages workflow's cargo cache: this job
+      # builds the whole workspace (hosts included), and a cache key is
+      # write-once -- sharing pages' key would freeze whichever partial
+      # tree got saved first. Falling back to pages' cache still warms
+      # a cold start.
+      - name: Cache cargo + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            ssh-core/main.wasm
+          key: cargo-check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'ssh-core/go.sum') }}
+          restore-keys: |
+            cargo-check-${{ runner.os }}-
+            cargo-${{ runner.os }}-
+
+      # The browser gates find their Chromium under ~/.cache/ms-playwright
+      # (host-test/*.mjs findChrome); playwright-core skips the download
+      # when the build is already there.
+      - name: Cache Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ hashFiles('host-test/package.json') }}
+          restore-keys: chromium-${{ runner.os }}-
+
+      - name: Dependencies
+        # The token for the binstalls inside (iroh-relay et al) -- same
+        # quota story as the wac step.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/setup.sh
+
+      - name: Browser gate deps
+        run: |
+          just web-deps
+          cd host-test && npx playwright-core install chromium
+
+      - name: just check
+        run: just check
