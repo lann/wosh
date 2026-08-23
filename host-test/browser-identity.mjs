@@ -46,8 +46,12 @@ function findChrome() {
     .filter((d) => d.startsWith("chromium-"))
     .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
   for (const d of dirs.reverse()) {
-    const p = join(glob, d, "chrome-linux", "chrome");
-    if (existsSync(p)) return p;
+    // Chrome for Testing unpacks as chrome-linux64/; older Chromium
+    // builds as chrome-linux/.
+    for (const sub of ["chrome-linux64", "chrome-linux"]) {
+      const p = join(glob, d, sub, "chrome");
+      if (existsSync(p)) return p;
+    }
   }
   throw new Error("no Chromium found; set CHROME_PATH");
 }

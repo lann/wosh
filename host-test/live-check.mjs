@@ -5,7 +5,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 const glob = `${process.env.HOME}/.cache/ms-playwright`;
 const dir = readdirSync(glob).filter(d => d.startsWith("chromium-")).sort().pop();
-const b = await chromium.launch({ executablePath: join(glob, dir, "chrome-linux", "chrome"), args: ["--no-sandbox"] });
+// Chrome for Testing unpacks as chrome-linux64/; older builds as chrome-linux/.
+const exe = ["chrome-linux64", "chrome-linux"].map(s => join(glob, dir, s, "chrome")).find(existsSync);
+const b = await chromium.launch({ executablePath: exe, args: ["--no-sandbox"] });
 const p = await b.newPage();
 const errs = [];
 p.on("pageerror", e => errs.push(String(e)));

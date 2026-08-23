@@ -47,6 +47,22 @@ else
   WEBAUTHN_ALG="PubkeyAcceptedAlgorithms +webauthn-sk-ecdsa-sha2-nistp256@openssh.com"
 fi
 
+# The gates deliberately hammer this sshd with rejected host keys
+# (connections that never attempt auth) and failed publickey probes;
+# OpenSSH 9.8+ per-source penalties would start refusing 127.0.0.1
+# outright after a few of those, which surfaces as flaky "tunnel died
+# before the host-key gate" hangs in whichever gate runs next. Before
+# 9.8 there is nothing to disable AND the option NAME does not parse
+# (`sshd -t` refuses the whole config), so it is emitted only where it
+# means something. sshd has no --version; the banner on -V's usage
+# complaint is the standard scrape.
+SSHD_VER="$(/usr/sbin/sshd -V 2>&1 | grep -oE 'OpenSSH_[0-9]+\.[0-9]+' | head -1 | cut -d_ -f2)"
+if [ -n "$SSHD_VER" ] && [ "$(printf '%s\n' 9.8 "$SSHD_VER" | sort -V | head -1)" = "9.8" ]; then
+  PENALTIES="PerSourcePenalties no"
+else
+  PENALTIES="# PerSourcePenalties: no such option before OpenSSH 9.8 (this is $SSHD_VER)"
+fi
+
 ensure() {
   mkdir -p "$DIR"
   [ -f "$DIR/host_ed25519" ] || ssh-keygen -t ed25519 -f "$DIR/host_ed25519" -N '' -q
@@ -63,12 +79,10 @@ PasswordAuthentication $PASSWORD_AUTH
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 StrictModes no
-# The gates deliberately hammer this sshd with rejected host keys
-# (connections that never attempt auth) and failed publickey probes;
-# OpenSSH 9.8+ per-source penalties would start refusing 127.0.0.1
-# outright after a few of those, which surfaces as flaky "tunnel died
-# before the host-key gate" hangs in whichever gate runs next.
-PerSourcePenalties no
+# See PENALTIES above: the gates' rejected host keys and failed
+# publickey probes would trip 9.8+'s per-source penalties into
+# refusing 127.0.0.1 outright.
+$PENALTIES
 # The passkey gate authenticates with OpenSSH's browser-webauthn
 # algorithm. Every sshd since 8.4 can VERIFY those signatures, but only
 # 10.3 and later put the algorithm in the default
