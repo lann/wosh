@@ -24,6 +24,11 @@ world wosh-client {
   import identity-store;
   import passkey-store;
   import pairing-store;
+  // File-transfer byte ends: upload sources and download sinks are
+  // host objects (a picked File, OPFS staging), so the host serves
+  // them, like the stores above. The SFTP engine that moves bytes
+  // between them and the far end lives in this component.
+  import transfer-io;
   // Solely for the resume machine's backoff between redial attempts;
   // the composed artifact already imports this interface (the iroh
   // endpoint sleeps on it), so this adds nothing to the host surface.

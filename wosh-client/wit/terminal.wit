@@ -25,6 +25,56 @@ interface pairing-store {
   store: async func(blob: list<u8>) -> result<_, string>;
 }
 
+/// Host-side ends of a file transfer: where upload bytes come from and
+/// where download bytes go. The component speaks SFTP to the far end
+/// and owns every offset, retry, and resume decision; what it cannot
+/// own is the browser's storage, because files live behind APIs only
+/// the host can reach (a picked `File`, OPFS staging). So the host
+/// hands the component a SOURCE or a SINK, and the component pulls or
+/// pushes bytes through it.
+///
+/// Both are dumb by design -- no seeking sink, no readable-writable
+/// hybrid -- because the transfer engine needs exactly two motions:
+/// read-at-offset (a `File` is random-access for free) and append
+/// (OPFS staging is written once, in order). RESUME leans on that
+/// split: after an interruption the engine asks the sink how much it
+/// has durably kept, re-reads the tail from BOTH ends, and continues
+/// from where they agree -- so a sink must never claim bytes it could
+/// still lose.
+interface transfer-io {
+  /// An upload's byte supply: the file the user picked, or anything
+  /// pretending to be one.
+  resource source {
+    /// Total size in bytes, fixed for the life of the source. A file
+    /// that changes size mid-upload is the user's own race; the
+    /// engine detects it only as a short or over-long final read.
+    size: async func() -> u64;
+
+    /// `len` bytes starting at `offset`, short only at end-of-file.
+    /// The engine issues these strictly sequentially -- there is no
+    /// read-ahead to cancel on the host side.
+    read: async func(offset: u64, len: u32) -> result<list<u8>, string>;
+  }
+
+  /// A download's destination: OPFS staging, or anything append-only.
+  resource sink {
+    /// Append `data` after everything written so far. The host may
+    /// buffer; `committed` is what tells the truth about durability.
+    write: async func(data: list<u8>) -> result<_, string>;
+
+    /// How many bytes are DURABLY kept -- the number that survives a
+    /// page death, not the number merely handed to `write`. This is
+    /// the engine's resume anchor, so overstating it corrupts the
+    /// file: understating merely re-transfers a tail.
+    committed: async func() -> u64;
+
+    /// Flush buffered writes down to durable, advancing `committed`
+    /// to everything written. Called at progress checkpoints and
+    /// before the transfer reports itself finished.
+    flush: async func() -> result<_, string>;
+  }
+}
+
 /// Host-side keeper of this client's SSH identity: the key never
 /// crosses this interface, only its public half and signatures do.
 ///
@@ -252,6 +302,8 @@ interface passkey-store {
 /// single-Go-component client -- no caller-supplied keepalive is
 /// needed, and there is none.
 interface terminal {
+  use transfer-io.{source, sink};
+
   /// Where the session currently stands.
   variant status {
     /// Dialing over iroh, or the SSH transport handshake is running.
@@ -343,6 +395,59 @@ interface terminal {
     /// Everything the command wrote, stdout and stderr interleaved,
     /// capped by the core at 256 KiB.
     output: list<u8>,
+  }
+
+  /// One entry of a remote directory listing.
+  ///
+  /// `name` is the filename as the server sent it: RAW BYTES, because
+  /// SFTP v3 defines names as bytes with no encoding and real home
+  /// directories contain latin-1 and worse. It is a single path
+  /// COMPONENT, not a path: the caller tracks which directory it
+  /// listed and does the joining (`dir-bytes + "/" + name`), because
+  /// nothing else remembers where a listing came from. Those joined
+  /// bytes -- never the display form -- are what goes back into
+  /// `download` or `list-dir` to act on the entry. `display` is a
+  /// lossy UTF-8 rendering made here so that every consumer shows a
+  /// bad name the same way; it is for eyes only.
+  record dir-entry {
+    /// The name, byte-exact, for machines.
+    name: list<u8>,
+    /// The name, lossily decoded, for humans. Never feed it back.
+    display: string,
+    /// True when the entry is a directory (from the server's ATTRS).
+    is-dir: bool,
+    /// Size in bytes, when the server reported one.
+    size: option<u64>,
+    /// Modification time, seconds since the epoch, when reported.
+    mtime: option<u64>,
+  }
+
+  /// Which way a transfer moves.
+  enum transfer-direction { upload, download }
+
+  /// Where a transfer stands. Poll it like `status` -- cheap, current,
+  /// and the only tick a transfer needs from the page. The engine
+  /// inside advances on its own spawned tasks; this is a window, not
+  /// a crank.
+  record transfer-progress {
+    /// Which way the bytes move.
+    direction: transfer-direction,
+    /// Bytes confirmed moved: for a download, durably committed to
+    /// the sink (not merely received); for an upload, acknowledged by
+    /// the server's responses (not merely written to the wire). The
+    /// number never moves backwards WITHIN a connection; a resume may
+    /// replay a verified tail, so across an interruption it can dip.
+    done: u64,
+    /// Total bytes this transfer will move, when knowable: a source
+    /// states its size, a download learns it from FSTAT. None for a
+    /// file the server would not stat.
+    total: option<u64>,
+    /// The terminal outcome, exactly once: `none` while running, ok
+    /// on completion, an error string on failure or cancellation.
+    /// Unlike the probe's park-and-poll, the outcome is NOT cleared
+    /// by observation -- a finished transfer stays observable until
+    /// the resource drops.
+    outcome: option<result<_, string>>,
   }
 
   /// This browser's SSH identity, as an OpenSSH `authorized_keys` line
@@ -594,5 +699,77 @@ interface terminal {
     /// for a page that could see it. Idempotent; a no-op on a session
     /// that is still connected, and on one that is genuinely over.
     wake: async func();
+
+    // --- file transfer ---------------------------------------------
+
+    /// List a remote directory over SFTP. `path` is raw bytes (see
+    /// `dir-entry`); to descend, join the listed directory's bytes
+    /// with an entry's `name` -- entries are components, and the
+    /// joining is the caller's. Relative input resolves against the
+    /// SSH user's home: the component REALPATHs before reading.
+    ///
+    /// The first SFTP call on a session opens the channel lazily and
+    /// keeps it: subsystem `sftp` first, then the `sftp-server` exec
+    /// fallback for an sshd with no Subsystem line. Fails legibly
+    /// when neither path exists on the target.
+    list-dir: async func(path: list<u8>) -> result<list<dir-entry>, string>;
+
+    /// Start moving `source`'s bytes to `remote-path` on the target.
+    /// Returns as soon as the transfer is UNDERWAY -- progress and
+    /// outcome live on the returned resource, polled.
+    ///
+    /// Resume is the default, not a mode: when the remote path
+    /// already holds a shorter file, the engine re-reads the last
+    /// stretch from both ends, and APPENDS from where they agree --
+    /// same idea as rsync's append-verify, sized to catch a torn
+    /// tail. An EQUAL-length remote is the same dance with nothing
+    /// left to append: matching tail means already done, reported as
+    /// an immediate success. When the tails disagree, or the remote
+    /// file is longer than the source, the transfer fails rather
+    /// than guessing; `overwrite` restarts from zero unconditionally.
+    upload: async func(source: source, remote-path: list<u8>, overwrite: bool) -> result<transfer, string>;
+
+    /// The mirror image: move `remote-path`'s bytes into `sink`.
+    /// The sink's `committed` count is the resume anchor: the engine
+    /// re-reads the overlap from the remote, verifies it against the
+    /// sink's tail bytes... which an append-only sink cannot hand
+    /// back, so verification uses the remote's FSTAT identity (size,
+    /// and mtime when the server reports one) captured at first start
+    /// -- stored with the transfer, compared on resume. An mtime that
+    /// was present and then changed OR vanished is a refusal; only a
+    /// server that never reported one gets the weaker size-only
+    /// check. A remote file that changed since is refused rather
+    /// than spliced, and one that ends short of its stated size is a
+    /// FAILURE that keeps the sink's bytes -- nothing ever claims a
+    /// file is whole that is not.
+    ///
+    /// `overwrite` requires an EMPTY sink (`committed` = 0) and fails
+    /// legibly otherwise: a sink has no truncate by design, so
+    /// discarding staged bytes and handing over a fresh sink is the
+    /// host's move, not this engine's.
+    download: async func(remote-path: list<u8>, sink: sink, overwrite: bool) -> result<transfer, string>;
+  }
+
+  /// One transfer in flight (or finished): a window onto engine state
+  /// the page polls, and the handle that cancels it.
+  ///
+  /// Transfers survive what the SESSION survives: a transport blip is
+  /// replayed by the tunnel beneath notice; a lost-and-resumed session
+  /// re-anchors via the verify-and-append dance above. What a transfer
+  /// does NOT survive is its session closing for good or this resource
+  /// dropping -- there is no orphaned background transfer, by design:
+  /// a page that wants a transfer to continue holds its handle.
+  resource transfer {
+    /// Where it stands; see `transfer-progress`.
+    progress: async func() -> transfer-progress;
+
+    /// Stop now. The engine quiesces at the next packet boundary --
+    /// nothing is dropped mid-flight, per the no-cancel discipline
+    /// around async imports -- closes the remote handle, flushes the
+    /// sink, and reports `cancelled` through `outcome`. Idempotent.
+    /// What is already moved STAYS moved: a cancelled upload leaves a
+    /// shorter remote file, a cancelled download leaves sink bytes,
+    /// and both are exactly what resume continues from later.
+    cancel: async func();
   }
 }

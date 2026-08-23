@@ -10,6 +10,8 @@ wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-tas
 wosh-connstring = { path = "../connstring" }
 wosh-tunnel = { path = "../tunnel" }
 wosh-webauthn-ssh = { path = "../webauthn-ssh" }
+# The SFTP v3 codec the transfer engine speaks (see src/transfer.rs).
+wosh-sftp = { path = "../sftp" }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 [lib]
