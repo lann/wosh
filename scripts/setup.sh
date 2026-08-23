@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Idempotent toolchain + dependency setup for wosh. Re-run freely.
 #
-# Everything external is pinned and built under .deps/ INSIDE the repo,
-# deliberately: these builds are load-bearing (nothing composes without
+# Everything external is pinned and fetched (the iroh endpoint component)
+# or installed (the relay) under/onto .deps/ and PATH INSIDE the repo,
+# deliberately: these artifacts are load-bearing (nothing composes without
 # iroh_endpoint.wasm, nothing runs without a relay), so they must not
 # live in a scratch directory that can be reclaimed.
 set -euo pipefail
@@ -15,17 +16,18 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # --- pins -------------------------------------------------------------
 # polymorph-iroh supplies the iroh endpoint component (the transport for
-# both of our components). Its own scripts/setup.sh no longer checks out
-# sibling repos: it installs its pinned toolchain and tools, including
-# the prebuilt iroh-relay binary the gates run. The sibling host-crate
-# tags in listener-host/Cargo.toml and smoke-test/Cargo.toml must stay
-# content-identical (Rust + WIT) to the revs polymorph-iroh's own
-# Cargo.toml pins, since the native hosts link those crates directly
-# against the endpoint guest built here -- re-verify when bumping.
-PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-# The upstream release tag (the same line the Cargo.toml sibling pins
-# and the deno.json @polymorph pins follow).
-PIROH_PIN=v0.5.0
+# both of our components), fetched as the digest-pinned artifact its
+# GitHub release carries -- built there at the release tag, on the
+# pinned toolchain, by its release-assets workflow. The sibling
+# host-crate tags in listener-host/Cargo.toml and smoke-test/Cargo.toml
+# must stay content-identical (Rust + WIT) to the revs polymorph-iroh's
+# own Cargo.toml pins, since the native hosts link those crates directly
+# against the endpoint guest fetched here -- re-verify when bumping.
+PIROH_VERSION=v0.5.0
+ENDPOINT_SHA256=ab4361073be0fbbf2a0512d041103d757656794dceb6f1edd199173047247aa7
+# The relay binary version pairs with the iroh line the endpoint is
+# built against (polymorph-iroh pins the same 1.0.3).
+IROH_RELAY_VERSION=1.0.3
 
 # polyengine (the JS component host) arrives as published jsr releases:
 # the root deno.json pins @polyengine/* and @polymorph/* there, and
@@ -68,38 +70,44 @@ say "wasmtime: $(wasmtime --version)"
 # componentize-go downloads a patched Go toolchain on first async build
 # (golang.org/x/crypto builds fine on it; see README "async lifting").
 
-# --- polymorph-iroh: the endpoint component + a local relay -----------
-if [ ! -d "$DEPS/polymorph-iroh/.git" ]; then
-  say "cloning polymorph-iroh"
-  git clone "$PIROH_REPO" "$DEPS/polymorph-iroh"
+# --- iroh endpoint component: digest-pinned release artifact ----------
+say "fetching the iroh endpoint component"
+endpoint_versioned="$DEPS/iroh_endpoint-$PIROH_VERSION.wasm"
+if ! sha256sum -c --status <<<"$ENDPOINT_SHA256  $endpoint_versioned" 2>/dev/null; then
+  curl -fsSL -o "$endpoint_versioned" \
+    "https://github.com/polymorph-components/polymorph-iroh/releases/download/$PIROH_VERSION/iroh_endpoint.wasm"
+  sha256sum -c --status <<<"$ENDPOINT_SHA256  $endpoint_versioned" || {
+    echo "iroh_endpoint.wasm digest mismatch (expected $ENDPOINT_SHA256)" >&2
+    exit 1
+  }
 fi
-# The pin is a tag, so resolve it to a commit for the staleness check
-# (and tolerate a checkout that predates the tag by fetching first).
-piroh_want() {
-  git -C "$DEPS/polymorph-iroh" rev-parse --verify --quiet "$PIROH_PIN^{commit}" 2>/dev/null || true
-}
-want="$(piroh_want)"
-if [ -z "$want" ] || [ "$(git -C "$DEPS/polymorph-iroh" rev-parse HEAD)" != "$want" ]; then
-  git -C "$DEPS/polymorph-iroh" fetch --quiet --tags origin || true
-  want="$(piroh_want)"
-  if [ -n "$want" ]; then
-    git -C "$DEPS/polymorph-iroh" checkout --quiet "$want"
+# Stable path the justfile composes against; unconditional so a version
+# bump above takes effect even when the versioned file was already cached.
+cp "$endpoint_versioned" "$DEPS/iroh_endpoint.wasm"
+
+# --- iroh-relay: prebuilt, pinned binary -------------------------------
+say "checking iroh-relay"
+if iroh-relay --version 2>/dev/null | grep -qF "$IROH_RELAY_VERSION"; then
+  say "iroh-relay $IROH_RELAY_VERSION already on PATH"
+else
+  if command -v cargo-binstall >/dev/null 2>&1; then
+    cargo binstall --no-confirm --locked --force "iroh-relay@$IROH_RELAY_VERSION"
   else
-    echo "note: pin $PIROH_PIN not found; staying on $(git -C "$DEPS/polymorph-iroh" rev-parse --short HEAD)" >&2
+    # No prebuilt path without binstall; the source build needs the
+    # server feature to produce the binary at all.
+    cargo install "iroh-relay@$IROH_RELAY_VERSION" --locked --features server
   fi
+  hash -r
+  iroh-relay --version 2>/dev/null | grep -qF "$IROH_RELAY_VERSION" || {
+    echo "iroh-relay --version does not report $IROH_RELAY_VERSION after install" \
+         "-- check for a shadowing binary earlier on PATH: $(command -v iroh-relay)" >&2
+    exit 1
+  }
 fi
-say "polymorph-iroh: $(git -C "$DEPS/polymorph-iroh" log --oneline -1)"
-
-# Its pinned toolchain + tools, incl. the iroh-relay binary the gates run.
-(cd "$DEPS/polymorph-iroh" && ./scripts/setup.sh)
-
-say "building the iroh endpoint component (cold: several minutes)"
-(cd "$DEPS/polymorph-iroh" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
-
 
 say "setup complete
 
-  iroh endpoint : .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm
-  iroh relay    : iroh-relay on PATH ($(iroh-relay --version 2>/dev/null || echo not found))
+  iroh endpoint : .deps/iroh_endpoint.wasm ($PIROH_VERSION)
+  iroh relay    : $(command -v iroh-relay) ($(iroh-relay --version 2>/dev/null || echo not found))
 
 next: just build"

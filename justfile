@@ -4,10 +4,11 @@ set shell := ["bash", "-cu"]
 # distributions ship; prefer a locally-installed one.
 export PATH := env_var('HOME') + "/.local/go/bin:" + env_var('HOME') + "/go/bin:" + env_var('PATH')
 
-ENDPOINT := ".deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm"
-# iroh-relay is no longer built from a source checkout: polymorph-iroh's
-# own scripts/setup.sh installs a prebuilt, pinned iroh-relay binary
-# (1.0.3) via cargo-binstall onto PATH.
+# The endpoint is the digest-pinned artifact from polymorph-iroh's
+# GitHub release, fetched by scripts/setup.sh into .deps/. iroh-relay is
+# the prebuilt, pinned binary (1.0.3) scripts/setup.sh installs onto
+# PATH via cargo-binstall.
+ENDPOINT := ".deps/iroh_endpoint.wasm"
 RELAY    := "iroh-relay"
 
 default:
