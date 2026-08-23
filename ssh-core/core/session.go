@@ -281,6 +281,13 @@ type Engine struct {
 	probeInFlight bool
 	probeResult   *ProbeResult
 
+	// Every live bulk channel (see channel.go). A set, not a slice:
+	// channels come and go independently over a long session, and the
+	// only operations are add, forget, and "close them all" when this
+	// session goes terminal -- the lifetime rule in `resource
+	// channel`'s doc.
+	channels map[*Channel]struct{}
+
 	cols, rows uint16
 	// The command to run in place of the default shell (RFC 4254
 	// s6.5 `exec` vs `shell`), empty for a plain interactive shell.
@@ -306,6 +313,7 @@ func New(user string, cols, rows uint16, command string) *Engine {
 		credsReady:      make(chan struct{}),
 		promptAnswers:   make(chan []string, 1),
 		sigReply:        make(chan sigReply, 1),
+		channels:        map[*Channel]struct{}{},
 		cols:            cols,
 		rows:            rows,
 		command:         strings.Clone(command),
@@ -333,16 +341,31 @@ func (s *Engine) setState(st State, msg string) {
 // closeWith moves to the terminal state. A recorded wire failure wins
 // over whatever the ssh stack derived from it: "connection lost" is
 // the true cause, and the EOF the mux reports is only its shadow.
+//
+// It is also the one funnel through which every bulk channel learns
+// the session is gone (wit/core.wit: "closing or losing the session
+// moves every channel to `closed`"). Doing it here rather than in
+// Close() covers the paths that never call Close at all -- a dead
+// wire, a failed handshake, the shell exiting.
 func (s *Engine) closeWith(msg string) {
 	s.mu.Lock()
+	became := false
 	if s.state != StateClosed {
 		if s.wireReason != "" {
 			msg = s.wireReason
 		}
 		s.state = StateClosed
 		s.closeMsg = msg
+		became = true
 	}
+	reason := s.closeMsg
 	s.mu.Unlock()
+
+	if became {
+		// Outside the lock: closeAllChannels takes it again, and each
+		// channel's teardown calls back into forgetChannel.
+		s.closeAllChannels("session closed: " + reason)
+	}
 }
 
 // run drives the whole ssh lifecycle: handshake (parking at the
@@ -772,12 +795,18 @@ func (s *Engine) AnswerPrompts(answers []string) error {
 // --- the byte plane --------------------------------------------------
 
 // Feed backs `feed`.
+//
+// The bytes are handed to the shuttle WITHOUT a defensive clone,
+// which is safe because push copies them into the inbox before it
+// returns -- see the copy-on-push contract on shuttleConn.push. That
+// matters more than it looks: `feed` carries 256 KiB at a time once a
+// bulk transfer is running, and a redundant clone of every one of
+// them was the single largest allocator on this path. Allocation on
+// this path is not merely a cost, it is a hazard: see
+// export_wosh_ssh_core_core/gc.go for what a collection triggered
+// from inside the canonical ABI's lowering does to the instance.
 func (s *Engine) Feed(data []byte) {
-	// Clone: retained across the export boundary by the shuttle's
-	// inbox, read well after the call returns.
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	s.conn.push(cp)
+	s.conn.push(data)
 	gosched(16)
 }
 

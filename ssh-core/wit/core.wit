@@ -155,6 +155,24 @@ interface core {
     output: list<u8>,
   }
 
+  /// Where a bulk channel stands (see `resource channel`).
+  variant channel-state {
+    /// Both directions live -- meaning "not yet failed", not
+    /// "granted": a channel is born `open` while the server's answer
+    /// to the open request is still in flight, so a refusal shows up
+    /// as a transition to `closed`, not as an open that never was.
+    open,
+    /// The remote sent EOF: it will produce no more bytes. Anything
+    /// already buffered is still drainable -- `eof` is a statement
+    /// about the REMOTE, not about this side's buffer, so drain until
+    /// empty before concluding the reply is complete.
+    eof,
+    /// Terminal: the channel closed, failed, or died with its
+    /// connection. The string is a human-readable reason. Buffered
+    /// bytes are gone; a channel never leaves this state.
+    closed(string),
+  }
+
   resource session {
     /// Start an SSH client session whose wire is `feed`/`drain`.
     /// Never fails synchronously -- watch `status`. `user` is needed
@@ -327,8 +345,127 @@ interface core {
     /// polled).
     probe-poll: func() -> option<probe-result>;
 
+    // --- the bulk plane --------------------------------------------
+
+    /// Open an SSH subsystem (RFC 4254 s6.5) on a NEW channel of the
+    /// same authenticated connection, for carrying a byte protocol the
+    /// embedder speaks and this core does not: `sftp` is the reason
+    /// this exists. No pty is requested, so nothing cooks the bytes.
+    ///
+    /// Unlike the probe plane, which answers one question and hands
+    /// back a capped buffer, a bulk channel is long-lived, streaming,
+    /// and flow-controlled -- see `resource channel` for how
+    /// backpressure works. Several may be open at once (an upload and
+    /// a download are two), bounded only by what the server allows.
+    ///
+    /// Fails only on refusals decidable HERE, without the wire:
+    /// `status` not `ready`, or the connection already gone. A
+    /// SERVER's refusal is a round trip away and this core cannot
+    /// block to hear it, so it arrives later, as
+    /// `channel-state.closed(reason)` -- a server with no
+    /// `Subsystem sftp` line surfaces there, with a reason naming the
+    /// refused subsystem and the exec fallback. The embedder's move is
+    /// protocol-shaped anyway: write the first request (for SFTP,
+    /// INIT) and treat the reply-or-`closed` race as the verdict.
+    open-subsystem: func(name: string) -> result<channel, string>;
+
+    /// The same, but starting `command` through an `exec` request
+    /// rather than naming a subsystem -- again with no pty.
+    ///
+    /// This is the fallback for an sshd that has no `Subsystem sftp`
+    /// line: OpenSSH's `sftp-server` speaks its protocol on stdin and
+    /// stdout regardless of how it was started, so
+    /// `exec /usr/lib/openssh/sftp-server` reaches the same server the
+    /// subsystem name would have. OpenSSH's own client does this for
+    /// `sftp -s`. The channel that comes back is identical in every
+    /// other respect.
+    open-exec-channel: func(command: string) -> result<channel, string>;
+
     /// Tear the session down: fails any parked gate, closes the ssh
     /// stack, and moves to `closed`.
+    close: func();
+  }
+
+  /// One bulk channel: a flow-controlled byte pipe on its own SSH
+  /// channel, opened by `open-subsystem` or `open-exec-channel`.
+  ///
+  /// This core does not know or care what protocol runs over it. The
+  /// embedder speaks SFTP; this end moves bytes and applies
+  /// backpressure, exactly as the tunnel below it moves bytes without
+  /// looking inside the SSH stream.
+  ///
+  /// Every method is synchronous and NONE of them block, which is what
+  /// keeps this component free of componentize-go's async-lifting
+  /// hazards even while carrying a transfer. Bytes move on `feed` and
+  /// `pump` ticks like everything else here, so a transfer's
+  /// throughput is bounded by how often the embedder ticks this core:
+  /// a loop that drains until empty and pumps whenever the wire has
+  /// bytes will saturate; a fixed poll interval will not. (At one
+  /// 32 KiB SSH packet per tick, a 100 ms cadence caps a transfer near
+  /// 320 KB/s no matter how fast the tunnel is.)
+  ///
+  /// FLOW CONTROL, and why it is shaped this way. A terminal needs
+  /// none -- a human types slower than any buffer fills, which is why
+  /// `drain-output` above simply hands over everything. A transfer
+  /// inverts that: the far end will send as fast as its window allows,
+  /// and a browser writing to storage is often slower. Unbounded
+  /// buffering here would grow this component's heap without limit,
+  /// so instead:
+  ///
+  /// * `write` reports how many bytes it ACCEPTED. A short write --
+  ///   including zero -- means the outbound buffer is full and the
+  ///   embedder must retry the remainder later. That is the entire
+  ///   backpressure signal in this direction; there is no credit
+  ///   protocol to get out of step with.
+  /// * `drain` takes a `max`, so the embedder sets the chunk size and
+  ///   therefore the pace. Inbound bytes are buffered up to a fixed
+  ///   cap; while that cap is reached this core stops reading from the
+  ///   SSH channel, x/crypto stops returning window adjustments, and
+  ///   the server stops sending. Backpressure chains from the
+  ///   embedder's storage all the way to sshd without any explicit
+  ///   signal crossing this interface.
+  ///
+  /// CANCELLATION is free, deliberately. Since no method blocks and no
+  /// future is ever in flight, abandoning a transfer means no more
+  /// than ceasing to call `write`/`drain` and then calling `close`.
+  /// Nothing is dropped mid-flight, so this plane sidesteps the
+  /// no-cancel discipline the embedder must keep around its own async
+  /// imports -- and a user who taps Cancel on a half-finished upload
+  /// gets exactly that, with no torn state.
+  ///
+  /// LIFETIME. A channel belongs to the session that opened it but is
+  /// not owned by it: closing or losing the session moves every
+  /// channel to `closed`, after which each method is a legal no-op
+  /// (`drain` returns empty, `write` errors) rather than a trap.
+  /// Dropping the resource closes the channel.
+  resource channel {
+    /// Hand bytes to the far end. Returns how many were ACCEPTED,
+    /// which may be fewer than offered, including zero -- retry the
+    /// remainder after the next tick. Errors when the channel is no
+    /// longer `open`, or after `finish` -- which is a promise this
+    /// core holds the caller to: the SSH EOF is irrevocable, so bytes
+    /// accepted after it could never be sent.
+    write: func(data: list<u8>) -> result<u32, string>;
+
+    /// Bytes the far end produced, at most `max`, in order.
+    ///
+    /// Empty means nothing is ready RIGHT NOW -- it is not an
+    /// end-of-stream signal. Ask `state` for that, and note the
+    /// ordering trap: drain until empty BEFORE treating `eof` as the
+    /// end, or the tail of the reply is lost.
+    drain: func(max: u32) -> list<u8>;
+
+    /// Where this channel stands.
+    state: func() -> channel-state;
+
+    /// Send EOF: promise to write no more, while staying open to read
+    /// what the far end still owes. This is what makes a server that
+    /// waits for EOF before finishing (as `exec`-started helpers do)
+    /// terminate cleanly instead of hanging.
+    finish: func();
+
+    /// Close the channel now, in both directions, discarding whatever
+    /// is buffered. The session is untouched.
     close: func();
   }
 }

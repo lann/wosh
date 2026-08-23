@@ -53,13 +53,33 @@ func (s *Session) OnDrop() { s.eng.Close() }
 
 // --- the byte plane ---------------------------------------------------
 
-func (s *Session) Feed(data []uint8) { s.eng.Feed(data) }
+// Feed collects AFTER the engine has copied the borrowed cabi view
+// into its own memory -- see the placement rule in gc.go.
+func (s *Session) Feed(data []uint8) {
+	s.eng.Feed(data)
+	gcCharge(len(data))
+	gcCollect()
+}
 
-func (s *Session) Drain() []uint8 { return s.eng.Drain() }
+// Drain collects BEFORE the outbound bytes are built, so the slice
+// handed back to the host is never the thing a collection is racing.
+func (s *Session) Drain() []uint8 {
+	gcCollect()
+	out := s.eng.Drain()
+	gcCharge(len(out))
+	return out
+}
 
 func (s *Session) WireBroken(reason string) { s.eng.WireBroken(reason) }
 
-func (s *Session) Pump() { s.eng.Pump() }
+// Pump carries no bytes either way, so a collection anywhere in it is
+// safe. It is the one export an idle embedder is guaranteed to call,
+// which is what the per-call toll in gc.go rides on.
+func (s *Session) Pump() {
+	gcCharge(0)
+	gcCollect()
+	s.eng.Pump()
+}
 
 // --- the control plane ------------------------------------------------
 
@@ -148,9 +168,18 @@ func (s *Session) AnswerPrompts(answers []string) witTypes.Result[witTypes.Unit,
 
 // --- the terminal plane -----------------------------------------------
 
-func (s *Session) WriteInput(data []uint8) { s.eng.WriteInput(data) }
+func (s *Session) WriteInput(data []uint8) {
+	s.eng.WriteInput(data)
+	gcCharge(len(data))
+	gcCollect()
+}
 
-func (s *Session) DrainOutput() []uint8 { return s.eng.DrainOutput() }
+func (s *Session) DrainOutput() []uint8 {
+	gcCollect()
+	out := s.eng.DrainOutput()
+	gcCharge(len(out))
+	return out
+}
 
 func (s *Session) Resize(cols uint16, rows uint16) { s.eng.Resize(cols, rows) }
 

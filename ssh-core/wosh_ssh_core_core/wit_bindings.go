@@ -6,81 +6,84 @@
 package wosh_ssh_core_core
 
 import (
-	witTypes "go.bytecodealliance.org/pkg/wit/types"
+        witTypes "go.bytecodealliance.org/pkg/wit/types"
 )
 
+
 const (
-	// The transport handshake is running on fed bytes.
-	StatusConnecting uint8 = 0
-	// Key exchange finished: `host-key-sha256` is readable and the
-	// handshake is parked until `confirm-host-key` resolves it.
-	// Nothing has been sent to the server yet -- not a password, not
-	// even a public-key probe. That ordering is structural:
-	// x/crypto/ssh authenticates strictly after a successful
-	// host-key callback.
-	StatusHostKeyCheck uint8 = 1
-	// The host key was accepted; authentication is in flight.
-	StatusAuthenticating uint8 = 2
-	// Authentication is parked on a signature request: read
-	// `pending-signature`, produce the signature, call
-	// `provide-signature` (or `fail-signature`).
-	StatusSigning uint8 = 3
-	// Authentication is parked on a server-issued prompt batch: read
-	// `pending-prompts`, collect answers, call `answer-prompts`.
-	StatusAuthPrompts uint8 = 4
-	// Pty and shell are up; `write-input`/`drain-output` carry the
-	// interactive session.
-	StatusReady uint8 = 5
-	// Terminal state: the handshake, auth, or shell failed, or the
-	// session ended. The string is a human-readable reason.
-	StatusClosed uint8 = 6
+// The transport handshake is running on fed bytes.
+StatusConnecting uint8 = 0
+// Key exchange finished: `host-key-sha256` is readable and the
+// handshake is parked until `confirm-host-key` resolves it.
+// Nothing has been sent to the server yet -- not a password, not
+// even a public-key probe. That ordering is structural:
+// x/crypto/ssh authenticates strictly after a successful
+// host-key callback.
+StatusHostKeyCheck uint8 = 1
+// The host key was accepted; authentication is in flight.
+StatusAuthenticating uint8 = 2
+// Authentication is parked on a signature request: read
+// `pending-signature`, produce the signature, call
+// `provide-signature` (or `fail-signature`).
+StatusSigning uint8 = 3
+// Authentication is parked on a server-issued prompt batch: read
+// `pending-prompts`, collect answers, call `answer-prompts`.
+StatusAuthPrompts uint8 = 4
+// Pty and shell are up; `write-input`/`drain-output` carry the
+// interactive session.
+StatusReady uint8 = 5
+// Terminal state: the handshake, auth, or shell failed, or the
+// session ended. The string is a human-readable reason.
+StatusClosed uint8 = 6
 )
 
 // Where the session currently stands.
 type Status struct {
-	tag   uint8
-	value any
+        tag uint8
+        value any
 }
 
 func (self Status) Tag() uint8 {
-	return self.tag
+        return self.tag
 }
 
 func (self Status) Closed() string {
-	if self.tag != StatusClosed {
-		panic("tag mismatch")
-	}
-	return self.value.(string)
+        if self.tag != StatusClosed {
+                panic("tag mismatch")
+        }
+        return self.value.(string)
 }
 
 func MakeStatusConnecting() Status {
-	return Status{StatusConnecting, nil}
+        return Status{StatusConnecting, nil}
 }
 func MakeStatusHostKeyCheck() Status {
-	return Status{StatusHostKeyCheck, nil}
+        return Status{StatusHostKeyCheck, nil}
 }
 func MakeStatusAuthenticating() Status {
-	return Status{StatusAuthenticating, nil}
+        return Status{StatusAuthenticating, nil}
 }
 func MakeStatusSigning() Status {
-	return Status{StatusSigning, nil}
+        return Status{StatusSigning, nil}
 }
 func MakeStatusAuthPrompts() Status {
-	return Status{StatusAuthPrompts, nil}
+        return Status{StatusAuthPrompts, nil}
 }
 func MakeStatusReady() Status {
-	return Status{StatusReady, nil}
+        return Status{StatusReady, nil}
 }
 func MakeStatusClosed(value string) Status {
-	return Status{StatusClosed, value}
+        return Status{StatusClosed, value}
 }
+
+
 
 // One keyboard-interactive prompt: the text to display, and whether
 // the user's answer should be echoed as typed (`false` means mask
 // it, password-style).
 type Prompt struct {
-	Text string
-	Echo bool
+        Text string
+Echo bool
 }
 
 // One server-issued batch of prompts (RFC 4256). The server
@@ -88,21 +91,21 @@ type Prompt struct {
 // `authenticate-auto`'s password round rides the same shape as a
 // one-prompt masked batch.
 type PromptBatch struct {
-	// Free-text preamble to display above the prompts. Often empty;
-	// PAM setups use it for OTP guidance and expiry warnings.
-	Instruction string
-	Prompts     []Prompt
+        // Free-text preamble to display above the prompts. Often empty;
+// PAM setups use it for OTP guidance and expiry warnings.
+Instruction string
+Prompts []Prompt
 }
 
 // A public key offered for publickey authentication, in the two
 // parts SSH actually puts on the wire.
-//
+// 
 // This core is deliberately ignorant of key ALGEBRA: it never
 // parses `blob`, never holds a private half, and cannot check a
 // signature it relays. It only needs the two strings RFC 4252 s7
 // asks of it -- so a new algorithm is an embedder change, not a
 // change here.
-//
+// 
 // The two fields are usually the same name, which is why it is
 // worth spelling out that they are not the same THING. `algorithm`
 // names the SIGNATURE and rides the userauth request (and the blob
@@ -116,18 +119,18 @@ type PromptBatch struct {
 // (it resolves the algorithm name and compares it against the name
 // inside the signature), so the split is load-bearing, not cosmetic.
 type PublicKey struct {
-	// The public key algorithm name for the userauth request: the
-	// name the SIGNATURE will carry.
-	Algorithm string
-	// The public key blob (RFC 4253 s6.6): length-prefixed name
-	// followed by algorithm-specific fields. Opaque here.
-	Blob []uint8
+        // The public key algorithm name for the userauth request: the
+// name the SIGNATURE will carry.
+Algorithm string
+// The public key blob (RFC 4253 s6.6): length-prefixed name
+// followed by algorithm-specific fields. Opaque here.
+Blob []uint8
 }
 
 // A finished signature, in the three parts an SSH signature blob is
 // built from -- `string format`, `string blob`, then whatever the
 // algorithm appends.
-//
+// 
 // `trailer` exists for the security-key algorithms, which hang
 // extra fields off the end of the standard two (authenticator
 // flags, the signature counter, and for webauthn the origin and
@@ -135,43 +138,89 @@ type PublicKey struct {
 // SSH-encoded by whoever produced the signature; for every ordinary
 // algorithm it is empty.
 type Signature struct {
-	// The signature algorithm name, which must be the `algorithm` of
-	// the key this signature answers for.
-	Format string
-	// The algorithm's own signature encoding (for Ed25519 the raw 64
-	// bytes; for ECDSA an `mpint r, mpint s` pair).
-	Blob []uint8
-	// Extra algorithm-specific fields, SSH-encoded, appended after
-	// `blob`. Empty for everything but the security-key algorithms.
-	Trailer []uint8
+        // The signature algorithm name, which must be the `algorithm` of
+// the key this signature answers for.
+Format string
+// The algorithm's own signature encoding (for Ed25519 the raw 64
+// bytes; for ECDSA an `mpint r, mpint s` pair).
+Blob []uint8
+// Extra algorithm-specific fields, SSH-encoded, appended after
+// `blob`. Empty for everything but the security-key algorithms.
+Trailer []uint8
 }
 
 // A parked signature request: the bytes to sign, and the key they
 // are to be signed for.
-//
+// 
 // The key rides along because an embedder may offer more than one
 // (a browser key and a passkey, say), and only it knows which
 // keeper holds which private half. Matching on `key` is exact:
 // it is one of the records handed to `authenticate-publickey` or
 // `authenticate-auto`, echoed back.
 type SignRequest struct {
-	// Which offered key the server accepted and now wants proof of.
-	Key PublicKey
-	// The SSH publickey-auth signature blob (session id, user,
-	// service, algorithm, public key) to sign, verbatim. Not a hash:
-	// hashing, if the algorithm wants any, belongs to the signer.
-	Data []uint8
+        // Which offered key the server accepted and now wants proof of.
+Key PublicKey
+// The SSH publickey-auth signature blob (session id, user,
+// service, algorithm, public key) to sign, verbatim. Not a hash:
+// hashing, if the algorithm wants any, belongs to the signer.
+Data []uint8
 }
 
 // The outcome of a finished probe (see `probe-start`).
 type ProbeResult struct {
-	// The command's exit status, when the server reported one; none
-	// when the channel closed without one (a vanished server, a
-	// signal).
-	ExitStatus witTypes.Option[int32]
-	// Everything the command wrote, stdout and stderr interleaved in
-	// arrival order, capped at 256 KiB: a probe is a question, not a
-	// transfer, and a runaway answer is truncated rather than
-	// buffered without bound.
-	Output []uint8
+        // The command's exit status, when the server reported one; none
+// when the channel closed without one (a vanished server, a
+// signal).
+ExitStatus witTypes.Option[int32]
+// Everything the command wrote, stdout and stderr interleaved in
+// arrival order, capped at 256 KiB: a probe is a question, not a
+// transfer, and a runaway answer is truncated rather than
+// buffered without bound.
+Output []uint8
 }
+
+const (
+// Both directions live -- meaning "not yet failed", not
+// "granted": a channel is born `open` while the server's answer
+// to the open request is still in flight, so a refusal shows up
+// as a transition to `closed`, not as an open that never was.
+ChannelStateOpen uint8 = 0
+// The remote sent EOF: it will produce no more bytes. Anything
+// already buffered is still drainable -- `eof` is a statement
+// about the REMOTE, not about this side's buffer, so drain until
+// empty before concluding the reply is complete.
+ChannelStateEof uint8 = 1
+// Terminal: the channel closed, failed, or died with its
+// connection. The string is a human-readable reason. Buffered
+// bytes are gone; a channel never leaves this state.
+ChannelStateClosed uint8 = 2
+)
+
+// Where a bulk channel stands (see `resource channel`).
+type ChannelState struct {
+        tag uint8
+        value any
+}
+
+func (self ChannelState) Tag() uint8 {
+        return self.tag
+}
+
+func (self ChannelState) Closed() string {
+        if self.tag != ChannelStateClosed {
+                panic("tag mismatch")
+        }
+        return self.value.(string)
+}
+
+func MakeChannelStateOpen() ChannelState {
+        return ChannelState{ChannelStateOpen, nil}
+}
+func MakeChannelStateEof() ChannelState {
+        return ChannelState{ChannelStateEof, nil}
+}
+func MakeChannelStateClosed(value string) ChannelState {
+        return ChannelState{ChannelStateClosed, value}
+}
+
+

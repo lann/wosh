@@ -78,10 +78,19 @@ func (c *shuttleConn) Write(b []byte) (int, error) {
 	return c.outbox.Write(b)
 }
 
+// push hands fed bytes to the parked reader.
+//
+// COPY-ON-PUSH: `data` is COPIED into the inbox before this returns,
+// and is never retained. Callers rely on that -- Engine.Feed passes
+// the component bindings' borrowed view of transferred cabi memory
+// straight through rather than cloning it first, which is only sound
+// because the copy happens here, synchronously, under the mutex. Any
+// change that defers the copy (retaining the slice in a queue, say)
+// must restore a clone at the caller.
 func (c *shuttleConn) push(data []byte) {
 	c.mu.Lock()
 	if !c.closed && c.err == nil {
-		c.inbox.Write(data)
+		c.inbox.Write(data) // copies; see COPY-ON-PUSH above
 	}
 	c.mu.Unlock()
 	c.signal()
