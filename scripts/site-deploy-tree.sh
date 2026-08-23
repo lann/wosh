@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Assemble the static site into a directory any file server can serve.
 #
-# The tree is self-contained: page, modules, xterm assets, the deltic
-# bundle, the deltic translator, and the composed client component. The
+# The tree is self-contained: page, modules, xterm assets, the polyengine
+# bundle, the polyengine translator, and the composed client component. The
 # .wasm shipped here is byte-for-byte the one the native gates run --
-# deltic is a runtime linker, so there is no transpiled variant to drift.
+# polyengine is a runtime linker, so there is no transpiled variant to drift.
 #
 #   scripts/site-deploy-tree.sh out/
 set -euo pipefail
@@ -14,20 +14,20 @@ ROOT="$(pwd)"
 dest="${1:?usage: scripts/site-deploy-tree.sh <dest-dir>}"
 mkdir -p "$dest/xterm" "$dest/dist" "$dest/icons" "$dest/vendor"
 
-bundle="$ROOT/site/dist/deltic.js"
+bundle="$ROOT/site/dist/polyengine.js"
 client="$ROOT/target/components/wosh-ssh-client.wasm"
 
-# The translator wasm ships INSIDE the @deltic/translator release -- the
-# versioned peer of the @deltic/runtime the bundle pins (deno.json), so
+# The translator wasm ships INSIDE the @polyengine/translator release -- the
+# versioned peer of the @polyengine/runtime the bundle pins (deno.json), so
 # the two cannot skew. Fetched once from jsr, digest-pinned, cached
 # under .deps/. Bump TRANSLATOR_VERSION together with the deno.json pins.
-TRANSLATOR_VERSION=0.1.0
-TRANSLATOR_SHA256=73d540b3e7bf29b81fb720245ed8e6d4f1b3a88eef2eb32ace63f2ffee3a4520
+TRANSLATOR_VERSION=0.5.0
+TRANSLATOR_SHA256=034747e0bd2961b002174734f7d1f47b9c1e59f7864a3a0d566070940be873a0
 translator="$ROOT/.deps/translator_shim-$TRANSLATOR_VERSION.wasm"
 if ! sha256sum -c --status <<<"$TRANSLATOR_SHA256  $translator" 2>/dev/null; then
   mkdir -p "$ROOT/.deps"
   curl -fsSL -o "$translator" \
-    "https://jsr.io/@deltic/translator/$TRANSLATOR_VERSION/translator_shim.wasm"
+    "https://jsr.io/@polyengine/translator/$TRANSLATOR_VERSION/translator_shim.wasm"
   sha256sum -c --status <<<"$TRANSLATOR_SHA256  $translator" || {
     echo "translator_shim.wasm digest mismatch (expected $TRANSLATOR_SHA256)" >&2
     exit 1
@@ -65,15 +65,15 @@ else
   echo "note: site/node_modules missing; run 'npm install' in site/ for xterm + jsQR assets" >&2
 fi
 
-cp "$bundle"     "$dest/dist/deltic.js"
+cp "$bundle"     "$dest/dist/polyengine.js"
 cp "$client"     "$dest/dist/wosh-ssh-client.wasm"
-cp "$translator" "$dest/dist/deltic-translator-shim.wasm"
+cp "$translator" "$dest/dist/polyengine-translator-shim.wasm"
 
 # The service worker's precache manifest is generated FROM the assembled
 # tree, so it cannot drift from what actually ships: a new file is
 # picked up here without anyone editing sw.js. The version keys the
 # cache, so one deploy is one complete cache and a client can never mix
-# files from two deploys -- load-bearing, because deltic runtime-links
+# files from two deploys -- load-bearing, because polyengine runtime-links
 # the wasm against the page bundle.
 version="${WOSH_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
 # The build number is the commit count: deterministic from the commit

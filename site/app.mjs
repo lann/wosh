@@ -1,5 +1,5 @@
 // wosh browser client: xterm.js in front of the SSH client component,
-// runtime-linked by deltic (./dist/deltic.js, built by `just web-bundle`).
+// runtime-linked by polyengine (./dist/polyengine.js, built by `just web-bundle`).
 //
 // The page is deliberately thin. Everything protocol-shaped -- parsing
 // the connection string, dialing iroh, the SSH transport, the host-key
@@ -10,7 +10,7 @@
 // whatever the server asks (a password, or keyboard-interactive
 // prompt batches -- one inline UI serves both).
 //
-// Every component export is Promise-shaped under deltic (including the
+// Every component export is Promise-shaped under polyengine (including the
 // ones the WIT declares as plain functions), so the output pump is a
 // single async loop with ONE drainer -- two concurrent drains could
 // interleave screen bytes out of order.
@@ -24,7 +24,7 @@ import { OverlayAddon } from "./overlay.mjs";
 import * as bufferStore from "./buffer-store.mjs";
 
 const DIST = {
-  translator: "./dist/deltic-translator-shim.wasm",
+  translator: "./dist/polyengine-translator-shim.wasm",
   client: "./dist/wosh-ssh-client.wasm",
 };
 
@@ -436,7 +436,7 @@ initLifecycle(() => currentSession, () => {
 
 function api() {
   clientLoad ??= (async () => {
-    const { loadClient } = await import(new URL("./dist/deltic.js", import.meta.url));
+    const { loadClient } = await import(new URL("./dist/polyengine.js", import.meta.url));
     status("loading the client…");
     try {
       const t = await loadClient(DIST.client, DIST.translator);
@@ -463,7 +463,7 @@ function api() {
  */
 export async function capabilities() {
   const t = await api();
-  // Resource methods live on the Session class deltic builds; if the
+  // Resource methods live on the Session class polyengine builds; if the
   // prototype is not inspectable, assume support -- the page and the
   // component ship together in one precache.
   const proto = t.Session?.prototype;
@@ -481,7 +481,7 @@ export async function capabilities() {
     // NOTE the absence of a probe for on-connect commands (the
     // trailing `option<string>` terminal.wit's `connect` grew): a
     // parameter is not an export, so there is nothing reliable to
-    // inspect -- deltic builds `Session.connect` at runtime and its
+    // inspect -- polyengine builds `Session.connect` at runtime and its
     // JS arity does not reflect the WIT signature (measured: the
     // real class reported 0). An arity probe here disabled the
     // feature for every real page while guarding a state the
@@ -515,7 +515,7 @@ export async function probeSession(command) {
   try {
     const r = await s.probe(command);
     // A lifted record is an object with camelCase fields; `exit-status`
-    // is an option, so it is the bare number or undefined (deltic
+    // is an option, so it is the bare number or undefined (polyengine
     // embedder contract), and `output` arrives as a Uint8Array or a
     // plain array of bytes depending on the lifting path.
     const bytes = r?.output instanceof Uint8Array
@@ -595,7 +595,7 @@ export async function passkeyIdentity() {
   }
   const line = await t.passkeyOpenssh();
   // A lifted WIT `option` is the bare value, or `undefined` for none
-  // (deltic embedder contract, values.ts): the `{kind, value}` spelling
+  // (polyengine embedder contract, values.ts): the `{kind, value}` spelling
   // is only for an option nested directly inside another option, which
   // this is not. Normalised to null so callers can test one falsy
   // shape.
@@ -656,13 +656,13 @@ export async function forgetPasskey() {
  * should resolve once the user has made a fresh gesture (e.g. tapped
  * a "touch your passkey" prompt); pass `undefined` to clear it.
  *
- * Routed through the bundled deltic module rather than imported
+ * Routed through the bundled polyengine module rather than imported
  * directly, because passkey-store.ts is TypeScript bundled by `just
  * web-bundle` -- boot.mjs, loaded unbundled by the browser, cannot
  * import a .ts file directly.
  */
 export async function installPasskeyCeremonyGate(fn) {
-  const { setCeremonyGate } = await import(new URL("./dist/deltic.js", import.meta.url));
+  const { setCeremonyGate } = await import(new URL("./dist/polyengine.js", import.meta.url));
   setCeremonyGate(fn);
 }
 
@@ -689,7 +689,7 @@ const wireInput = (session, fail) => {
   };
 };
 
-// A lifted WIT variant is `{ kind, value? }` (deltic embedder contract,
+// A lifted WIT variant is `{ kind, value? }` (polyengine embedder contract,
 // A10). STRICT on purpose: this page once read `.tag` from an older
 // convention, every status quietly became "unknown", and the host-key
 // prompt was skipped -- the failure mode must be loud, never a default.
@@ -705,7 +705,7 @@ const statusOf = (s) => {
 /**
  * One call into the client component at a time.
  *
- * deltic enforces the component model's reentrance rule at the host
+ * polyengine enforces the component model's reentrance rule at the host
  * boundary, and under load the enforcement is reachable: flood the
  * terminal with output while keystrokes go the other way, and a
  * `write-input` can arrive while the pump's `drain-output` still has
@@ -898,10 +898,10 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
   const t = await api();
   status("dialing over iroh…");
 
-  // deltic maps a WIT resource to a PascalCase class, with the WIT
+  // polyengine maps a WIT resource to a PascalCase class, with the WIT
   // static as a static method on it. The trailing argument is
   // terminal.wit's `option<string>` command: a WIT `option` is lowered
-  // from the bare value or `undefined` (deltic embedder contract, and
+  // from the bare value or `undefined` (polyengine embedder contract, and
   // see the note in passkeyIdentity above), so an empty field must
   // become `undefined` here -- an empty STRING would ask the target to
   // exec nothing at all instead of running a plain shell.

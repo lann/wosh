@@ -7,7 +7,7 @@
 //! Everything the browser would do, minus the browser: the same
 //! composed artifact, the same `wosh:terminal` interface, the same
 //! polymorph host implementations. What a browser adds on top is
-//! deltic and xterm.js, not different component behaviour.
+//! polyengine and xterm.js, not different component behaviour.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

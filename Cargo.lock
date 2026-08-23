@@ -2048,7 +2048,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 [[package]]
 name = "polymorph-webcrypto-core"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-webcrypto?rev=662586ad873469c2329a0a73986adef8d5e3c908#662586ad873469c2329a0a73986adef8d5e3c908"
+source = "git+https://github.com/polymorph-components/polymorph-webcrypto?tag=v0.5.0#d4931d69f9e78439ae971a7ede0c42d4defbe83e"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2080,7 +2080,7 @@ dependencies = [
 [[package]]
 name = "polymorph-webcrypto-wasmtime"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-webcrypto?rev=662586ad873469c2329a0a73986adef8d5e3c908#662586ad873469c2329a0a73986adef8d5e3c908"
+source = "git+https://github.com/polymorph-components/polymorph-webcrypto?tag=v0.5.0#d4931d69f9e78439ae971a7ede0c42d4defbe83e"
 dependencies = [
  "futures",
  "mea",
@@ -3971,7 +3971,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-webrtc-datachannels"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?rev=f703a158b7a9736e9e2c85c2701d601221b60216#f703a158b7a9736e9e2c85c2701d601221b60216"
+source = "git+https://github.com/polymorph-components/polymorph-webrtc-datachannels?tag=v0.5.0#db187f4b7d9d72bdc673ddb91c3170f0d9c7e325"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3985,7 +3985,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-websocket"
 version = "0.1.0"
-source = "git+https://github.com/polymorph-components/polymorph-websocket?rev=9808bdb5d3f62d5212e2e91c9645d2f6cdda9e74#9808bdb5d3f62d5212e2e91c9645d2f6cdda9e74"
+source = "git+https://github.com/polymorph-components/polymorph-websocket?tag=v0.5.0#0ae54617c8fd339c64c0f5924e0163dc50335155"
 dependencies = [
  "futures",
  "rustls",

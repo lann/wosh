@@ -1,24 +1,25 @@
 {
   "//": [
-    "The import map for the browser bundle, now on the published jsr releases. deltic's wasi package and the polymorph deltic host modules import @deltic/runtime/embedder by bare specifier internally; every package resolving to ONE release means the whole module graph shares one copy, so `instanceof WitError` holds across every boundary. Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
-    "Exact pins, not ranges: the runtime and the translator wasm (which scripts/site-deploy-tree.sh ships from the SAME @deltic release) share a plan format, and a range that drifted one without the other would skew them. Bumps are deliberate: change the pin here and TRANSLATOR_VERSION/TRANSLATOR_SHA256 in site-deploy-tree.sh together.",
+    "The import map for the browser bundle, on the published jsr releases. @polymorph/iroh instantiates components under @polyengine/runtime, so ONE resolved copy of the runtime graph-wide keeps `isComponentException` brand checks and stateful handles valid across every boundary (the sibling @polymorph host modules couple only to @polyengine/protocol as of the 0.5.0 line -- A22 -- but the constraint still binds through @polymorph/iroh and our own entry). Multiple copies is a real, previously-observed failure mode in this component family (errors stop being recognisable across a module boundary and surface as unbranded throws).",
+    "Exact pins, not ranges: the runtime and the translator wasm (which scripts/site-deploy-tree.sh ships from the SAME @polyengine release) share a plan format, and a range that drifted one without the other would skew them. Bumps are deliberate: change the pin here and TRANSLATOR_VERSION/TRANSLATOR_SHA256 in site-deploy-tree.sh together. Note: the @polymorph 0.5.0 packages depend on jsr:@polyengine/runtime@^0.5.0, so our exact pin must stay on that minor line for the one-copy resolution to hold.",
     "minimumDependencyAge keeps Deno's default supply-chain gate for everything else while letting these exactly-pinned component-family releases resolve on their publish day (the same convention the polymorph packages' own deno.jsons use)."
   ],
   "nodeModulesDir": "auto",
   "minimumDependencyAge": {
     "age": "P1D",
     "exclude": [
-      "jsr:@deltic/*",
+      "jsr:@polyengine/*",
       "jsr:@polymorph/*"
     ]
   },
   "imports": {
-    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0/embedder",
-    "@deltic/runtime/shim": "jsr:@deltic/runtime@0.1.0/shim",
-    "@deltic/wasi": "jsr:@deltic/wasi@0.1.0",
-    "@polymorph/webcrypto": "jsr:@polymorph/webcrypto@0.1.0",
-    "@polymorph/websocket": "jsr:@polymorph/websocket@0.1.0",
-    "@polymorph/webrtc-datachannels": "jsr:@polymorph/webrtc-datachannels@0.1.0",
-    "@polymorph/iroh": "jsr:@polymorph/iroh@0.1.0"
+    "@polyengine/protocol": "jsr:@polyengine/protocol@0.2.2",
+    "@polyengine/runtime/embedder": "jsr:@polyengine/runtime@0.5.0/embedder",
+    "@polyengine/runtime/shim": "jsr:@polyengine/runtime@0.5.0/shim",
+    "@polyengine/wasi": "jsr:@polyengine/wasi@0.5.0",
+    "@polymorph/webcrypto": "jsr:@polymorph/webcrypto@0.5.0",
+    "@polymorph/websocket": "jsr:@polymorph/websocket@0.5.0",
+    "@polymorph/webrtc-datachannels": "jsr:@polymorph/webrtc-datachannels@0.5.0",
+    "@polymorph/iroh": "jsr:@polymorph/iroh@0.5.0"
   }
 }

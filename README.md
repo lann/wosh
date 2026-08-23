@@ -19,7 +19,7 @@ Three WebAssembly components:
   also *observes* the host key of the sshd it is proxying — see
   "The fingerprint the listener prints".
 - **the client** (`wosh-client`, Rust) — runs in the browser under
-  [deltic][], and owns everything long-lived: it parses the connection
+  [polyengine][], and owns everything long-lived: it parses the connection
   string, dials the listener over iroh, pumps bytes, relays signatures
   and prompt batches, and drives an [xterm.js][] UI through a custom
   WIT interface (`wosh:terminal`).
@@ -43,7 +43,7 @@ actually is" for what remains. Experiment-grade code.
 ## How it fits together
 
 ```
-BROWSER (deltic)                          TARGET HOST
+BROWSER (polyengine)                      TARGET HOST
 ┌────────────────────────────┐            ┌──────────────────────────────┐
 │ xterm.js                   │            │ wosh-listener (native shell) │
 │   ↕ wosh:terminal (WIT)    │            │   wasmtime + polymorph hosts │
@@ -441,10 +441,10 @@ dropped, background I/O stops silently. The clean fix is upstream — a
   wasmtime, over real iroh, through the listener, into a real OpenSSH
   `sshd`.
 - `site/` — the static site: xterm.js in front of the client component,
-  runtime-linked in-page by deltic. Installable as a PWA: the service
+  runtime-linked in-page by polyengine. Installable as a PWA: the service
   worker precaches the tree version-keyed, which matters because the
-  tree carries ~12 MB of wasm (the component plus deltic's translator)
-  and because deltic runtime-links the component against the page
+  tree carries ~12 MB of wasm (the component plus polyengine's translator)
+  and because polyengine runtime-links the component against the page
   bundle, so a cache mixing two deploys would be incoherent.
 - `site/lifecycle.mjs` — the page's lifecycle wired to the session:
   hidden/frozen/pagehide mean "stop redialing, the network is being
@@ -604,7 +604,7 @@ Verified working:
   gates anything here.
 - All three spike measurements above.
 - The site in real headless Chromium (`just browser`): the page loads,
-  xterm mounts, deltic instantiates the composed component and runs
+  xterm mounts, polyengine instantiates the composed component and runs
   guest code in-page, **the browser's SSH identity survives a page
   reload** (the non-extractable CryptoKey pair persists in IndexedDB,
   so an installed `authorized_keys` line keeps working across visits),
@@ -684,7 +684,7 @@ Not finished:
 
 `.github/workflows/pages.yml` publishes `site/` to GitHub Pages on every
 push to `main`. What ships is the *same* component the gates run --
-deltic is a runtime linker, so there is no transpiled variant that could
+polyengine is a runtime linker, so there is no transpiled variant that could
 drift from what was tested.
 
 The listener's `--qr-base` defaults to that deployed client, because the
@@ -717,11 +717,11 @@ next deploy, so it is a startup and coherency mechanism, not a pin.
 
 Experiment-grade; no stability promised. Built against
 [ssh-key][] (SSH key, fingerprint and `known_hosts` parsing),
-[polymorph-iroh][] (the iroh endpoint as a component), [deltic][] (the
+[polymorph-iroh][] (the iroh endpoint as a component), [polyengine][] (the
 JS component host), and `golang.org/x/crypto/ssh`.
 
 [iroh]: https://iroh.computer
 [ssh-key]: https://github.com/RustCrypto/SSH
-[deltic]: https://github.com/lann/deltic
+[polyengine]: https://github.com/polymorph-components/polyengine
 [polymorph-iroh]: https://github.com/polymorph-components/polymorph-iroh
 [xterm.js]: https://xtermjs.org

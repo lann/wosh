@@ -1,9 +1,9 @@
 // The browser bundle entry: everything the page needs to host the wosh
-// SSH client component under deltic. Bundled to site/dist/deltic.js by
+// SSH client component under polyengine. Bundled to site/dist/polyengine.js by
 // `just web-bundle` (deno bundle --platform browser); the page imports
 // that bundle and nothing here is served raw.
 //
-// deltic is a runtime linker: it takes the component binary, translates
+// polyengine is a runtime linker: it takes the component binary, translates
 // it in-process, and runs it on the stock WebAssembly API. There is no
 // transpile step and no generated tree -- the .wasm that the native
 // gates run is byte-for-byte the .wasm the browser runs.
@@ -23,18 +23,20 @@
 // ceremonies instead of holding key material at all -- the private
 // half never leaves the platform authenticator.
 //
-// MODULE IDENTITY: the bundle must carry exactly one copy of
-// @deltic/runtime/embedder, or `isComponentException` stops holding
-// across module boundaries and real errors surface as unbranded
-// throws. deno.json's import map is what guarantees that.
+// MODULE IDENTITY: the error vocabulary (ComponentException and its
+// `isComponentException` brand predicate) lives in @polyengine/protocol
+// (A22), branded via Symbol.for so recognition survives even a second
+// copy; the runtime itself must still resolve to ONE release graph-wide
+// (deno.json's exact pins), since handles minted by one runtime copy
+// are refused by another.
 
-import { Translator } from "@deltic/runtime/shim";
+import { Translator } from "@polyengine/runtime/shim";
+import { instantiate } from "@polyengine/runtime/embedder";
 import {
   ComponentException,
-  instantiate,
   isComponentException,
-} from "@deltic/runtime/embedder";
-import { wasi } from "@deltic/wasi";
+} from "@polyengine/protocol";
+import { wasi } from "@polyengine/wasi";
 import { webcryptoImports } from "@polymorph/webcrypto";
 import { websocketImports } from "@polymorph/websocket";
 import { webrtcImports } from "@polymorph/webrtc-datachannels";
@@ -71,7 +73,7 @@ async function translate(wasmUrl: string, translatorUrl: string) {
  * Instantiate the composed SSH client and hand back its
  * `wosh:terminal/terminal` surface.
  *
- * Every export is Promise-shaped under deltic, including the ones the
+ * Every export is Promise-shaped under polyengine, including the ones the
  * WIT declares as plain functions.
  */
 // deno-lint-ignore no-explicit-any

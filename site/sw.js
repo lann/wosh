@@ -1,11 +1,11 @@
 // wosh service worker: version-keyed atomic precache of the whole site.
 //
 // Caching earns its place here more than in most PWAs: the tree ships
-// the composed SSH client component (~8.6 MB) and deltic's translator
+// the composed SSH client component (~8.6 MB) and polyengine's translator
 // (~3.8 MB), so a warm visit avoids re-fetching about twelve megabytes.
 //
 // Coherence is the design constraint. The page is runtime-linked at
-// load -- deltic resolves the composed wasm against the page bundle --
+// load -- polyengine resolves the composed wasm against the page bundle --
 // so a cache that mixes files from two deploys is a subtle-breakage
 // generator. Hence: a version's cache is complete before it serves
 // anything (addAll on install), lookups are cache-first WITHIN that

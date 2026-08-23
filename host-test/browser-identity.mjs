@@ -1,12 +1,12 @@
 // Browser gate: does the SSH client component actually load and run in
-// a real browser under deltic?
+// a real browser under polyengine?
 //
 // This is the leg no native test can cover. It drives the SAME artifact
-// the native gates use -- deltic is a runtime linker, so there is no
+// the native gates use -- polyengine is a runtime linker, so there is no
 // transpiled variant that could drift -- and asserts the two things
 // that must hold before any session can work in a page:
 //
-//   1. deltic instantiates the composed component, with the iroh
+//   1. polyengine instantiates the composed component, with the iroh
 //      endpoint's webcrypto/websocket/webrtc imports served by real
 //      browser APIs.
 //   2. `identity-openssh` returns a well-formed authorized_keys line
@@ -94,7 +94,7 @@ try {
   await page.waitForSelector(".xterm-screen", { timeout: 15_000 });
   console.log("[1] page loaded: home screen and xterm are live");
 
-  // 2. deltic really instantiates the component AND guest code runs.
+  // 2. polyengine really instantiates the component AND guest code runs.
   //    Proven by feeding a deliberately malformed connection string and
   //    requiring the error to come from OUR parser inside the guest --
   //    a host-side or loader failure could not produce this message.
@@ -210,7 +210,7 @@ try {
   }
 
   if (!process.exitCode) {
-    console.log("\nBROWSER GATE PASS: deltic runs the SSH client component in-page");
+    console.log("\nBROWSER GATE PASS: polyengine runs the SSH client component in-page");
   }
 } finally {
   if (!process.argv.includes("--keep")) await browser.close();

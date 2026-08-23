@@ -18,14 +18,16 @@ rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # listener by `wac plug`) imports these three non-WASI interfaces
 # regardless of which paths (relay/direct/webrtc) are actually in use;
 # these crates are their native-host implementations. Pinned to the
-# same revisions polymorph-iroh's own scripts/setup.sh pins (see this
-# project's scripts/setup.sh).
+# siblings' release tags. polymorph-iroh's own Cargo.toml pins these
+# crates by rev (what the endpoint guest builds against); the tags'
+# Rust and WIT content is identical to those revs -- re-verify that
+# when bumping (see this project's scripts/setup.sh).
 # Carries driver reactor isolation (their #158/#159, found by the
 # freeze drill here): a wedged webrtc driver costs a pool thread, not
 # the embedding component.
-wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "f703a158b7a9736e9e2c85c2701d601221b60216" }
-polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", rev = "662586ad873469c2329a0a73986adef8d5e3c908" }
-wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "9808bdb5d3f62d5212e2e91c9645d2f6cdda9e74" }
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", tag = "v0.5.0" }
+polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", tag = "v0.5.0" }
+wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", tag = "v0.5.0" }
 
 [[bin]]
 name = "wosh-listener"

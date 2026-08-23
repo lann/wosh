@@ -4,7 +4,7 @@
 //! listener over iroh, pumps bytes between that connection and the SSH
 //! core, relays signature requests to the host's `identity-store`, and
 //! exports the stable `wosh:terminal/terminal` interface the website
-//! drives via deltic.
+//! drives via polyengine.
 //!
 //! Division of labour (see wit/terminal.wit and wit/deps/wosh-ssh-core):
 //! the core owns the SSH protocol and holds NO keys and does NO I/O;

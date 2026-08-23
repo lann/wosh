@@ -16,12 +16,14 @@ sha2 = "0.10"
 wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
 wasmtime-wasi = { version = "47", features = ["p3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# The siblings' release tags, kept in step with listener-host (see the
+# pin rationale there).
 # Carries driver reactor isolation (their #158/#159, found by the
 # freeze drill here): a wedged webrtc driver costs a pool thread, not
 # the embedding component.
-wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", rev = "f703a158b7a9736e9e2c85c2701d601221b60216" }
-polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", rev = "662586ad873469c2329a0a73986adef8d5e3c908" }
-wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", rev = "9808bdb5d3f62d5212e2e91c9645d2f6cdda9e74" }
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", tag = "v0.5.0" }
+polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", tag = "v0.5.0" }
+wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", tag = "v0.5.0" }
 
 [[bin]]
 name = "wosh-smoke-test"
