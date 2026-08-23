@@ -17,16 +17,15 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # polymorph-iroh supplies the iroh endpoint component (the transport for
 # both of our components). Its own scripts/setup.sh no longer checks out
 # sibling repos: it installs its pinned toolchain and tools, including
-# the prebuilt iroh-relay binary the gates run. The revs in
-# listener-host/Cargo.toml and smoke-test/Cargo.toml must match the ones
-# polymorph-iroh's own Cargo.toml pins, since the native hosts link
-# those crates directly.
-#
-# Full SHAs: these are the revisions this project was developed and
-# verified against.
+# the prebuilt iroh-relay binary the gates run. The sibling host-crate
+# tags in listener-host/Cargo.toml and smoke-test/Cargo.toml must stay
+# content-identical (Rust + WIT) to the revs polymorph-iroh's own
+# Cargo.toml pins, since the native hosts link those crates directly
+# against the endpoint guest built here -- re-verify when bumping.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-# Current main: the @polymorph/iroh 0.5.0 release commit (v0.5.0).
-PIROH_PIN=55e1b368a8345ed29fbffa2ed27613e63345529f
+# The upstream release tag (the same line the Cargo.toml sibling pins
+# and the deno.json @polymorph pins follow).
+PIROH_PIN=v0.5.0
 
 # polyengine (the JS component host) arrives as published jsr releases:
 # the root deno.json pins @polyengine/* and @polymorph/* there, and
@@ -74,11 +73,20 @@ if [ ! -d "$DEPS/polymorph-iroh/.git" ]; then
   say "cloning polymorph-iroh"
   git clone "$PIROH_REPO" "$DEPS/polymorph-iroh"
 fi
-if [ "$(git -C "$DEPS/polymorph-iroh" rev-parse HEAD)" != "$PIROH_PIN" ]; then
-  git -C "$DEPS/polymorph-iroh" fetch --quiet origin || true
-  git -C "$DEPS/polymorph-iroh" checkout --quiet "$PIROH_PIN" 2>/dev/null || {
+# The pin is a tag, so resolve it to a commit for the staleness check
+# (and tolerate a checkout that predates the tag by fetching first).
+piroh_want() {
+  git -C "$DEPS/polymorph-iroh" rev-parse --verify --quiet "$PIROH_PIN^{commit}" 2>/dev/null || true
+}
+want="$(piroh_want)"
+if [ -z "$want" ] || [ "$(git -C "$DEPS/polymorph-iroh" rev-parse HEAD)" != "$want" ]; then
+  git -C "$DEPS/polymorph-iroh" fetch --quiet --tags origin || true
+  want="$(piroh_want)"
+  if [ -n "$want" ]; then
+    git -C "$DEPS/polymorph-iroh" checkout --quiet "$want"
+  else
     echo "note: pin $PIROH_PIN not found; staying on $(git -C "$DEPS/polymorph-iroh" rev-parse --short HEAD)" >&2
-  }
+  fi
 fi
 say "polymorph-iroh: $(git -C "$DEPS/polymorph-iroh" log --oneline -1)"
 
