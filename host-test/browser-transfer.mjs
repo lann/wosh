@@ -193,18 +193,40 @@ try {
 
   // Run a command on the REAL pty and read a marked answer back out.
   // This is the gate's only oracle for what is actually on the target.
+  //
+  // The marker is SPLIT at a quote seam -- typed as `"WOSH_""XFER1:"`,
+  // which the shell concatenates back to `WOSH_XFER1:` before echo
+  // ever runs. That seam is the whole trick, and it is not cosmetic.
+  // A pty echoes what you type, so a marker written literally appears
+  // on screen the instant the keystrokes land, BEFORE the command has
+  // produced anything -- and a scrape that races the two matches the
+  // echoed INPUT and reads the command text back as if it were the
+  // answer. This gate did exactly that on a slow CI runner (captured
+  // `$(sha256sum` as a file's digest) while winning the race locally
+  // ten times over, which is the worst way for a gate to be wrong:
+  // green everywhere its author can see. With the seam the joined
+  // marker exists only in real OUTPUT, so `waitForScreen` waits for
+  // the answer instead of sampling whichever text got there first.
+  // (browser-e2e.mjs can use a plain marker at line ~311 because it
+  // asserts a round-trip -- seeing the echo AND the output is the
+  // point there, and it counts two occurrences.)
   let shellSeq = 0;
-  const ask = async (command) => {
+  const ask = async (command, valuePattern = "[^\\s]+") => {
     // The panel is a modal <dialog>: while it is open nothing can
     // reach the terminal underneath it, not even a synthetic click.
     // Step out of the way and step back, which is what a person would
     // do too -- and the sheet keeps its directory across a close.
     const wasOpen = await page.evaluate(() => !!document.getElementById("transfers-sheet")?.open);
     if (wasOpen) await page.evaluate(() => document.getElementById("transfers-sheet").close());
-    const tag = `WOSHQ${++shellSeq}`;
+    // Sequence-numbered so a later question can never match an earlier
+    // answer still sitting in the scrollback.
+    const tail = `XFER${++shellSeq}:`;
     await page.click(".xterm-screen");
-    await page.keyboard.type(`echo ${tag}=$(${command})\n`, { delay: 5 });
-    const m = await waitForScreen(new RegExp(`${tag}=([^\\s]+)\\s`));
+    await page.keyboard.type(`echo "WOSH_""${tail}$(${command})"\n`, { delay: 5 });
+    // The value's SHAPE is pinned too, not just its marker: a digest
+    // asks for 64 hex digits, so a truncated or error-laden line
+    // keeps waiting rather than passing something merely non-blank.
+    const m = await waitForScreen(new RegExp(`WOSH_${tail}(${valuePattern})`));
     if (wasOpen) {
       await page.click("#transfers-btn");
       await page.waitForSelector("#transfers-sheet .txbar", { timeout: 10_000 });
@@ -306,7 +328,10 @@ try {
   ).catch(() => null);
   if (uploadErr) fail(`upload failed in the page: ${uploadErr}`);
   else {
-    const remoteHash = await ask(`sha256sum ~/${GATE_DIR_NAME}/payload.bin | cut -d' ' -f1`);
+    const remoteHash = await ask(
+      `sha256sum ~/${GATE_DIR_NAME}/payload.bin | cut -d' ' -f1`,
+      "[0-9a-f]{64}",
+    );
     if (remoteHash !== UPLOAD_HASH) fail(`uploaded content mismatch: want ${UPLOAD_HASH} got ${remoteHash}`);
     else console.log("PASS: leg2 the target's own sha256sum matches the uploaded file");
   }
