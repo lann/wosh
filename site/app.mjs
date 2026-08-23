@@ -164,9 +164,18 @@ window.__wosh.term = term;
 // (async, grows #panel), the extra-keys bar filling in, mobile.mjs
 // resizing to the visual viewport, plain window resizes. A one-shot
 // startup fit goes stale on the first of those.
-new ResizeObserver(() => fit.fit()).observe(document.getElementById("term"));
-addEventListener("resize", () => fit.fit()); // zoom edge cases; harmless overlap
-initMobile(term); // soft-keyboard viewport glue + extra-keys bar
+//
+// ...but not while a finger holds a selection over the terminal. The
+// mobile layer hands back a gate for exactly that: it swallows refits
+// while the selection mirror is frozen and replays them on release, so
+// the soft keyboard closing (which every native selection causes) can
+// no longer reflow the text out from under the platform's drag
+// handles. Off a phone guardRefit is the identity. Which is why
+// initMobile runs BEFORE the wiring below: the gate has to exist first.
+const { guardRefit } = initMobile(term); // soft-keyboard viewport glue + extra-keys bar
+const refit = guardRefit(() => fit.fit());
+new ResizeObserver(refit).observe(document.getElementById("term"));
+addEventListener("resize", refit); // zoom edge cases; harmless overlap
 // A vim-keys extension (Vimium et al.) can eat Esc entirely before the
 // page ever sees it; see esc-watch.mjs for the detection signature.
 initEscWatch(term, {

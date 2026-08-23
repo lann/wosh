@@ -36,10 +36,18 @@
 //  - touch selection: the screen is a webgl canvas under
 //    `user-select: none` and xterm's selection answers only to a
 //    mouse, so a finger cannot select terminal text at all. An
-//    invisible, selectable DOM mirror of the visible viewport is
-//    mounted inside .xterm-screen, and the platform's OWN selection
-//    machinery -- long-press word select, drag handles, the
-//    magnifier, the floating Copy toolbar -- works on that. See
+//    invisible, selectable DOM mirror is mounted inside .xterm-screen,
+//    and the platform's OWN selection machinery -- long-press word
+//    select, drag handles, the magnifier, the floating Copy toolbar --
+//    works on that. A held selection anchors the mirror to BUFFER
+//    rows, so panning (or ratcheting a handle against the top/bottom
+//    row) carries it across screenfuls of scrollback instead of
+//    dismissing it. It also DEFERS terminal refits until the selection
+//    is released -- starting a native selection blurs the hidden
+//    textarea, which closes the soft keyboard, which grows the visual
+//    viewport, and a reflow there would leave the platform's handles
+//    floating over content that moved. That is what the `guardRefit`
+//    handle below is: app.mjs wraps its refit callbacks in it. See
 //    touch-select.mjs.
 //
 //  - long-press selection (the fallback): the overlay above owns real
@@ -136,13 +144,18 @@ export const autofocusTerminal = (term) => {
 /**
  * Wire the mobile layer to the live terminal. Idempotent-enough for the
  * page's single call; safe when visualViewport or #keys are absent.
+ *
+ * Returns `{ guardRefit }` for the caller to wrap its refit callbacks
+ * in: refits are deferred while a touch selection is held (see
+ * touch-select.mjs). Off a phone it is the identity.
  */
 export const initMobile = (term) => {
   initViewportFit();
   initTouchScroll(term);
   initKeysBar(term);
   initLongPressSelect(term);
-  initTouchSelect(term);
+  const { guardRefit } = initTouchSelect(term);
+  return { guardRefit };
 };
 
 const initViewportFit = () => {
