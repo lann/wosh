@@ -229,6 +229,68 @@ e2e: compose
         --command 'echo wosh-exec-ok; exit 7' \
         --expect-output wosh-exec-ok --expect-exit 7
 
+# File transfer, end to end: the SFTP engine inside the composed
+# client moving real bytes through the real tunnel into a real OpenSSH
+# sshd -- which, having no `Subsystem sftp` line in the gate's
+# sshd_config, also makes this the only place the `sftp-server` exec
+# fallback is exercised against a genuine server.
+#
+# The legs, all on ONE live session alongside a working interactive
+# shell (SFTP rides a second bulk channel, and a multi-megabyte
+# transfer must disturb the pty no more than the probe did):
+#  - a listing whose sizes are right and whose NON-UTF-8 entry survives
+#    as bytes -- seeded server-side with `printf '\377'`, listed with a
+#    lossy `display`, and then DOWNLOADED by its raw name. Several
+#    design decisions (dir-entry's name/display split, paths as
+#    list<u8> everywhere) exist only for this property, and this is the
+#    one place it is proven through the whole stack at once.
+#  - a ~4 MiB upload -- four times the engine's in-flight replay budget
+#    -- verified by the TARGET's own sha256sum over the probe channel,
+#    then downloaded back through a real sink.
+#  - the equal-length re-upload (already-done) and the refusal to
+#    `overwrite` into a sink that still holds staged bytes.
+#  - and the reason the feature exists: an upload whose transport is
+#    torn out from under it mid-flight must ride the outage out and
+#    still land byte-perfect.
+#
+# That last leg RESTARTS THE RELAY, exactly as browser-resume does, so
+# it is the last native leg in `check` -- it must not destabilize the
+# listeners the earlier ones stand up. The kill lives in a generated
+# script rather than on smoke-test's `bash -c` command line: a
+# `pkill -f 'iroh-rela[y]'` sharing a command line with the restart
+# that follows matches, and kills, its own shell.
+e2e-transfer: compose hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p wosh-smoke-test
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop e2e-transfer' EXIT
+    trap 'exit 130' INT TERM
+    mkdir -p .deps/run
+    kill_relay=.deps/run/transfer-kill-relay.sh
+    cat > "$kill_relay" <<'EOS'
+    #!/usr/bin/env bash
+    pkill -f 'iroh-rela[y]' || true
+    sleep 2
+    EOS
+    echo "nohup {{RELAY}} --dev >/dev/null 2>&1 &" >> "$kill_relay"
+    chmod +x "$kill_relay"
+    scripts/gate-proc.sh start e2e-transfer target/release/wosh-listener --ephemeral-identity \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
+    sleep 7
+    cs=$(scripts/gate-proc.sh field e2e-transfer connstring)
+    rm -rf .deps/run/transfer-stage && mkdir -p .deps/run/transfer-stage
+    target/release/wosh-smoke-test \
+        --component target/components/wosh-ssh-client.wasm \
+        --connstring "$cs" --user "$USER" \
+        --authorized-keys "$(scripts/test-sshd.sh authorized-keys)" \
+        --expect-host-key "$(scripts/test-sshd.sh fingerprint)" \
+        --transfer-dir "$PWD/.deps/transfer-gate" \
+        --transfer-stage "$PWD/.deps/run/transfer-stage" \
+        --mid-transfer-cmd "$PWD/$kill_relay"
+
 # The legibility gate for a passkey a server will not take.
 #
 # The sshd here is the one almost everyone actually runs -- password
@@ -536,6 +598,33 @@ browser-passkey: site hosts
     WOSH_EXPECT_FP="$(scripts/test-sshd.sh fingerprint)" \
         node host-test/browser-passkey.mjs
 
+# Browser FILE TRANSFER: the real transfer panel, the real
+# `transfer-io` host (OPFS staging worker and all), and the real
+# component's SFTP engine, moving real bytes into a real sshd. The
+# sibling of e2e-transfer, and each covers what the other cannot: the
+# native leg drives the component through typed Rust bindings and never
+# sees how the page reads polyengine's JS conventions, stages bytes in
+# OPFS, keeps resume records in IndexedDB, or shares one session
+# between a transfer and a terminal somebody is typing into. Here the
+# verification is the TARGET's own `sha256sum`, typed into that
+# terminal -- the one oracle a gate whose "remote" filesystem is the
+# local one cannot fool itself with.
+browser-transfer: site hosts
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pgrep -f 'iroh-rela[y]' >/dev/null || { {{RELAY}} --dev & sleep 3; }
+    scripts/test-sshd.sh start
+    trap 'scripts/gate-proc.sh stop browser-transfer' EXIT
+    trap 'exit 130' INT TERM
+    scripts/gate-proc.sh start browser-transfer target/release/wosh-listener --ephemeral-identity \
+        --relay http://127.0.0.1:3340 \
+        --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
+    sleep 7
+    cs=$(scripts/gate-proc.sh field browser-transfer connstring)
+    WOSH_CONNSTRING="$cs" \
+    WOSH_AUTHORIZED_KEYS="$(scripts/test-sshd.sh authorized-keys)" \
+        node host-test/browser-transfer.mjs
+
 # Browser idle survival: the real page stays connected across an idle
 # window longer than QUIC's 30s max_idle_timeout, and a post-idle
 # keystroke still round-trips. Guards the polymorph-iroh keepalive pin
@@ -689,12 +778,18 @@ browser-resume: site hosts
 live:
     node host-test/live-check.mjs
 
-check: test-gate-proc test-sessions test-install-command test-connstring test-hostkey test-ssh-core test-tunnel test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing browser-mobile browser browser-links browser-e2e browser-passkey browser-idle-e2e browser-freeze browser-fallthrough browser-repair browser-resume
+check: test-gate-proc test-sessions test-install-command test-connstring test-hostkey test-ssh-core test-tunnel test-sftp test-webauthn-ssh spike-async e2e e2e-passkey e2e-passkey-recover e2e-passkey-unprepared e2e-kbdint e2e-pairing e2e-transfer browser-mobile browser browser-links browser-e2e browser-passkey browser-transfer browser-idle-e2e browser-freeze browser-fallthrough browser-repair browser-resume
 
 # The tunnel framing (protocol v2): codec golden bytes + replay
 # bookkeeping, shared by wosh-client and listener-core.
 test-tunnel:
     cargo test -p wosh-tunnel
+
+# The SFTP v3 wire codec (draft-ietf-secsh-filexfer-02) and request/response
+# correlation layer used by wosh-client's file browser: golden bytes,
+# non-UTF-8 filename round-trip, framer chunk-boundary fuzzing, pipelining.
+test-sftp:
+    cargo test -p wosh-sftp
 
 # The WebAuthn-to-SSH wire mapping: the authorized_keys line a passkey
 # produces, and the layout of the signature that answers for it. Every

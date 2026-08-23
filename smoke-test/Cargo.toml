@@ -15,7 +15,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 wasmtime = { version = "47", features = ["component-model", "component-model-async", "async", "cranelift", "runtime"] }
 wasmtime-wasi = { version = "47", features = ["p3"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 # The siblings' release tags, kept in step with listener-host (see the
 # pin rationale there).
 # Carries driver reactor isolation (their #158/#159, found by the
