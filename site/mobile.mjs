@@ -360,14 +360,14 @@ const initKeysBar = (term) => {
     ["tab", "\t"],
     ["ctrl", "ctrl"], // sticky
     ["alt", "alt"], // sticky
-    ["~", "~"],
-    ["/", "/"],
-    ["|", "|"],
-    ["-", "-"],
     ["←", cursor("D")],
     ["↓", cursor("B")],
     ["↑", cursor("A")],
     ["→", cursor("C")],
+    ["~", "~"],
+    ["/", "/"],
+    ["|", "|"],
+    ["-", "-"],
   ];
 
   // Press = down then up WITHOUT travel. The strip scrolls sideways and
