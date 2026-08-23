@@ -111,7 +111,13 @@ jobs:
             ~/.cargo/git
             target
             ssh-core/main.wasm
-          key: cargo-check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'ssh-core/go.sum') }}
+          # The lockfiles are named explicitly rather than globbed:
+          # `**/Cargo.lock` makes hashFiles walk the ENTIRE workspace in
+          # the post-job step -- after a full build that includes
+          # target/, .deps/ and the Chromium cache, which blows its time
+          # budget and fails the job ("Fail to hash files under
+          # directory") even though `just check` passed.
+          key: cargo-check-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'connstring/Cargo.lock', 'listener-core/Cargo.lock', 'smoke-test/Cargo.lock', 'ssh-core/go.sum') }}
           restore-keys: |
             cargo-check-${{ runner.os }}-
             cargo-${{ runner.os }}-
