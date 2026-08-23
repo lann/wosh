@@ -234,7 +234,7 @@ interface passkey-store {
 }
 
 /// The browser-facing SSH terminal surface: what the static site drives
-/// (through deltic) to run an interactive shell over the iroh tunnel.
+/// (through polyengine) to run an interactive shell over the iroh tunnel.
 ///
 /// Behind this interface sit two more components and a host import,
 /// each doing the one thing its runtime is good at. This Rust

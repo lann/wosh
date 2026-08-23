@@ -1,7 +1,7 @@
 // Browser end-to-end gate: the REAL page in a real Chromium, against a
 // real listener and a real OpenSSH sshd -- the leg `just e2e` cannot
 // cover, because it drives the component with typed Rust bindings and
-// so never exercises the page's reading of deltic's JS conventions.
+// so never exercises the page's reading of polyengine's JS conventions.
 //
 // What this asserts, leg by leg:
 //
@@ -232,7 +232,7 @@ try {
 
   // The session fold's controls must be LIVE against the real
   // component. This is the tripwire for capability-probe mistakes: an
-  // arity sniff on deltic's runtime-built Session.connect once
+  // arity sniff on polyengine's runtime-built Session.connect once
   // disabled the whole feature for every real page while every gate
   // stayed green, because the mobile gate stubs the component and
   // nothing else looked at the fold.

@@ -17,7 +17,7 @@
 
 /// <reference lib="dom" />
 
-import { ComponentException } from "@deltic/runtime/embedder";
+import { ComponentException } from "@polyengine/protocol";
 
 const DB_NAME = "wosh-passkey";
 const STORE = "identity";
@@ -567,7 +567,7 @@ async function remember(identity: PasskeyIdentity, credentialId: Uint8Array): Pr
   }
 }
 
-/** The imports-record fragment for deltic's `instantiate`. */
+/** The imports-record fragment for polyengine's `instantiate`. */
 export function passkeyStoreImports(): Record<string, unknown> {
   return {
     "wosh:terminal/passkey-store": { identity, enroll, adopt, forget, assert, assertUnknown, remember },

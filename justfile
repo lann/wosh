@@ -5,7 +5,10 @@ set shell := ["bash", "-cu"]
 export PATH := env_var('HOME') + "/.local/go/bin:" + env_var('HOME') + "/go/bin:" + env_var('PATH')
 
 ENDPOINT := ".deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm"
-RELAY    := ".deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay"
+# iroh-relay is no longer built from a source checkout: polymorph-iroh's
+# own scripts/setup.sh installs a prebuilt, pinned iroh-relay binary
+# (1.0.3) via cargo-binstall onto PATH.
+RELAY    := "iroh-relay"
 
 default:
     @just --list
@@ -68,7 +71,7 @@ dev-listener *args: build
 
 # --- the static site --------------------------------------------------
 
-# Bundle the deltic host layer for the page. The Deno-only WebRTC
+# Bundle the polyengine host layer for the page. The Deno-only WebRTC
 # backends stay external: in a browser the module uses the platform's
 # RTCPeerConnection and those dynamic imports never execute.
 web-bundle:
@@ -76,7 +79,7 @@ web-bundle:
     deno bundle --platform browser --format esm --config deno.json \
         --external node-datachannel --external node-datachannel/polyfill --external werift \
         --external "npm:node-datachannel*" --external "npm:werift*" \
-        -o site/dist/deltic.js site/deltic-entry.ts
+        -o site/dist/polyengine.js site/polyengine-entry.ts
 
 # xterm assets + the browser-gate driver (once).
 web-deps:
@@ -454,7 +457,7 @@ e2e-pairing: compose
 browser-mobile:
     node host-test/browser-mobile.mjs
 
-# Browser gate: deltic instantiates the SSH client component in a real
+# Browser gate: polyengine instantiates the SSH client component in a real
 # headless Chromium and runs guest code in-page. Needs `just site` first.
 browser: site
     node host-test/browser-identity.mjs
@@ -474,7 +477,7 @@ browser-links: site
 # listener, into a real sshd. This is the gate that fails if the page
 # ever skips the interactive fingerprint confirmation (TOFU): the
 # native e2e drives the component through typed bindings and cannot
-# see how the page reads deltic's JS conventions.
+# see how the page reads polyengine's JS conventions.
 browser-e2e: site hosts
     #!/usr/bin/env bash
     set -euo pipefail

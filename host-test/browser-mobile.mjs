@@ -201,11 +201,11 @@ const LIFECYCLE_FIXTURE = `<!doctype html>
 `;
 
 // The connect PANEL, real: index.html + boot.mjs + app.mjs verbatim,
-// with only the wasm component behind /dist/deltic.js stubbed (all
+// with only the wasm component behind /dist/polyengine.js stubbed (all
 // capabilities true, synthetic identity lines). What is under test is
 // the panel's structure -- what a user sees before touching anything,
 // and where the rows that need answers appear.
-const DELTIC_STUB = `
+const POLYENGINE_STUB = `
 // app.mjs imports this DIRECTLY from the module (not off the client):
 // the ceremony gate the panel installs. Retained and exposed so the
 // gate legs can raise a ceremony exactly the way the store would.
@@ -281,8 +281,8 @@ const server = createServer(async (req, res) => {
       .end(await readFile(join(SITE, "index.html")));
     return;
   }
-  if (path === "/dist/deltic.js") {
-    res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end(DELTIC_STUB);
+  if (path === "/dist/polyengine.js") {
+    res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" }).end(POLYENGINE_STUB);
     return;
   }
   if (XTERM_FILES[path]) {

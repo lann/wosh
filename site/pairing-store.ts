@@ -20,7 +20,7 @@
 
 /// <reference lib="dom" />
 
-import { ComponentException } from "@deltic/runtime/embedder";
+import { ComponentException } from "@polyengine/protocol";
 
 const DB_NAME = "wosh";
 const STORE = "identity";
@@ -82,7 +82,7 @@ async function store(blob: Uint8Array): Promise<void> {
   }
 }
 
-/** The imports-record fragment for deltic's `instantiate`. */
+/** The imports-record fragment for polyengine's `instantiate`. */
 export function pairingStoreImports(): Record<string, unknown> {
   return { "wosh:terminal/pairing-store": { load, store } };
 }

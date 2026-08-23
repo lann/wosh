@@ -15,23 +15,23 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 # --- pins -------------------------------------------------------------
 # polymorph-iroh supplies the iroh endpoint component (the transport for
-# both of our components). Its own scripts/setup.sh pins its siblings
-# (webcrypto / websocket / webrtc-datachannels / tls) and upstream iroh;
-# we call it rather than duplicating those pins here. The revs in
+# both of our components). Its own scripts/setup.sh no longer checks out
+# sibling repos: it installs its pinned toolchain and tools, including
+# the prebuilt iroh-relay binary the gates run. The revs in
 # listener-host/Cargo.toml and smoke-test/Cargo.toml must match the ones
-# it checks out, since the native hosts link those crates directly.
+# polymorph-iroh's own Cargo.toml pins, since the native hosts link
+# those crates directly.
 #
 # Full SHAs: these are the revisions this project was developed and
 # verified against.
 PIROH_REPO=https://github.com/polymorph-components/polymorph-iroh
-# The head of polymorph-iroh PR #79 (stale-resource epoch guard, found
-# by the freeze drill here); re-pin to the merge commit once it lands.
-PIROH_PIN=793f12724987c84ebd78964a54495286a593d564
+# Current main: the @polymorph/iroh 0.5.0 release commit (v0.5.0).
+PIROH_PIN=55e1b368a8345ed29fbffa2ed27613e63345529f
 
-# deltic (the JS component host) now arrives as published jsr releases:
-# the root deno.json pins @deltic/* and @polymorph/* there, and
+# polyengine (the JS component host) arrives as published jsr releases:
+# the root deno.json pins @polyengine/* and @polymorph/* there, and
 # scripts/site-deploy-tree.sh fetches the matching digest-pinned
-# translator wasm from the same @deltic release -- no checkout to build.
+# translator wasm from the same @polyengine release.
 
 # --- required tools ---------------------------------------------------
 # componentize-go installs to GOBIN, and componentize-go itself needs a
@@ -82,26 +82,16 @@ if [ "$(git -C "$DEPS/polymorph-iroh" rev-parse HEAD)" != "$PIROH_PIN" ]; then
 fi
 say "polymorph-iroh: $(git -C "$DEPS/polymorph-iroh" log --oneline -1)"
 
-# Its own siblings (webcrypto/websocket/webrtc/tls) + upstream iroh.
+# Its pinned toolchain + tools, incl. the iroh-relay binary the gates run.
 (cd "$DEPS/polymorph-iroh" && ./scripts/setup.sh)
 
 say "building the iroh endpoint component (cold: several minutes)"
 (cd "$DEPS/polymorph-iroh" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
 
-# The relay is only needed to RUN the gates, never to build the
-# components or the site -- and it is by far the most expensive thing
-# here. CI that only publishes the site skips it.
-if [ -n "${WOSH_SKIP_RELAY:-}" ]; then
-  say "skipping the local iroh-relay build (WOSH_SKIP_RELAY set)"
-else
-  say "building a local iroh-relay (used by the gates)"
-  (cd "$DEPS/polymorph-iroh/.deps/iroh" && cargo build --release -p iroh-relay --features server --bin iroh-relay)
-fi
-
 
 say "setup complete
 
   iroh endpoint : .deps/polymorph-iroh/target/wasm32-wasip2/release/iroh_endpoint.wasm
-  iroh relay    : .deps/polymorph-iroh/.deps/iroh/target/release/iroh-relay${WOSH_SKIP_RELAY:+ (skipped)}
+  iroh relay    : iroh-relay on PATH ($(iroh-relay --version 2>/dev/null || echo not found))
 
 next: just build"

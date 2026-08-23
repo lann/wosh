@@ -32,7 +32,7 @@
 
 /// <reference lib="dom" />
 
-import { ComponentException } from "@deltic/runtime/embedder";
+import { ComponentException } from "@polyengine/protocol";
 
 const DB_NAME = "wosh";
 const STORE = "identity";
@@ -150,7 +150,7 @@ async function sign(data: Uint8Array): Promise<Uint8Array> {
     const pair = await identityPair();
     return new Uint8Array(
       // The cast narrows `ArrayBufferLike` for the dom lib's
-      // `BufferSource`; deltic lowers `list<u8>` as a plain
+      // `BufferSource`; polyengine lowers `list<u8>` as a plain
       // ArrayBuffer-backed Uint8Array.
       await crypto.subtle.sign("Ed25519", pair.privateKey, data as BufferSource),
     );
@@ -159,7 +159,7 @@ async function sign(data: Uint8Array): Promise<Uint8Array> {
   }
 }
 
-/** The imports-record fragment for deltic's `instantiate`. */
+/** The imports-record fragment for polyengine's `instantiate`. */
 export function identityStoreImports(): Record<string, unknown> {
   return { "wosh:terminal/identity-store": { publicKey, sign } };
 }

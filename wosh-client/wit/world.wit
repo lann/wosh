@@ -4,7 +4,7 @@ package wosh:terminal;
 /// `wosh:ssh-core` import is satisfied by `wac plug`-ing the sans-I/O
 /// Go SSH core in; `polymorph:iroh` by plugging the endpoint
 /// component; `identity-store`, `passkey-store` and `pairing-store`
-/// are served by the host (deltic in a browser, the native e2e host
+/// are served by the host (polyengine in a browser, the native e2e host
 /// under wasmtime). The webcrypto import exists ONLY for the pairing
 /// identity below -- the SSH identities stay behind the sign-only
 /// `identity-store` and the ceremony-only `passkey-store`, and the SSH

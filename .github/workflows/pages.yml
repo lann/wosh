@@ -4,7 +4,7 @@ name: pages
 # prints is the entire bootstrap, so this site being live is what makes
 # the product usable from a phone -- `--qr-base` defaults to it.
 #
-# What ships is the SAME component the native gates run: deltic is a
+# What ships is the SAME component the native gates run: polyengine is a
 # runtime linker, so there is no transpiled variant that could drift
 # from what was tested.
 
@@ -71,8 +71,8 @@ jobs:
         run: go install github.com/bytecodealliance/componentize-go@latest
 
       # The expensive half is .deps/: polymorph-iroh's endpoint component
-      # and its four sibling repos, plus deltic's translator shim. Keyed
-      # on setup.sh, which owns every pin.
+      # plus the pinned translator shim. Keyed on setup.sh, which owns
+      # every pin.
       - name: Cache .deps
         uses: actions/cache@v4
         with:
@@ -92,11 +92,10 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'ssh-core/go.sum') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # WOSH_SKIP_RELAY: the relay is only needed to RUN the gates, and
-      # it is by far the most expensive build here.
+      # The relay is a prebuilt, pinned binary installed by
+      # polymorph-iroh's own scripts/setup.sh -- cheap, no longer a
+      # from-source build to skip.
       - name: Dependencies
-        env:
-          WOSH_SKIP_RELAY: "1"
         run: scripts/setup.sh
 
       - name: Build the site
@@ -113,8 +112,8 @@ jobs:
       - name: Sanity-check the tree
         run: |
           test -s out/dist/wosh-ssh-client.wasm
-          test -s out/dist/deltic.js
-          test -s out/dist/deltic-translator-shim.wasm
+          test -s out/dist/polyengine.js
+          test -s out/dist/polyengine-translator-shim.wasm
           ! grep -q '__WOSH_' out/sw.js
           grep -q 'wosh-ssh-client.wasm' out/sw.js
           echo "tree ok: $(du -sh out | cut -f1)"
