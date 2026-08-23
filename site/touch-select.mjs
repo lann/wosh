@@ -32,16 +32,16 @@
 // over the rest of the page. Its one child, the `sheet`, is what
 // actually moves. While a selection is held the mirror stops tracking
 // the viewport and anchors itself to BUFFER rows instead -- the rows
-// already mirrored keep their text, the sheet is translated so they
-// stay glued to the lines they were copied from, and rows are revealed
-// at whichever edge the viewport uncovers. Translating the LAYER
+// already mirrored keep their text, the sheet is offset so they stay
+// glued to the lines they were copied from, and rows are revealed
+// at whichever edge the viewport uncovers. Offsetting the LAYER
 // instead would carry its own clip region along with the rows, which
 // is the whole reason for the extra level.
 //
 // That is what lets a selection run past the edge of the screen: pan
 // with a finger and the highlight rides with its text, or drag a
-// handle onto the top/bottom visible row and the view ratchets a
-// couple of lines at a time (see the ratchet below).
+// handle onto (or past) the top/bottom visible row and the view
+// ratchets toward it (see the ratchet below).
 //
 // Known limits, all deliberate:
 //
@@ -65,6 +65,13 @@
 //     The terminal is top-anchored, so the box growing underneath just
 //     adds blank space below the canvas; nothing under the selection
 //     moves.
+//   - the platform's own selection UI is redrawn on ITS schedule, not
+//     ours. Moving the mirror by layout (rather than compositing it)
+//     and re-asserting the identical selection once the movement
+//     settles is as close as a page can get to "handles, please catch
+//     up"; there is no API that says it outright. Whether Android's
+//     teardrops always follow is a device question, not one this
+//     headless gate can answer.
 //   - wide (CJK) glyphs drift the highlight. The cell advance is
 //     enforced with `letter-spacing`, which is per-GLYPH, not
 //     per-CELL, so a double-width character occupies one advance in
@@ -84,11 +91,31 @@ const STYLE_ID = "touch-select-style";
 const RATCHET_LINES = 2;
 const RATCHET_MS = 80;
 
+// Handle refresh (see reAnchor). How long the reveal activity has to be
+// quiet before the selection is re-asserted, and how long since the last
+// selectionchange before we believe no handle drag is in flight. A drag
+// produces a continuous stream of selectionchange, and re-asserting into
+// the middle of one would be fighting the platform for the endpoints;
+// waiting out the quiet is cheaper than trying to arbitrate.
+const REFRESH_QUIET_MS = 150;
+const DRAG_QUIET_MS = 120;
+
 // The highlight is drawn by the platform over glyphs that are painted
 // by webgl UNDERNEATH us, so the selected text must stay transparent:
 // only the tint is ours to contribute.
+//
+// The second rule is about grabbing a handle that sits at the END of a
+// line. xterm's drawn scrollbar overlays the right edge of the screen
+// and, while visible, takes pointer events for itself (its own CSS only
+// gives up hit-testing once faded out, via `.invisible`), so a handle
+// parked under it cannot be picked up at all. While a selection is held
+// the scrollbar is the less useful of the two: `!important` because the
+// widget writes pointer-events on itself as it fades in and out, and
+// losing a thumb drag for the duration costs nothing -- a content pan
+// still scrolls, and so does the ratchet.
 const STYLE_TEXT = `
 .touch-select-layer::selection { background: rgba(74,126,192,0.45); color: transparent; }
+.touch-select-holding .xterm-scrollable-element > .scrollbar { pointer-events: none !important; }
 `;
 
 const injectStyle = () => {
@@ -167,10 +194,11 @@ export const initTouchSelect = (term) => {
   // here: the font, size, letter-spacing and white-space stay on the
   // layer and inherit down, and ::selection inherits through the
   // highlight model, so the extra level costs neither the grid nor the
-  // tint.
+  // tint. `position: relative` with an explicit `top` is what moves it
+  // -- see reAnchor for why this is layout and not a transform.
   const sheet = document.createElement("div");
   sheet.className = "touch-select-sheet";
-  sheet.style.cssText = "position:relative;margin:0";
+  sheet.style.cssText = "position:relative;top:0;margin:0";
   layer.appendChild(sheet);
 
   const rows = []; // one div per mirrored row, each with one text node
@@ -239,6 +267,18 @@ export const initTouchSelect = (term) => {
   // something else -- or copy text they never highlighted.
   let frozen = false;
 
+  /**
+   * The single place `frozen` changes, so the DOM can never disagree
+   * with it. The class is what suppresses the scrollbar's hit-testing
+   * (see STYLE_TEXT): a selection handle sitting at the end of a line
+   * is underneath the scrollbar, and while the widget is visible it
+   * takes the touch that was meant for the handle.
+   */
+  const setFrozen = (value) => {
+    frozen = value;
+    term.element?.classList.toggle("touch-select-holding", value);
+  };
+
   const sync = () => {
     if (frozen) return;
     if (rows.length !== term.rows) rebuildRows();
@@ -247,7 +287,7 @@ export const initTouchSelect = (term) => {
     // Back on the viewport: rows[0] IS the top visible line again, so
     // the sheet has nothing left to make up for.
     top = buf.viewportY;
-    sheet.style.transform = "";
+    sheet.style.top = "0px";
     for (let r = 0; r < rows.length; r++) {
       const line = buf.getLine(top + r);
       // UNtrimmed: character offsets in the mirror have to map 1:1
@@ -326,16 +366,92 @@ export const initTouchSelect = (term) => {
       rows.push(div);
       sheet.appendChild(div);
     }
-    // CONTRACT: the design states this invariant as
-    // translateY((top - viewportY) * cellH) and separately expects a
-    // 3-line scroll UP to leave translateY == 3*cellH. Those disagree:
-    // revealing upward walks `top` down until it meets viewportY, so
-    // the offset is 0 and the already-mirrored rows are carried down by
-    // the 3 divs prepended before them -- which is where their glyphs
-    // went. The invariant is what is implemented (it is also what the
-    // design's own reAnchor pseudocode computes); the gate asserts both
+    // CONTRACT: the round-1 design stated this invariant as
+    // (top - viewportY) * cellH and separately expected a 3-line scroll
+    // UP to leave the offset at 3*cellH. Those disagree: revealing
+    // upward walks `top` down until it meets viewportY, so the offset is
+    // 0 and the already-mirrored rows are carried down by the 3 divs
+    // prepended before them -- which is where their glyphs went. The
+    // invariant is what is implemented; the gate asserts both
     // directions, and the downward one is where the offset is nonzero.
-    sheet.style.transform = `translateY(${(top - vy) * cellH}px)`;
+    //
+    // LAYOUT `top`, deliberately not a transform. A transform composites
+    // without relayout, and selection visuals that are derived from
+    // endpoint LAYOUT POSITIONS -- Android's teardrop handles above all
+    // -- are only recomputed when something invalidates them. A pan
+    // fires no selectionchange (the Range never moves; only the boxes
+    // under it do), so with a transform the tint and the text slid while
+    // the handles stayed at stale screen coordinates, and the selection
+    // stopped looking attached to anything. A layout offset goes through
+    // ordinary invalidation, which every engine already repaints
+    // selection visuals for. The cost is a relayout per reveal step,
+    // which is nothing next to the DOM insertions the step already does.
+    sheet.style.top = `${(top - vy) * cellH}px`;
+    scheduleHandleRefresh();
+  };
+
+  // --- handle refresh ----------------------------------------------------
+  //
+  // The belt to the layout offset's braces. Even with relayout, a
+  // platform that caches its selection UI has been given no EVENT saying
+  // the selection's geometry changed -- so once the reveal activity goes
+  // quiet, re-assert the selection with the identical endpoints and let
+  // the resulting selectionchange be that event.
+  //
+  // setBaseAndExtent replaces the range ATOMICALLY: there is no
+  // intermediate collapsed state, so the selectionchange it fires still
+  // reads as holding, cannot thaw the freeze and cannot flush the
+  // deferred refits. The ratchet sees the same focus div it saw last
+  // time, so it takes no step either. The only visible effect is the
+  // platform re-deriving where to draw.
+  let refreshTimer = null;
+  let lastSelChangeAt = 0;
+  // True only for the instant the re-assert below is running, so the
+  // ratchet cannot mistake its intermediate state for a handle drag.
+  let refreshing = false;
+
+  const refreshHandles = () => {
+    refreshTimer = null;
+    if (!frozen) return;
+    // A handle drag in flight produces a continuous stream of
+    // selectionchange. Re-asserting into the middle of one would be
+    // fighting the platform for the endpoints it is busy moving; wait
+    // for the drag to pause instead.
+    if (performance.now() - lastSelChangeAt < DRAG_QUIET_MS) {
+      scheduleHandleRefresh();
+      return;
+    }
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.anchorNode || !sel.focusNode) return;
+    const { anchorNode, anchorOffset, focusNode, focusOffset } = sel;
+    refreshing = true;
+    try {
+      // CONTRACT: the addendum specifies a single setBaseAndExtent with
+      // identical endpoints. Measured in this Chromium, that is a
+      // silent no-op -- an assignment that does not change the
+      // selection fires no selectionchange at all, so it cannot be the
+      // event that tells the platform to re-derive anything. The fix
+      // keeps the addendum's atomicity requirement and its final
+      // endpoints, and defeats the no-op check by going through the
+      // REVERSED selection first: same two endpoints, same covered
+      // text, never collapsed. Both calls land in one task, and
+      // selectionchange is queued per task, so a listener sees exactly
+      // one event carrying the correct final selection -- and on an
+      // engine that fired per mutation instead, every state it could
+      // observe is still a valid hold of the same characters, so the
+      // freeze cannot lapse and no refit can escape.
+      sel.setBaseAndExtent(focusNode, focusOffset, anchorNode, anchorOffset);
+      sel.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+    } catch {
+      /* the selection can vanish between the check and the call */
+    } finally {
+      refreshing = false;
+    }
+  };
+
+  const scheduleHandleRefresh = () => {
+    if (refreshTimer !== null) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refreshHandles, REFRESH_QUIET_MS);
   };
 
   // --- deferred refits ---------------------------------------------------
@@ -386,7 +502,7 @@ export const initTouchSelect = (term) => {
     // themselves onto other lines. Dismissing is the honest fallback.
     if (frozen) {
       document.getSelection()?.removeAllRanges();
-      frozen = false;
+      setFrozen(false);
       lastFocusDiv = null;
     }
     rebuildRows();
@@ -396,8 +512,9 @@ export const initTouchSelect = (term) => {
   });
 
   /**
-   * Auto-scroll when a handle is dragged onto the top or bottom visible
-   * row, so a selection can be extended past the edge of the screen.
+   * Auto-scroll when a handle is dragged onto -- or past -- the top or
+   * bottom visible row, so a selection can be extended beyond the edge
+   * of the screen.
    *
    * Keyed on the focus endpoint CHANGING ROWS, not on it sitting on an
    * edge row: there is no way to know whether a handle is still down
@@ -408,6 +525,18 @@ export const initTouchSelect = (term) => {
    * anchored text off the edge row, and only the browser re-extending
    * the selection, which is what a real finger's jitter does, arms
    * another one.
+   *
+   * PAST the edge is a real case, not a defensive one. A finger in the
+   * blank space the deferred refit leaves below the terminal (the
+   * keyboard closed, the box grew, the canvas did not) is over no
+   * selectable text, so the browser maps it to the nearest selectable
+   * position in document order -- which is one of the clipped rows a
+   * previous scroll revealed, sitting well beyond the last visible row.
+   * A trigger that insisted on `view === rows - 1` exactly never fired
+   * there, and the selection silently ran into text nobody could see.
+   * So the step is the OVERSHOOT: one step brings the focus row exactly
+   * to the edge, and the erratic state becomes "the view scrolls toward
+   * what is being selected".
    */
   const ratchet = (sel) => {
     const node = sel.focusNode;
@@ -425,22 +554,38 @@ export const initTouchSelect = (term) => {
     // Which row of the SCREEN the handle is on: rows are indexed in
     // buffer space while frozen, and the viewport is not.
     const view = top + idx - term.buffer.active.viewportY;
-    if (view !== 0 && view !== term.rows - 1) return;
+    const last = term.rows - 1;
+    let delta = 0;
+    if (view <= 0) {
+      // At the edge, a small crawl; beyond it, close the gap in one
+      // step -- clamped to a screenful so a focus that lands deep in
+      // revealed scrollback cannot jump the view further than the eye
+      // can follow.
+      delta = view === 0 ? -RATCHET_LINES : Math.max(view, -term.rows);
+    } else if (view >= last) {
+      const over = view - last;
+      delta = over === 0 ? RATCHET_LINES : Math.min(over, term.rows);
+    } else {
+      return;
+    }
     lastRatchetAt = now;
     // xterm clamps scrollLines at both ends, so a step against the top
     // or bottom of the buffer is a harmless no-op. The call fires
     // onScroll synchronously, which re-anchors: the insertions leave
     // the Range alone, and the focus div is unchanged, so no loop.
-    term.scrollLines(view === 0 ? -RATCHET_LINES : RATCHET_LINES);
+    term.scrollLines(delta);
   };
 
   // Cheap on purpose: this fires continuously while a selection handle
   // is being dragged.
   document.addEventListener("selectionchange", () => {
+    // Read before anything else: the handle refresh above uses this to
+    // tell a paused selection from a drag still in flight.
+    lastSelChangeAt = performance.now();
     const sel = document.getSelection();
     const holding = Boolean(sel) && !sel.isCollapsed && layer.contains(sel.anchorNode);
     if (holding !== frozen) {
-      frozen = holding;
+      setFrozen(holding);
       if (!frozen) {
         lastFocusDiv = null;
         schedule(); // catch up on everything the freeze skipped
@@ -448,7 +593,11 @@ export const initTouchSelect = (term) => {
         return;
       }
     }
-    if (frozen) ratchet(sel);
+    // Not while the handle refresh is mid-flight: its intermediate
+    // state moves the focus to the other end of the SAME selection,
+    // which an engine firing per mutation would otherwise present as a
+    // handle jumping rows.
+    if (frozen && !refreshing) ratchet(sel);
   });
 
   // Scrolling used to dismiss the selection, because the mirror only
