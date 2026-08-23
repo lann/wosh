@@ -479,10 +479,11 @@ dropped, background I/O stops silently. The clean fix is upstream — a
 - `spikes/go-async/` — the three measurements above, as runnable code.
 - `wit/` — vendored upstream WIT (polymorph-iroh, polymorph-webcrypto,
   WASI 0.3.1), plus this project's own interfaces.
-- `.deps/` — pinned external checkouts and their build outputs, fetched
-  by `scripts/setup.sh`. Deliberately inside the repo: `iroh_endpoint.wasm`
-  is required to compose either component, so it must not live in a
-  scratch directory that can be reclaimed.
+- `.deps/` — pinned, digest-verified artifacts (the iroh endpoint
+  component; the translator shim cache), fetched by `scripts/setup.sh`.
+  Deliberately inside the repo: `iroh_endpoint.wasm` is required to
+  compose either component, so it must not live in a scratch directory
+  that can be reclaimed.
 
 ## The fingerprint the listener prints
 

@@ -70,9 +70,8 @@ jobs:
       - name: componentize-go
         run: go install github.com/bytecodealliance/componentize-go@latest
 
-      # The expensive half is .deps/: polymorph-iroh's endpoint component
-      # plus the pinned translator shim. Keyed on setup.sh, which owns
-      # every pin.
+      # .deps/ holds two digest-pinned downloads: the endpoint component
+      # and the translator shim. Keyed on setup.sh, which owns every pin.
       - name: Cache .deps
         uses: actions/cache@v4
         with:
@@ -93,7 +92,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       # The relay is a prebuilt, pinned binary installed by
-      # polymorph-iroh's own scripts/setup.sh -- cheap, no longer a
+      # scripts/setup.sh via cargo-binstall -- cheap, no longer a
       # from-source build to skip.
       - name: Dependencies
         run: scripts/setup.sh
