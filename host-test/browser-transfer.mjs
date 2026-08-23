@@ -326,7 +326,44 @@ try {
     await page.waitForSelector("#transfers-sheet .tx-dropdown:not([hidden])", { timeout: 10_000 });
   };
 
+  // Row names currently rendered in the LISTING pane (not the transfers
+  // dropdown). textContent, not innerText: `.panes` is `.locked` while
+  // the dropdown floats over it, and a hidden/clipped subtree reports
+  // no innerText at all -- which would read as "the row is gone".
+  const listedNames = () =>
+    page.$$eval("#transfers-sheet .panes .entry-row .namebtn", (els) => els.map((e) => e.textContent));
+  const crumbText = () =>
+    page.$eval("#transfers-sheet .crumbs .crumb-list", (e) => e.textContent);
+
+  // Light dismiss makes the dropdown's state everyone's business: a
+  // pointerdown anywhere outside it is CONSUMED to close it, so any
+  // leg that means to click the listing has to shut it first or watch
+  // its click get swallowed. Closing via the toggle, which is
+  // deliberately excluded from the outside-check.
+  const closeDropdown = async () => {
+    const shown = await page.evaluate(() => {
+      const d = document.querySelector("#transfers-sheet .tx-dropdown");
+      return d ? !d.hidden : null;
+    });
+    if (shown !== true) return;
+    await page.click("#transfers-toggle");
+    // `state: "attached"`, not the default "visible": waiting for a
+    // [hidden] element to become VISIBLE is a contradiction that can
+    // only ever time out.
+    await page.waitForSelector("#transfers-sheet .tx-dropdown[hidden]", { state: "attached", timeout: 10_000 });
+  };
+
   // --- leg 1: the listing is the target's real directory ------------------
+  // Home first, for the one assertion that can only be made here: the
+  // `..` row exists everywhere EXCEPT this panel's root. The panel's
+  // root is home, not the filesystem root -- it tracks a crumb trail
+  // rather than an absolute path, so there is nothing above home for
+  // it to climb to.
+  await openPanel();
+  await page.waitForSelector(`#transfers-sheet .entry-row .namebtn:text-is('${GATE_DIR_NAME}')`, { timeout: 30_000 });
+  if ((await listedNames()).includes("..")) fail("home shows a `..` row; the panel's root must not offer one");
+  else console.log("PASS: leg1 no `..` row at the panel's root");
+
   await showGateDir();
   await page.waitForSelector("#transfers-sheet .entry-row .namebtn:text-is('greeting.txt')", { timeout: 20_000 });
   const greetingMeta = await page.$eval(
@@ -344,7 +381,70 @@ try {
   if (!toggleDisabledAtRest) fail("#transfers-toggle is enabled before any transfer has started");
   else console.log("PASS: leg1 the transfers toggle starts disabled (nothing to drop down onto yet)");
 
+  // --- leg 1b: `..` climbs, client-side ------------------------------------
+  // The pop happens in the crumb trail, not on the wire: no literal
+  // `..` is ever sent to the engine. So the check is that the CRUMB
+  // came home, which is the state that would desync if a `..` were
+  // shipped off to REALPATH instead.
+  if (!(await listedNames()).includes("..")) fail("no `..` row inside the gate directory");
+  await page.click("#transfers-sheet .panes .entry-row .namebtn:text-is('..')");
+  await page.waitForSelector("#transfers-sheet .crumbs .crumb.here:text-is('~')", { timeout: 20_000 });
+  await page.waitForSelector(`#transfers-sheet .entry-row .namebtn:text-is('${GATE_DIR_NAME}')`, { timeout: 30_000 });
+  if ((await listedNames()).includes("..")) fail("`..` climbed to home but home still offers a `..` row");
+  else console.log("PASS: leg1b the `..` row climbed back to the panel's root and vanished there");
+  await showGateDir();
+
+  // --- leg 1c: the refresh button re-reads the directory --------------------
+  // The creation is SCHEDULED on the target and lands a few seconds
+  // later, which is what makes this test real: `ask` steps out of the
+  // modal to reach the terminal, and reopening the panel re-lists from
+  // scratch, so a file that already existed by then would show up
+  // without any refresh and the assertion would be vacuous. A delayed
+  // creation leaves a genuinely stale listing to refresh -- and pins,
+  // in passing, that the panel does NOT quietly poll the directory
+  // behind the user's back.
+  const REFRESH_PROBE = "refresh-probe.txt";
+  await ask(
+    `(sleep 6; printf 'refreshed\\n' > ~/${GATE_DIR_NAME}/${REFRESH_PROBE}) >/dev/null 2>&1 & echo scheduled`,
+    "scheduled",
+  );
+  await showGateDir();
+  if ((await listedNames()).includes(REFRESH_PROBE)) {
+    fail(`${REFRESH_PROBE} already existed when the refresh leg started; the delayed creation raced it`);
+  } else {
+    // Wait for the file to really be there before asking the panel to
+    // look again -- the gate's sshd is this user on localhost, so the
+    // target's filesystem is readable from here, and waiting on it
+    // beats sleeping and hoping.
+    const probeOnDisk = join(GATE_DIR, REFRESH_PROBE);
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(probeOnDisk) && Date.now() < deadline) await page.waitForTimeout(200);
+    if (!existsSync(probeOnDisk)) fail(`the scheduled creation of ${REFRESH_PROBE} never happened on the target`);
+    else {
+      if ((await listedNames()).includes(REFRESH_PROBE)) {
+        fail("the listing showed a file that appeared after it was read -- something is re-listing unasked");
+      }
+      await page.click("#transfers-sheet .crumbs #refresh-btn");
+      await page.waitForSelector(`#transfers-sheet .panes .entry-row .namebtn:text-is('${REFRESH_PROBE}')`, { timeout: 20_000 });
+      console.log("PASS: leg1c a stale listing stayed stale until #refresh-btn re-read it");
+    }
+  }
+
   // --- leg 2: upload, verified by the TARGET's own sha256sum --------------
+  // Count refresh clicks from here on, so the auto-relist assertion
+  // below can say the listing updated on its OWN and not because this
+  // gate poked the button. A capture listener on the sheet, because
+  // every render() replaces the button element itself.
+  await page.evaluate(() => {
+    window.__refreshClicks = 0;
+    document.getElementById("transfers-sheet").addEventListener(
+      "click",
+      (e) => { if (e.target?.closest?.("#refresh-btn")) window.__refreshClicks++; },
+      true,
+    );
+  });
+  if ((await listedNames()).includes("payload.bin")) fail("payload.bin was already listed before the upload");
+
   // One upload affordance now, and it is inside the drop zone: "drop a
   // file here or [select a file] to upload".
   const [chooser] = await Promise.all([
@@ -368,6 +468,25 @@ try {
   ).catch(() => null);
   if (uploadErr) fail(`upload failed in the page: ${uploadErr}`);
   else {
+    // A finished upload into the directory on screen re-lists itself.
+    // The click counter is what makes this a claim about the
+    // MECHANISM rather than about whatever happened to be on screen:
+    // nothing here asked for a refresh, and no navigation has
+    // happened since the pre-upload check above.
+    await page.waitForFunction(
+      () => [...document.querySelectorAll("#transfers-sheet .panes .entry-row .namebtn")]
+        .some((e) => e.textContent === "payload.bin"),
+      null,
+      { timeout: 30_000 },
+    ).catch(() => {});
+    const refreshClicks = await page.evaluate(() => window.__refreshClicks);
+    if (!(await listedNames()).includes("payload.bin")) {
+      fail("the completed upload did not appear in the listing on its own");
+    } else if (refreshClicks !== 0) {
+      fail(`the upload's row appeared, but ${refreshClicks} refresh click(s) happened -- the auto-relist is unproven`);
+    } else {
+      console.log("PASS: leg2 the completed upload re-listed the shown directory on its own (no refresh click)");
+    }
     const remoteHash = await ask(
       `sha256sum ~/${GATE_DIR_NAME}/payload.bin | cut -d' ' -f1`,
       "[0-9a-f]{64}",
@@ -384,8 +503,72 @@ try {
   if (sha256(back) !== UPLOAD_HASH) fail(`round-trip download mismatch: want ${UPLOAD_HASH} got ${sha256(back)}`);
   else console.log("PASS: leg3 round-trip download matches byte for byte");
 
+  // --- leg 3b: the dropdown light-dismisses, and swallows the tap ----------
+  // Its own leg rather than a rider on leg 4: leg 4 has to cancel a
+  // transfer MID-flight, and spending that window opening and closing
+  // a dropdown is how a timing-sensitive assertion turns into a flake.
+  // Here nothing is racing.
+  await showGateDir();
+  await openDropdown();
+  {
+    // Tap the `..` row: the only row in this directory that would
+    // NAVIGATE if the swallow failed, so "the crumbs did not move" is
+    // a real claim and not a tautology. The dropdown is anchored under
+    // the panel header and hangs over the top of the listing, so first
+    // establish that this point actually belongs to the row -- a tap
+    // that landed on the dropdown itself would prove nothing at all.
+    const target = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("#transfers-sheet .panes .entry-row .namebtn")];
+      // The dropdown hangs over the TOP of the listing, so the `..`
+      // row -- the one whose misfire would be loudest -- is usually
+      // underneath it and unusable. Take the topmost row that is
+      // genuinely reachable instead, preferring `..` when it is.
+      const reachable = rows.filter((btn) => {
+        const r = btn.getBoundingClientRect();
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return top === btn || btn.contains(top);
+      });
+      const btn = reachable.find((e) => e.textContent === "..") ?? reachable[0];
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, name: btn.textContent };
+    });
+    if (!target) {
+      fail("every listing row is covered by the dropdown; nothing to aim the light-dismiss tap at");
+    } else {
+      // Two ways this tap could leak through, one per row kind: a
+      // directory descends (the crumbs move) and a file opens the
+      // download confirm (a transfer row appears -- and this gate
+      // auto-accepts every confirm, so a leak would really start one).
+      // Watch both, so the assertion does not depend on which row
+      // happened to be reachable.
+      const crumbsBefore = await crumbText();
+      const rowsBefore = await page.$$eval("#transfers-sheet .tx-dropdown .transfer-row", (r) => r.length);
+      await page.mouse.move(target.x, target.y);
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForSelector("#transfers-sheet .tx-dropdown[hidden]", { state: "attached", timeout: 10_000 })
+        .catch(() => fail("a tap outside the dropdown did not close it"));
+      // Give a leaked click time to become visible before denying it.
+      await page.waitForTimeout(1000);
+      const crumbsAfter = await crumbText();
+      const rowsAfter = await page.$$eval("#transfers-sheet .tx-dropdown .transfer-row", (r) => r.length);
+      if (crumbsAfter !== crumbsBefore) {
+        fail(`the dismissing tap also navigated: crumbs went ${JSON.stringify(crumbsBefore)} -> ${JSON.stringify(crumbsAfter)}`);
+      } else if (rowsAfter !== rowsBefore) {
+        fail(`the dismissing tap also started a transfer (${rowsBefore} -> ${rowsAfter} rows)`);
+      } else {
+        console.log(`PASS: leg3b a tap outside closed the dropdown and was swallowed (${JSON.stringify(target.name)} under it never fired)`);
+      }
+    }
+  }
+
   // --- leg 4: cancel mid-flight, keep the partial -------------------------
   await showGateDir();
+  // Shut the dropdown FIRST: with it open, this click would be eaten
+  // by light dismiss (closing the dropdown) instead of starting the
+  // download -- exactly what leg 3b just proved it does.
+  await closeDropdown();
   await page.click("#transfers-sheet .entry-row .namebtn:text-is('bigfile.bin')");
   // Dropdown AFTER the file click, not before: it is anchored under
   // the panel header and hangs over the listing, so opening it first

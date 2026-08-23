@@ -70,6 +70,27 @@ const outcomeErrText = (o) => {
 const enc = new TextEncoder();
 const decLossy = new TextDecoder("utf-8", { fatal: false });
 
+/**
+ * Best-effort prediction of what Chromium's download manager will
+ * actually name a saved file, for warning the user BEFORE they
+ * download -- not a guarantee, since it is a policy this page does
+ * not control and could not intercept even if it wanted to (there is
+ * no API that reports the post-save name back to the page).
+ *
+ * Verified live (THE BUG, transfer-ui.mjs's `finishTransfer`): a
+ * leading-dot name has its dot(s) stripped by Chromium's hidden-file
+ * protection regardless of Blob type -- `.gitconfig` saves as
+ * `gitconfig`. That part of the mangling survives the
+ * application/octet-stream fix (transfer-io.ts's `stagedBlob`), which
+ * only suppresses the SEPARATE `.txt`-invention behavior for
+ * content Chromium sniffs as text. This function predicts only the
+ * dot-strip, which is the part still worth surfacing.
+ */
+function predictSavedName(name) {
+  const stripped = name.replace(/^\.+/, "");
+  return stripped || name; // a name of ALL dots has nothing left to strip usefully
+}
+
 /** Join byte-segments with `/`; `[]` means the starting `.`. */
 function joinSegments(segments) {
   if (segments.length === 0) return enc.encode(".");
@@ -83,6 +104,21 @@ function joinSegments(segments) {
     if (i < segments.length - 1) out[o++] = sep;
   });
   return out;
+}
+
+/** Byte-exact equality of two segment arrays -- for comparing an
+ * upload's destination directory against the currently shown one
+ * (dispatch #1). Segments may be `Uint8Array` (state) or plain arrays
+ * of numbers (`t.record.remotePathSegments`, built via `[...bytes]`);
+ * compares by value either way, never via `display`. */
+function segsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i];
+    if (x.length !== y.length) return false;
+    for (let j = 0; j < x.length; j++) if (x[j] !== y[j]) return false;
+  }
+  return true;
 }
 
 const fmtBytes = (n) => {
@@ -245,22 +281,39 @@ export function initTransfers({ getSession } = {}) {
     // directory, which renders as a plain (non-button) span -- "keep
     // the current-directory crumb visually distinct as non-interactive"
     // means it must not look, or act, clickable.
-    const crumbs = el("div", { className: "crumbs" });
+    //
+    // `.crumb-list` is the part that scrolls horizontally when the
+    // path is long; `#refresh-btn` sits OUTSIDE it (a flex:none
+    // sibling) so it stays pinned at the right end of the bar rather
+    // than scrolling away with a deep path.
+    const crumbList = el("div", { className: "crumb-list" });
     const atRoot = segments.length === 0;
-    crumbs.append(
+    crumbList.append(
       atRoot
         ? el("span", { className: "crumb here", textContent: "~" })
         : el("button", { className: "crumb", textContent: "~", onclick: () => navigateTo(0) }),
     );
     labels.forEach((label, i) => {
-      crumbs.append(document.createTextNode(" / "));
+      crumbList.append(document.createTextNode(" / "));
       const isHere = i === labels.length - 1;
-      crumbs.append(
+      crumbList.append(
         isHere
           ? el("span", { className: "crumb here", textContent: label })
           : el("button", { className: "crumb", textContent: label, onclick: () => navigateTo(i + 1) }),
       );
     });
+    const crumbs = el(
+      "div",
+      { className: "crumbs" },
+      crumbList,
+      el("button", {
+        id: "refresh-btn",
+        className: "refresh-btn",
+        title: "refresh",
+        textContent: "\u27f3",
+        onclick: () => refreshListing(),
+      }),
+    );
 
     const head = el("div", { className: "tx-head" }, bar, crumbs);
 
@@ -287,7 +340,12 @@ export function initTransfers({ getSession } = {}) {
     }
     head.append(dropdown);
 
-    const panes = el("div", { className: "panes" });
+    const panes = el("div", {
+      className: dropdownOpen ? "panes locked" : "panes",
+      // Background scroll of the listing while the dropdown floats
+      // over it reads as broken (dispatch #2) -- lock it with the
+      // dropdown, not just visually cover it.
+    });
 
     // The drop zone is the ONE upload affordance now (dispatch #1): a
     // single sentence, picker inline, rather than a drop target plus a
@@ -318,10 +376,26 @@ export function initTransfers({ getSession } = {}) {
 
     if (!session) {
       panes.append(el("div", { className: "empty", textContent: "no active session" }));
-    } else if (listing.length === 0) {
-      panes.append(el("div", { className: "empty", textContent: "empty directory" }));
     } else {
-      for (const entry of listing) panes.append(renderEntryRow(entry));
+      // `..` pinned above the listing, everywhere except this panel's
+      // root (home) -- see `goUp`'s comment for what "root" means
+      // here. Styled identically to a directory row (dispatch #4).
+      if (segments.length > 0) {
+        panes.append(
+          el(
+            "div",
+            { className: "entry-row" },
+            el("span", { className: "icon", textContent: "\u{1F4C1}" }),
+            el("button", { className: "namebtn", textContent: "..", onclick: goUp }),
+            el("span", { className: "meta", textContent: "" }),
+          ),
+        );
+      }
+      if (listing.length === 0) {
+        panes.append(el("div", { className: "empty", textContent: "empty directory" }));
+      } else {
+        for (const entry of listing) panes.append(renderEntryRow(entry));
+      }
     }
 
     sheet.replaceChildren(head, panes);
@@ -405,19 +479,29 @@ export function initTransfers({ getSession } = {}) {
   // ---- navigation ---------------------------------------------------------
 
   async function refreshListing() {
+    // A re-render always rebuilds `.panes` from scratch (sheet.replaceChildren
+    // in render()), which would otherwise reset scroll to the top on every
+    // refresh -- jarring for the auto-refresh-on-upload-completion path
+    // (dispatch #1), which the user did not even ask for. Preserved across
+    // every refreshListing() call, not just the button, since navigation
+    // (descend/navigateTo) routes through here too and a directory switch
+    // landing at the same scroll pixel is harmless.
+    const prevScroll = sheet.querySelector(".panes")?.scrollTop ?? 0;
     if (!session) {
       listing = [];
       render();
-      return;
+    } else {
+      try {
+        const path = joinSegments(segments);
+        listing = await session.listDir(path);
+      } catch (e) {
+        listing = [];
+        console.warn("wosh: list-dir failed:", e);
+      }
+      render();
     }
-    try {
-      const path = joinSegments(segments);
-      listing = await session.listDir(path);
-    } catch (e) {
-      listing = [];
-      console.warn("wosh: list-dir failed:", e);
-    }
-    render();
+    const panes = sheet.querySelector(".panes");
+    if (panes) panes.scrollTop = prevScroll;
   }
 
   function descend(entry) {
@@ -430,6 +514,23 @@ export function initTransfers({ getSession } = {}) {
     segments = segments.slice(0, depth);
     labels = labels.slice(0, depth);
     refreshListing();
+  }
+
+  /** Parent of the current directory, as byte segments -- popping the
+   * last segment client-side, never sending a literal `..` to the
+   * engine (REALPATH would resolve it, but that would desync the
+   * crumb trail, which is this module's only record of "where are
+   * we"). Interpreted conservatively: this panel's browsing root is
+   * home (`.`, where `list-dir` starts, per wit/terminal.wit) -- there
+   * is no tracked absolute path and so no way to go PAST home toward
+   * whatever the real filesystem root is. "Except the filesystem
+   * root" is read here as "except this panel's root", since reaching
+   * further up was never part of what any prior work built (segments
+   * only ever grows by descending); extending to true absolute-path
+   * browsing above home is a larger change than a `..` row implies. */
+  function goUp() {
+    if (segments.length === 0) return;
+    navigateTo(segments.length - 1);
   }
 
   // ---- uploads --------------------------------------------------------------
@@ -493,7 +594,18 @@ export function initTransfers({ getSession } = {}) {
 
   async function confirmDownload(entry) {
     const remotePath = joinSegments([...segments, entry.name]);
-    const ok = globalThis.confirm(`Download "${entry.display}"${entry.size != null ? ` (${fmtBytes(entry.size)})` : ""}?`);
+    const savedAs = predictSavedName(entry.display);
+    const sizeNote = entry.size != null ? ` (${fmtBytes(entry.size)})` : "";
+    // Surface the browser's own naming policy BEFORE it surprises the
+    // user -- "downloaded .gitconfig, got gitignore.txt" turned out to
+    // be Chromium's hidden-file dot-strip plus a text-sniff extension
+    // invention, not a bug in what this page asked for (see
+    // `finishTransfer`'s comment). The dot-strip survives even after
+    // fixing the extension part, so it is still worth a heads-up.
+    const question = savedAs === entry.display
+      ? `Download "${entry.display}"${sizeNote}?`
+      : `Download "${entry.display}"${sizeNote}? Your browser will likely save it as "${savedAs}".`;
+    const ok = globalThis.confirm(question);
     if (!ok) return;
     await beginDownload({
       label: entry.display,
@@ -659,6 +771,50 @@ export function initTransfers({ getSession } = {}) {
         try {
           const { closeStaged, stagedBlob, removeStaged } = await poly();
           await closeStaged(t.record.stagingId);
+          // THE BUG (user report: downloaded `.gitconfig`, got saved
+          // as `gitignore.txt`) -- diagnosed and reproduced live
+          // before fixing, per two suspicions:
+          //
+          //   (a) wrong row's name in the `download` attribute. NOT
+          //       FOUND: `t` here is `finishTransfer`'s own parameter,
+          //       traced back through a per-transfer object this
+          //       module never shares or reassigns (no "current entry"
+          //       variable anywhere in this file); `t.record.label` is
+          //       set once, in `confirmDownload`/`beginDownload`, from
+          //       the SAME `entry` object the clicked row's onclick
+          //       closed over. Repro: seeded a directory with both
+          //       `.gitconfig` and `.gitignore` (they sort adjacently,
+          //       as the bug report's shape suggests), downloaded
+          //       `.gitconfig`, and hooked
+          //       `HTMLAnchorElement.prototype.click` to log
+          //       `this.download` at the moment of the real click --
+          //       it read exactly `.gitconfig`, every time. This half
+          //       of the report is not a bug here.
+          //   (b) browser mangling. CONFIRMED, and it is the whole
+          //       story: Playwright's real `download` event
+          //       (`suggestedFilename()`) reported `gitconfig.txt` for
+          //       an `<a download=".gitconfig">` over a blob whose
+          //       `.type` was "" (the OPFS staging file's name is an
+          //       extensionless UUID, so `getFile()` cannot infer a
+          //       type from it) -- Chromium separately sniffs the
+          //       blob's CONTENT for the save dialog, judged this
+          //       plain-text `.gitconfig` as text/plain, and invented
+          //       `.txt` on top of a name it had ALREADY stripped the
+          //       leading dot from (its own hidden-file protection) --
+          //       "gitconfig" reads as extensionless once the dot is
+          //       gone, hence the invented extension.
+          //
+          // The fix for the invented extension: `stagedBlob` now hands
+          // back the same bytes explicitly typed
+          // `application/octet-stream` (verified live: suppresses the
+          // sniff, `suggestedFilename()` becomes plain `gitconfig`).
+          // The dot-strip is Chromium's hidden-file policy, not a MIME
+          // question, and setting the type does not touch it -- we do
+          // not fight it (item 3 of the dispatch: "if it still saves
+          // as gitconfig ... that's browser policy we accept"); instead
+          // `confirmDownload` warns the user up front when
+          // `predictSavedName` says the saved name will differ from
+          // the remote one.
           const blob = await stagedBlob(t.record.stagingId);
           const url = URL.createObjectURL(blob);
           const a = el("a", { href: url, download: t.record.label });
@@ -687,6 +843,15 @@ export function initTransfers({ getSession } = {}) {
           // failed, not the transfer, and the next reload's resume
           // affordance still has a durable file to hand off from.
         }
+      } else {
+        // An upload finished: re-read the listing so the new file
+        // appears without the user asking (dispatch #1) -- but ONLY
+        // when its destination is the directory shown right now.
+        // Byte comparison, per the bytes-vs-display discipline: never
+        // compare `display` strings, compare the same segments
+        // `list-dir` itself is built from.
+        const destDirSegments = t.record.remotePathSegments.slice(0, -1);
+        if (segsEqual(destDirSegments, segments)) refreshListing();
       }
     }
     // On error: the record (for a download) stays in IDB so a reload
@@ -755,6 +920,34 @@ export function initTransfers({ getSession } = {}) {
     visible = false;
     dropdownOpen = false;
   });
+
+  // Light dismiss for the dropdown (dispatch #2): the site has no
+  // existing anchored-popover convention to match (its other overlays
+  // are full sheets, dismissed by the sheet's own close/backdrop) --
+  // pointerdown-capture on the sheet, per the dispatch's own fallback.
+  // Captures BEFORE the target's own listeners (so a tap that lands on
+  // an entry row closes the dropdown WITHOUT also descending into
+  // that row -- the "swallow" half of the requirement), and excludes
+  // both the dropdown's own contents and the toggle button itself, so
+  // the toggle's own click handler stays the sole authority over
+  // open/close (an outside-dismiss that also fired for the toggle
+  // would close it here and then have `toggleDropdown` immediately
+  // flip it back open on the same tap).
+  sheet.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!dropdownOpen) return;
+      const dropdownEl = sheet.querySelector(".tx-dropdown");
+      const toggleEl = sheet.querySelector("#transfers-toggle");
+      if (dropdownEl?.contains(e.target) || toggleEl?.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dropdownOpen = false;
+      visible = false;
+      render();
+    },
+    true,
+  );
 
   // The button's visibility tracks whether there is a `ready` session
   // to browse -- polled rather than pushed from app.mjs, so this

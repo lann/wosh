@@ -162,12 +162,31 @@ export function newStagingId(): string {
 /** The staged bytes as a `Blob`, for the download-completion handoff
  * (Blob URL + `<a download>`). Callers must ensure the `Sink` over this
  * id has already been dropped (or explicitly closed) -- OPFS refuses a
- * second accessor while the worker's sync access handle is open. */
+ * second accessor while the worker's sync access handle is open.
+ *
+ * Explicitly typed `application/octet-stream`, NOT the empty/inferred
+ * type `getFile()` would otherwise hand back: verified live (repro:
+ * seed a dir with `.gitconfig`, download it) that Chromium's download
+ * manager sniffs an untyped blob's CONTENT independently of the `File`
+ * API's own (empty, since the staging filename is an extensionless
+ * UUID) `.type`, and for plain-text content this invents a `.txt`
+ * extension on any name it also judges extensionless -- which a
+ * leading-dot dotfile name IS, after Chromium's separate hidden-file
+ * policy trims the dot (see transfer-ui.mjs's handoff comment for the
+ * `.gitconfig` -> `gitconfig.txt` bug this was). An explicit
+ * `application/octet-stream` type suppresses the content-sniff and
+ * the invented extension; the leading-dot trim is a DIFFERENT,
+ * unsuppressable policy and is handled by warning the user instead
+ * (see `predictSavedName` in transfer-ui.mjs). */
 export async function stagedBlob(id: string): Promise<Blob> {
   const root = await navigator.storage.getDirectory();
   const dir = await root.getDirectoryHandle("transfers", { create: true });
   const fh = await dir.getFileHandle(id);
-  return await fh.getFile();
+  const raw = await fh.getFile();
+  // `slice` with a type re-tags the SAME underlying bytes rather than
+  // copying the whole file into an ArrayBuffer -- matters once a
+  // download is bigger than "fits comfortably twice in memory".
+  return raw.slice(0, raw.size, "application/octet-stream");
 }
 
 /** Explicitly release the worker's handle without waiting for resource
