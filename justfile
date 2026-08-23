@@ -189,7 +189,7 @@ spike-async:
 # listener pointed at it. smoke-test is excluded from the workspace
 # (it drives an artifact rather than being one), so it builds via its
 # own manifest.
-e2e: compose
+e2e: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
@@ -245,7 +245,7 @@ e2e: compose
 # runs its own sshd beside the shared one rather than reconfiguring it:
 # `test-sshd.sh start` is idempotent, and a differently-configured sshd
 # left running would be adopted by every later gate as the usual one.
-e2e-passkey-unprepared: compose
+e2e-passkey-unprepared: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
@@ -289,7 +289,7 @@ e2e-passkey-unprepared: compose
 # batches (echoed + masked, then a second round); negative leg proves
 # a wrong answer fails legibly; auto leg proves the server steers auto
 # to keyboard-interactive when that is all it offers.
-e2e-kbdint: compose
+e2e-kbdint: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
@@ -333,7 +333,7 @@ e2e-kbdint: compose
 # the browser gate's job. If this leg passes, the browser gate only
 # has to show the ceremony happens -- the bytes it produces are
 # already proven to authenticate for real.
-e2e-passkey: compose
+e2e-passkey: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
@@ -364,7 +364,7 @@ e2e-passkey: compose
 # maths and `wosh-client/src/passkey.rs::recover()` for the client
 # flow; this leg proves both end to end with no browser involved (see
 # smoke-test/src/passkey.rs's `assert_unknown`/`remember`).
-e2e-passkey-recover: compose
+e2e-passkey-recover: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
@@ -388,7 +388,7 @@ e2e-passkey-recover: compose
 # for that device across listener restarts and token rotation -- while
 # a NEW device with the same stale connstring is refused. This is the
 # gate for the stale-QR trap: rotation gates new devices only.
-e2e-pairing: compose
+e2e-pairing: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p wosh-smoke-test
