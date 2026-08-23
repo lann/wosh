@@ -206,9 +206,24 @@ export function initTransfers({ getSession } = {}) {
   // id -> { record, handle (the `transfer` resource), kind: 'active'|'resumable' }
   const transfers = new Map();
   let pollTimer = null;
-  let visible = false;
+  let visible = false; // "the dropdown is open" -- see toggleDropdown
+  let dropdownOpen = false;
+  let everHadTransfer = false; // sticky once true: the transfers button
+  // stays enabled for the rest of the page's life once ANY transfer
+  // has started, per the dispatch (disabled, not hidden, until then).
 
   // ---- rendering --------------------------------------------------------
+
+  function toggleDropdown() {
+    if (!everHadTransfer) return; // disabled button shouldn't fire, but belt-and-braces
+    dropdownOpen = !dropdownOpen;
+    // Polling cadence follows the dropdown, not the panel: browsing
+    // files with the dropdown closed is background activity for any
+    // transfer still running underneath.
+    visible = dropdownOpen;
+    if (dropdownOpen) startPolling();
+    render();
+  }
 
   function render() {
     const bar = el(
@@ -216,46 +231,79 @@ export function initTransfers({ getSession } = {}) {
       { className: "txbar" },
       el("button", { textContent: "\u00d7", title: "close", onclick: () => sheet.close() }),
       el("h1", { textContent: "Files" }),
-      el("button", { textContent: "\u2191 upload", onclick: () => pickUpload() }),
+      el("button", {
+        id: "transfers-toggle",
+        className: "tx-toggle",
+        textContent: "transfers",
+        disabled: !everHadTransfer,
+        ariaExpanded: String(dropdownOpen), // el() assigns properties, not attributes; ariaExpanded is the reflected IDL property (ARIAMixin), "aria-expanded" as a key would silently no-op
+        onclick: toggleDropdown,
+      }),
     );
 
+    // Each crumb is a real navigation target except the CURRENT
+    // directory, which renders as a plain (non-button) span -- "keep
+    // the current-directory crumb visually distinct as non-interactive"
+    // means it must not look, or act, clickable.
     const crumbs = el("div", { className: "crumbs" });
+    const atRoot = segments.length === 0;
     crumbs.append(
-      el("button", {
-        textContent: "~",
-        className: segments.length === 0 ? "here" : "",
-        onclick: () => navigateTo(0),
-      }),
+      atRoot
+        ? el("span", { className: "crumb here", textContent: "~" })
+        : el("button", { className: "crumb", textContent: "~", onclick: () => navigateTo(0) }),
     );
     labels.forEach((label, i) => {
       crumbs.append(document.createTextNode(" / "));
+      const isHere = i === labels.length - 1;
       crumbs.append(
-        el("button", {
-          textContent: label,
-          className: i === labels.length - 1 ? "here" : "",
-          onclick: () => navigateTo(i + 1),
-        }),
+        isHere
+          ? el("span", { className: "crumb here", textContent: label })
+          : el("button", { className: "crumb", textContent: label, onclick: () => navigateTo(i + 1) }),
       );
     });
 
-    const panes = el("div", { className: "panes" });
+    const head = el("div", { className: "tx-head" }, bar, crumbs);
 
-    // resumable downloads from a previous page life, offered once a
-    // session exists to resume them over.
+    // The transfers dropdown: anchored to `.tx-head` (position:
+    // relative), so it drops directly below the header+crumbs block
+    // regardless of their exact height -- no --bar-h-style JS
+    // measurement needed. `hidden` rather than omitted from the DOM,
+    // so its rows stay ordinarily queryable (site convention: [hidden]
+    // always means hidden, see index.html's #sheet comment) even
+    // while visually closed.
+    const dropdown = el("div", { className: "tx-dropdown", hidden: !dropdownOpen });
     const resumable = [...transfers.values()].filter((t) => t.kind === "resumable");
     if (resumable.length) {
-      panes.append(el("div", { className: "section-label", textContent: "interrupted downloads" }));
-      for (const t of resumable) panes.append(renderResumableRow(t));
+      dropdown.append(el("div", { className: "section-label", textContent: "interrupted downloads" }));
+      for (const t of resumable) dropdown.append(renderResumableRow(t));
     }
-
     const active = [...transfers.values()].filter((t) => t.kind === "active");
     if (active.length) {
-      panes.append(el("div", { className: "section-label", textContent: "transfers" }));
-      for (const t of active) panes.append(renderTransferRow(t));
+      dropdown.append(el("div", { className: "section-label", textContent: "transfers" }));
+      for (const t of active) dropdown.append(renderTransferRow(t));
     }
+    if (!resumable.length && !active.length) {
+      dropdown.append(el("div", { className: "empty", textContent: "no transfers yet" }));
+    }
+    head.append(dropdown);
 
-    panes.append(el("div", { className: "section-label", textContent: "remote" }));
-    const drop = el("div", { className: "upload-drop", textContent: "drop a file here to upload" });
+    const panes = el("div", { className: "panes" });
+
+    // The drop zone is the ONE upload affordance now (dispatch #1): a
+    // single sentence, picker inline, rather than a drop target plus a
+    // separate header button offering the same action twice.
+    const drop = el("div", { className: "upload-drop" });
+    drop.append(document.createTextNode("drop a file here or "));
+    drop.append(
+      el("button", {
+        id: "upload-picker-btn",
+        className: "link-btn",
+        type: "button",
+        textContent: "select a file",
+        onclick: () => pickUpload(),
+      }),
+    );
+    drop.append(document.createTextNode(" to upload"));
     drop.addEventListener("dragover", (e) => {
       e.preventDefault();
       drop.classList.add("over");
@@ -276,7 +324,7 @@ export function initTransfers({ getSession } = {}) {
       for (const entry of listing) panes.append(renderEntryRow(entry));
     }
 
-    sheet.replaceChildren(bar, crumbs, panes);
+    sheet.replaceChildren(head, panes);
   }
 
   function renderEntryRow(entry) {
@@ -428,6 +476,7 @@ export function initTransfers({ getSession } = {}) {
     };
     const entry = { record, kind: "active", lastProgress: null, everSeenBytes: false };
     transfers.set(id, entry);
+    everHadTransfer = true;
     render();
     try {
       const source = new TransferSource(file);
@@ -479,6 +528,7 @@ export function initTransfers({ getSession } = {}) {
     await idbPut(record);
     const entry = { record, kind: "active", lastProgress: null, everSeenBytes: false };
     transfers.set(id, entry);
+    everHadTransfer = true;
     render();
     try {
       const sink = new TransferSink(sid, true);
@@ -674,6 +724,12 @@ export function initTransfers({ getSession } = {}) {
         continue;
       }
       transfers.set(record.id, { record: { ...record, stagedBytes }, kind: "resumable" });
+      // An interrupted download survived a reload -- "the first
+      // transfer of the page's life" reads narrowly as THIS page's
+      // life, but a resumable record that a human needs to see (and
+      // that only the dropdown now shows) left disabled behind a
+      // greyed-out button would be a worse default than enabling it.
+      everHadTransfer = true;
     }
   }
 
@@ -683,8 +739,13 @@ export function initTransfers({ getSession } = {}) {
     session = getSession ? getSession() : null;
     segments = [];
     labels = [];
-    visible = true; // the running loop reads this at each reschedule,
-    // so no restart is needed to switch to the faster foreground cadence
+    dropdownOpen = false; // reopen the panel to a clean, closed dropdown
+    // `visible` now follows the DROPDOWN, not the panel (dispatch #4):
+    // browsing files with the dropdown closed is background polling
+    // for whatever transfer is still running underneath. Starting the
+    // loop here is still worthwhile even at background cadence, so a
+    // resumable record's staged-bytes readout is current if the user
+    // opens the dropdown right away.
     startPolling();
     await loadResumable();
     await refreshListing();
@@ -692,6 +753,7 @@ export function initTransfers({ getSession } = {}) {
   });
   sheet.addEventListener("close", () => {
     visible = false;
+    dropdownOpen = false;
   });
 
   // The button's visibility tracks whether there is a `ready` session

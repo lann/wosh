@@ -293,11 +293,37 @@ try {
   // in each time.
   const showGateDir = async () => {
     await openPanel();
-    const here = await page.$eval("#transfers-sheet .crumbs button.here", (e) => e.textContent).catch(() => null);
+    // `.crumb.here` tag-agnostically: the CURRENT directory renders as
+    // a plain <span>, not a button, because it is not a navigation
+    // target -- so this may only ever read it, never click it.
+    const here = await page.$eval("#transfers-sheet .crumbs .crumb.here", (e) => e.textContent).catch(() => null);
     if (here === GATE_DIR_NAME) return;
     await page.waitForSelector(`#transfers-sheet .entry-row .namebtn:text-is('${GATE_DIR_NAME}')`, { timeout: 30_000 });
     await page.click(`#transfers-sheet .entry-row .namebtn:text-is('${GATE_DIR_NAME}')`);
-    await page.waitForSelector(`#transfers-sheet .crumbs button.here:text-is('${GATE_DIR_NAME}')`, { timeout: 20_000 });
+    await page.waitForSelector(`#transfers-sheet .crumbs .crumb.here:text-is('${GATE_DIR_NAME}')`, { timeout: 20_000 });
+  };
+
+  // The transfers list lives in a dropdown now, closed by default and
+  // behind a toggle that stays DISABLED until this page life has had a
+  // transfer (or has loaded a resumable record). Idempotent, and
+  // needed more than once: the panel resets `dropdownOpen` on every
+  // open AND on every close, so each `ask` -- which steps out of the
+  // modal to reach the terminal -- shuts it again.
+  const openDropdown = async () => {
+    await openPanel();
+    await page.waitForSelector("#transfers-toggle:not([disabled])", { timeout: 30_000 });
+    // Deliberately three-valued. `!el?.hidden` is TRUE for an element
+    // that is missing entirely, which would read a renamed dropdown as
+    // "already open" and skip straight past it -- the gate would then
+    // pass having opened nothing. `null` falls through to the click,
+    // whose own wait then fails loudly.
+    const shown = await page.evaluate(() => {
+      const d = document.querySelector("#transfers-sheet .tx-dropdown");
+      return d ? !d.hidden : null;
+    });
+    if (shown === true) return;
+    await page.click("#transfers-toggle");
+    await page.waitForSelector("#transfers-sheet .tx-dropdown:not([hidden])", { timeout: 10_000 });
   };
 
   // --- leg 1: the listing is the target's real directory ------------------
@@ -310,20 +336,34 @@ try {
   if (!/\d/.test(greetingMeta ?? "")) fail(`greeting.txt has no size in the listing: ${greetingMeta}`);
   else console.log(`PASS: leg1 the panel listed the target's real directory (greeting.txt ${greetingMeta})`);
 
+  // The transfers toggle is disabled, not hidden, until this page life
+  // has had a transfer -- so a panel opened only to browse offers no
+  // dropdown to open onto nothing. Cheap to check, and the sort of
+  // thing that regresses silently into "always enabled".
+  const toggleDisabledAtRest = await page.$eval("#transfers-toggle", (e) => e.disabled);
+  if (!toggleDisabledAtRest) fail("#transfers-toggle is enabled before any transfer has started");
+  else console.log("PASS: leg1 the transfers toggle starts disabled (nothing to drop down onto yet)");
+
   // --- leg 2: upload, verified by the TARGET's own sha256sum --------------
+  // One upload affordance now, and it is inside the drop zone: "drop a
+  // file here or [select a file] to upload".
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.click("#transfers-sheet .txbar button:has-text('upload')"),
+    page.click("#transfers-sheet .upload-drop #upload-picker-btn"),
   ]);
   await chooser.setFiles(uploadPath);
+  // ...which enables the toggle. Open the dropdown and keep it open:
+  // rows only poll at foreground cadence while it is showing.
+  await openDropdown();
+  console.log("PASS: leg2 starting a transfer enabled the toggle and opened the transfers dropdown");
   await page.waitForFunction(
-    () => [...document.querySelectorAll("#transfers-sheet .transfer-row")]
+    () => [...document.querySelectorAll("#transfers-sheet .tx-dropdown .transfer-row")]
       .some((r) => r.textContent.includes("done") || r.querySelector(".err-msg")),
     null,
     { timeout: 180_000 },
   );
   const uploadErr = await page.$eval(
-    "#transfers-sheet .transfer-row",
+    "#transfers-sheet .tx-dropdown .transfer-row",
     (r) => (r.classList.contains("err") ? r.querySelector(".err-msg")?.textContent : null),
   ).catch(() => null);
   if (uploadErr) fail(`upload failed in the page: ${uploadErr}`);
@@ -347,7 +387,13 @@ try {
   // --- leg 4: cancel mid-flight, keep the partial -------------------------
   await showGateDir();
   await page.click("#transfers-sheet .entry-row .namebtn:text-is('bigfile.bin')");
-  await page.waitForSelector("#transfers-sheet .transfer-row .actions button:has-text('cancel')", { timeout: 30_000 });
+  // Dropdown AFTER the file click, not before: it is anchored under
+  // the panel header and hangs over the listing, so opening it first
+  // would put it between this gate and the row it means to click.
+  // (`ask` in leg 2 shut it again -- stepping out of the modal to
+  // reach the terminal resets it.)
+  await openDropdown();
+  await page.waitForSelector("#transfers-sheet .tx-dropdown .transfer-row .actions button:has-text('cancel')", { timeout: 30_000 });
   // Wait for STAGED BYTES rather than a clock: a sleep either cancels
   // before anything is staged (leaving leg5 nothing to resume) or
   // after the whole file has landed. The row reads "<done> / <total>",
@@ -355,7 +401,7 @@ try {
   // digit anywhere finds the TOTAL and fires immediately, which is a
   // clock in disguise and the worse one.
   await page.waitForFunction(
-    () => [...document.querySelectorAll("#transfers-sheet .transfer-row .bytes")]
+    () => [...document.querySelectorAll("#transfers-sheet .tx-dropdown .transfer-row .bytes")]
       .some((b) => {
         const done = (b.textContent ?? "").split("/")[0];
         return /\d/.test(done) && !/^\s*0\s*B/.test(done);
@@ -363,12 +409,12 @@ try {
     null,
     { timeout: 60_000 },
   );
-  await page.click("#transfers-sheet .transfer-row .actions button:has-text('cancel')");
+  await page.click("#transfers-sheet .tx-dropdown .transfer-row .actions button:has-text('cancel')");
   // "cancelled", not "cancel": the row carries a `cancel` BUTTON the
   // whole time it is running, so the looser word would pass on a
   // cancel that never happened.
   await page.waitForFunction(
-    () => [...document.querySelectorAll("#transfers-sheet .transfer-row")]
+    () => [...document.querySelectorAll("#transfers-sheet .tx-dropdown .transfer-row")]
       .some((r) => /cancelled/i.test(r.textContent ?? "")),
     null,
     { timeout: 30_000 },
@@ -378,11 +424,16 @@ try {
   // --- leg 5: the next page life resumes it -------------------------------
   await connect(); // a reload plus a fresh session: the records are what survive
   await openPanel();
-  await page.waitForSelector("#transfers-sheet .transfer-row .actions button:has-text('resume')", { timeout: 30_000 });
-  const staged = await page.$eval("#transfers-sheet .transfer-row .bytes", (e) => e.textContent);
+  // The toggle is enabled again on a fresh page life purely by the
+  // resumable record loading -- there has been no transfer in THIS
+  // page life yet -- and the dropdown starts closed, so it takes one
+  // click to get at the resume affordance.
+  await openDropdown();
+  await page.waitForSelector("#transfers-sheet .tx-dropdown .transfer-row .actions button:has-text('resume')", { timeout: 30_000 });
+  const staged = await page.$eval("#transfers-sheet .tx-dropdown .transfer-row .bytes", (e) => e.textContent);
   console.log(`  (staged bytes offered for resume: ${staged})`);
   const beforeResume = await page.evaluate(() => window.__capturedDownloads.length);
-  await page.click("#transfers-sheet .transfer-row .actions button:has-text('resume')");
+  await page.click("#transfers-sheet .tx-dropdown .transfer-row .actions button:has-text('resume')");
   await page.waitForFunction(
     (n) => window.__capturedDownloads.length > n,
     beforeResume,
@@ -409,6 +460,14 @@ try {
     }));
     console.error(`--- page at failure ---\nstatus: ${st.status}\n#sheet open=${st.sheetOpen} ask=${st.sheetAsk}\n${st.sheet}\n---`);
     const sheet = await page.$eval("#transfers-sheet", (el) => el.innerText);
+    const tx = await page.evaluate(() => {
+      const t = document.getElementById("transfers-toggle");
+      const d = document.querySelector("#transfers-sheet .tx-dropdown");
+      // innerText is empty for a hidden subtree, so read textContent:
+      // the rows stay queryable while the dropdown is visually closed.
+      return { disabled: t?.disabled, open: d ? !d.hidden : null, rows: d?.textContent };
+    });
+    console.error(`--- transfers dropdown: toggle disabled=${tx.disabled} open=${tx.open} ---\n${tx.rows}\n---`);
     console.error(`--- #transfers-sheet at failure ---\n${sheet}\n---`);
   } catch { /* no page left to ask */ }
 } finally {
