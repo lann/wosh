@@ -188,15 +188,26 @@ try {
   // both clear the highlight and open the link under the finger. The
   // guard that catches it records the selection state at PRESS time,
   // because by activation time the press has already cleared it.
-  // Selected here on the page's own status text: any DOM selection
+  // The stand-in selection is planted on a node of this leg's own:
+  // it used to sit on the page's status text, but the chrome bars are
+  // unselectable BY DESIGN now (site/index.html -- a handle drag must
+  // clamp to the terminal's edge row, not leak into the controls), and
+  // Chromium collapses a script-built selection over unselectable
+  // content before the press is ever dispatched, which starved the
+  // guard of the very state it records. Any durable DOM selection
   // outside the terminal exercises the same path, and it needs no
   // touch emulation to build.
   {
     await page.evaluate(() => {
+      const probe = document.createElement("div");
+      probe.id = "sel-probe-2c";
+      probe.textContent = "selection probe";
+      probe.style.cssText = "position:absolute;left:-9999px;top:0";
+      document.body.appendChild(probe);
       const sel = window.getSelection();
       sel.removeAllRanges();
       const range = document.createRange();
-      range.selectNodeContents(document.getElementById("status"));
+      range.selectNodeContents(probe);
       sel.addRange(range);
     });
     const live = await page.evaluate(() => !window.getSelection().isCollapsed);
@@ -225,7 +236,10 @@ try {
           );
       }
     }
-    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => {
+      window.getSelection().removeAllRanges();
+      document.getElementById("sel-probe-2c")?.remove();
+    });
   }
 
   // [3] click -> dialog with the verbatim URI; cancel opens nothing.

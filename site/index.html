@@ -53,6 +53,17 @@
       display: flex; align-items: center; gap: 10px;
       padding: 6px 10px; background: #0d0d0d; border-bottom: 1px solid #222;
     }
+    /* The chrome bars hold no text worth copying, and being selectable
+       makes them a trap for the touch selection overlay
+       (site/touch-select.mjs): dragging a selection handle off the top
+       of the terminal extends the selection into #bar's own labels --
+       the controls light up instead of the view scrolling. Unselectable,
+       the platform clamps the drag to the nearest selectable position,
+       which is the mirror's edge row, and that is precisely what feeds
+       the overlay's edge ratchet. Scoped to these two bars on purpose:
+       the sheets below carry fingerprints and key lines that people
+       legitimately copy. */
+    #bar, #keys { user-select: none; -webkit-user-select: none; }
     #dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex: none; }
     #dot.ok { background: var(--ok); }
     #dot.warn { background: var(--warn); }
