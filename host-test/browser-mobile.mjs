@@ -135,9 +135,15 @@ const TERMINAL_FIXTURE = `<!doctype html>
   term.open(document.getElementById("term"));
   fit.fit();
   for (let i = 1; i <= 300; i++) term.write("line " + i + "\\r\\n");
-  initMobile(term);
+  // app.mjs's shape, verbatim in spirit: the mobile layer hands back a
+  // gate, and every refit path goes through it. The counter is the only
+  // outside evidence a refit was deferred rather than dropped.
+  const { guardRefit } = initMobile(term);
+  const refit = guardRefit(() => { globalThis.wosh.refits++; fit.fit(); });
   globalThis.wosh = {
     term,
+    refits: 0,
+    refit,
     linkActivations,
     focused: () => document.activeElement === term.textarea,
     state: () => ({
@@ -562,9 +568,18 @@ try {
     // it is the phone's answer to an unselectable canvas, and desktop
     // selects through xterm's own mouse machinery, which works.
     const dOverlay = await desktopPage.evaluate(() => document.querySelectorAll(".touch-select-layer").length);
+    // ...and with no overlay there is nothing to defer refits for:
+    // guardRefit must be the identity here, or a desktop page would
+    // quietly stop refitting the moment anything selected text.
+    const dRefits = await desktopPage.evaluate(() => {
+      const before = globalThis.wosh.refits;
+      globalThis.wosh.refit();
+      return { before, after: globalThis.wosh.refits };
+    });
     if (ok(!dHasSelection, "a long-press/contextmenu selected a word on a fine pointer (rightClickSelectsWord must stay off desktop)") &&
-        ok(dOverlay === 0, `the touch selection overlay mounted on a fine pointer (${dOverlay} layers): it must stay inert off touch devices`)) {
-      console.log("[10b] a fine pointer keeps rightClickSelectsWord at its default: no selection from a contextmenu, no touch overlay");
+        ok(dOverlay === 0, `the touch selection overlay mounted on a fine pointer (${dOverlay} layers): it must stay inert off touch devices`) &&
+        ok(dRefits.after === dRefits.before + 1, `guardRefit is not passing refits straight through on a fine pointer (${dRefits.before} -> ${dRefits.after})`)) {
+      console.log("[10b] a fine pointer keeps rightClickSelectsWord at its default: no selection from a contextmenu, no touch overlay, refits pass straight through");
     }
   }
   await desktop.close();
@@ -836,17 +851,23 @@ try {
       // hard newlines.
 
       // Which visual row of the overlay a given buffer row sits on, and
-      // what the overlay put there.
+      // what the overlay put there. The rows live one level down, on
+      // the SHEET: the layer stays the clip box (fixed px size,
+      // overflow hidden) so that translating the sheet -- which is how
+      // a held selection stays glued to its buffer lines -- does not
+      // drag the clip region along with it.
       const overlay = async () => page.evaluate(() => {
         const term = globalThis.wosh.term;
         const layer = document.querySelector(".xterm-screen > .touch-select-layer");
-        if (!layer) return null;
+        const sheet = layer?.querySelector(":scope > .touch-select-sheet");
+        if (!layer || !sheet) return null;
         const buf = term.buffer.active;
         return {
-          rowCount: layer.children.length,
+          hasSheet: Boolean(sheet),
+          rowCount: sheet.children.length,
           termRows: term.rows,
           userSelect: getComputedStyle(layer).userSelect || getComputedStyle(layer).webkitUserSelect,
-          texts: [...layer.children].map((d) => d.textContent),
+          texts: [...sheet.children].map((d) => d.textContent),
           viewportY: buf.viewportY,
           markerViewRow: buf.baseY + buf.cursorY - 1 - buf.viewportY,
           markerBufferText: buf.getLine(buf.baseY + buf.cursorY - 1)?.translateToString(false) ?? null,
@@ -854,14 +875,16 @@ try {
       });
 
       // 18e. The mirror exists where it has to (a CHILD of
-      //      .xterm-screen -- see 18k), is selectable despite .xterm's
-      //      user-select: none, and reproduces the buffer line
-      //      character for character. UNtrimmed: offsets in the mirror
-      //      must map 1:1 onto terminal columns.
+      //      .xterm-screen -- see 18k), with its rows on the inner
+      //      sheet, is selectable despite .xterm's user-select: none,
+      //      and reproduces the buffer line character for character.
+      //      UNtrimmed: offsets in the mirror must map 1:1 onto
+      //      terminal columns.
       const o18e = await overlay();
-      if (!ok(Boolean(o18e), "no .touch-select-layer inside .xterm-screen: the overlay did not mount under a coarse pointer")) {
+      if (!ok(Boolean(o18e), "no .touch-select-layer > .touch-select-sheet inside .xterm-screen: the overlay did not mount under a coarse pointer, or its rows are not on a translatable sheet")) {
         // the legs below have nothing to measure
       } else if (
+        ok(o18e.hasSheet, "the overlay rows are not under a .touch-select-sheet: translating the layer itself would move its own clip region") &&
         ok(o18e.rowCount === o18e.termRows, `the overlay has ${o18e.rowCount} rows for a ${o18e.termRows}-row terminal`) &&
         ok(o18e.userSelect === "text", `the overlay is not selectable (user-select: ${o18e.userSelect}); .xterm's user-select: none would win`) &&
         ok(o18e.texts[o18e.markerViewRow] === o18e.markerBufferText,
@@ -877,11 +900,11 @@ try {
       //      compounds across a row).
       const geo = await page.evaluate(() => {
         const term = globalThis.wosh.term;
-        const layer = document.querySelector(".xterm-screen > .touch-select-layer");
+        const sheet = document.querySelector(".xterm-screen > .touch-select-layer > .touch-select-sheet");
         const screen = document.querySelector(".xterm-screen").getBoundingClientRect();
         const buf = term.buffer.active;
         const viewRow = buf.baseY + buf.cursorY - 1 - buf.viewportY;
-        const div = layer.children[viewRow];
+        const div = sheet.children[viewRow];
         const cellW = screen.width / term.cols;
         const cellH = screen.height / term.rows;
         // "alpha bravo charlie" is 19 characters starting at column 0.
@@ -913,7 +936,7 @@ try {
       await page.waitForTimeout(300);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const synced = await page.evaluate(() =>
-        [...document.querySelector(".touch-select-layer").children].some((d) =>
+        [...document.querySelector(".touch-select-sheet").children].some((d) =>
           d.textContent.includes("delta echo foxtrot")));
       if (ok(synced, "fresh output never reached the overlay: a finger would select stale text")) {
         console.log("[18g] the overlay follows live output");
@@ -923,7 +946,7 @@ try {
       // the platform's long-press produces, and the only way to get one
       // in headless Chromium.
       const selectRun = (viewRow, from, to) => page.evaluate(({ viewRow, from, to }) => {
-        const div = document.querySelector(".touch-select-layer").children[viewRow];
+        const div = document.querySelector(".touch-select-sheet").children[viewRow];
         const range = document.createRange();
         range.setStart(div.firstChild, from);
         range.setEnd(div.firstChild, to);
@@ -946,12 +969,12 @@ try {
       const held = await selectRun(markerRow, 6, 10); // "echo" in "delta echo foxtrot"
       await page.waitForTimeout(150);
       const row0Before = await page.evaluate(() =>
-        document.querySelector(".touch-select-layer").children[0].textContent);
+        document.querySelector(".touch-select-sheet").children[0].textContent);
       await page.evaluate(() => globalThis.wosh.term.write("\x1b[s\x1b[H*CHANGED*\x1b[u"));
       await page.waitForTimeout(300);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const frozenRow0 = await page.evaluate(() => ({
-        overlay: document.querySelector(".touch-select-layer").children[0].textContent,
+        overlay: document.querySelector(".touch-select-sheet").children[0].textContent,
         buffer: globalThis.wosh.term.buffer.active
           .getLine(globalThis.wosh.term.buffer.active.viewportY)?.translateToString(false),
         selection: document.getSelection().toString(),
@@ -960,7 +983,7 @@ try {
       await page.waitForTimeout(150);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const thawedRow0 = await page.evaluate(() =>
-        document.querySelector(".touch-select-layer").children[0].textContent);
+        document.querySelector(".touch-select-sheet").children[0].textContent);
       if (ok(held === "echo", `the test selection did not take (got ${JSON.stringify(held)})`) &&
           ok(frozenRow0.buffer.startsWith("*CHANGED*"), "the in-place repaint never reached the buffer, so this leg proves nothing") &&
           ok(frozenRow0.overlay === row0Before,
@@ -971,38 +994,295 @@ try {
         console.log("[18h] a live selection freezes the overlay, and releasing it resyncs");
       }
 
-      // 18i. Scrolling DISMISSES a selection. The mirror only ever
-      //      holds the visible viewport, so a highlight over text that
-      //      has scrolled away is a lie about what would be copied;
-      //      dropping it is the honest answer.
+      // 18i. Scrolling KEEPS the selection. The mirror stops tracking
+      //      the viewport the moment a selection is held and anchors
+      //      itself to BUFFER rows instead: the frozen rows keep their
+      //      text, an inner sheet is translated so they stay glued to
+      //      the lines they came from, and the rows the viewport
+      //      uncovers are revealed at the edge. That is what lets a
+      //      selection run past the bottom of the screen -- and it is
+      //      why the layer stays the clip box while the SHEET moves:
+      //      a transform on the layer would carry its own clip region
+      //      along with the rows.
       const scrollRow = (await overlay()).markerViewRow;
-      await selectRun(scrollRow, 0, 5);
+      const held18i = await selectRun(scrollRow, 0, 5);
       await page.waitForTimeout(150);
       const beforeScroll = await page.evaluate(() => ({
         viewportY: globalThis.wosh.term.buffer.active.viewportY,
-        row0: document.querySelector(".touch-select-layer").children[0].textContent,
+        rowCount: document.querySelector(".touch-select-sheet").children.length,
+        texts: [...document.querySelector(".touch-select-sheet").children].map((d) => d.textContent),
+        cellHeight: globalThis.wosh.state().cellHeight,
       }));
       await page.evaluate(() => globalThis.wosh.term.scrollLines(-3));
       await page.waitForTimeout(250);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const afterScroll = await page.evaluate(() => {
-        const sel = document.getSelection();
         const term = globalThis.wosh.term;
         const buf = term.buffer.active;
+        const sheet = document.querySelector(".touch-select-sheet");
+        const tf = getComputedStyle(sheet).transform;
         return {
-          selectionText: sel.toString(),
+          selectionText: document.getSelection().toString(),
           viewportY: buf.viewportY,
-          row0: document.querySelector(".touch-select-layer").children[0].textContent,
+          rowCount: sheet.children.length,
+          // The computed transform is a matrix; its last component is
+          // the vertical translation.
+          translateY: tf === "none" ? 0 : Number(tf.slice(tf.indexOf("(") + 1, -1).split(",")[5]),
+          revealed: [0, 1, 2].map((i) => sheet.children[i].textContent),
+          revealedBuffer: [0, 1, 2].map((i) => buf.getLine(buf.viewportY + i)?.translateToString(false) ?? ""),
+          texts: [...sheet.children].map((d) => d.textContent),
+        };
+      });
+      const kept = afterScroll.texts.slice(3).join("\n") === beforeScroll.texts.join("\n");
+      if (ok(held18i === "delta", `the test selection did not take (got ${JSON.stringify(held18i)})`) &&
+          ok(afterScroll.viewportY === beforeScroll.viewportY - 3, `the scroll did not move the viewport (${beforeScroll.viewportY} -> ${afterScroll.viewportY})`) &&
+          ok(afterScroll.selectionText === held18i,
+             `scrolling dropped the selection instead of carrying it into the scrollback (${JSON.stringify(afterScroll.selectionText)})`) &&
+          ok(Math.abs(afterScroll.translateY) <= 1,
+             `the sheet is not glued to the buffer lines it mirrors: translateY ${afterScroll.translateY.toFixed(2)}px, expected 0 once the revealed rows are prepended`) &&
+          ok(afterScroll.rowCount === beforeScroll.rowCount + 3,
+             `the mirror did not grow by the 3 rows the scroll uncovered (${beforeScroll.rowCount} -> ${afterScroll.rowCount})`) &&
+          ok(afterScroll.revealed.join("\n") === afterScroll.revealedBuffer.join("\n"),
+             `the revealed rows do not mirror their buffer lines:\n    overlay ${JSON.stringify(afterScroll.revealed)}\n    buffer  ${JSON.stringify(afterScroll.revealedBuffer)}`) &&
+          ok(kept, "the frozen rows were rewritten when the mirror grew: a Range endpoint lives in those text nodes, and replacing the data collapses it")) {
+        console.log("[18i] scrolling carries the selection into the scrollback: rows revealed at the edge, frozen rows untouched");
+      }
+
+      // ...and the same selection still held, scrolled BACK: the sheet
+      // is what keeps the mirrored lines over their own glyphs. The
+      // rows it needs already exist now, so nothing is revealed and the
+      // offset alone does the work -- which is the direction that shows
+      // the transform doing anything at all. (The invariant is
+      // translateY((top - viewportY) * cellH) where `top` is the buffer
+      // line rows[0] holds: revealing UPWARD walks `top` down to meet
+      // viewportY, so that direction legitimately lands on 0.)
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(3));
+      await page.waitForTimeout(250);
+      const backScroll = await page.evaluate(() => {
+        const sheet = document.querySelector(".touch-select-sheet");
+        const tf = getComputedStyle(sheet).transform;
+        return {
+          translateY: tf === "none" ? 0 : Number(tf.slice(tf.indexOf("(") + 1, -1).split(",")[5]),
+          rowCount: sheet.children.length,
+          selectionText: document.getSelection().toString(),
+        };
+      });
+      if (ok(Math.abs(backScroll.translateY + 3 * beforeScroll.cellHeight) <= 1,
+             `the sheet did not slide back with the viewport: translateY ${backScroll.translateY.toFixed(2)}px, expected ${(-3 * beforeScroll.cellHeight).toFixed(2)}px`) &&
+          ok(backScroll.rowCount === afterScroll.rowCount,
+             `scrolling back grew the mirror again (${afterScroll.rowCount} -> ${backScroll.rowCount}): those rows were already mounted`) &&
+          ok(backScroll.selectionText === held18i, "scrolling back dropped the selection")) {
+        console.log(`[18i] scrolling back slides the sheet (${backScroll.translateY.toFixed(0)}px) instead of remounting rows`);
+      }
+
+      // ...and releasing it puts the mirror back on the viewport: the
+      // sheet un-translates and the extra rows are trimmed.
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+      await page.waitForTimeout(200);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const thawed18i = await page.evaluate(() => {
+        const buf = globalThis.wosh.term.buffer.active;
+        const sheet = document.querySelector(".touch-select-sheet");
+        const tf = getComputedStyle(sheet).transform;
+        return {
+          translateY: tf === "none" ? 0 : Number(tf.slice(tf.indexOf("(") + 1, -1).split(",")[5]),
+          rowCount: sheet.children.length,
+          termRows: globalThis.wosh.term.rows,
+          row0: sheet.children[0].textContent,
           bufferRow0: buf.getLine(buf.viewportY)?.translateToString(false) ?? "",
         };
       });
-      if (ok(afterScroll.viewportY === beforeScroll.viewportY - 3, `the scroll did not move the viewport (${beforeScroll.viewportY} -> ${afterScroll.viewportY})`) &&
-          ok(afterScroll.selectionText === "", `scrolling left the selection standing over text that moved (${JSON.stringify(afterScroll.selectionText)})`) &&
-          ok(afterScroll.row0 === afterScroll.bufferRow0,
-             `the overlay did not resync to the new viewport:\n    overlay ${JSON.stringify(afterScroll.row0)}\n    buffer  ${JSON.stringify(afterScroll.bufferRow0)}`)) {
-        console.log("[18i] scrolling dismisses the selection and the overlay resyncs to the new viewport");
+      if (ok(Math.abs(thawed18i.translateY) <= 0.5, `the sheet stayed translated after the selection was dropped (${thawed18i.translateY}px)`) &&
+          ok(thawed18i.rowCount === thawed18i.termRows, `the mirror kept its scrollback rows after release (${thawed18i.rowCount} rows for ${thawed18i.termRows})`) &&
+          ok(thawed18i.row0 === thawed18i.bufferRow0,
+             `the overlay did not resync to the viewport:\n    overlay ${JSON.stringify(thawed18i.row0)}\n    buffer  ${JSON.stringify(thawed18i.bufferRow0)}`)) {
+        console.log("[18i] releasing it re-anchors the mirror on the viewport and trims it back");
       }
       await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+      await page.waitForTimeout(200);
+
+      // 18i2. COPY ACROSS THE SEAM: a selection that spans revealed
+      //       scrollback and on-screen rows copies the buffer lines it
+      //       covers, joined by the same rules as any other copy. The
+      //       whole point of anchoring to buffer rows is that what
+      //       lands on the clipboard is what was highlighted -- across
+      //       the seam where the mirror grew, not just within one
+      //       screenful.
+      const seamRow = (await overlay()).markerViewRow;
+      const topAbs = await page.evaluate(() => globalThis.wosh.term.buffer.active.viewportY);
+      await selectRun(seamRow, 0, 5);
+      await page.waitForTimeout(150);
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-3));
+      await page.waitForTimeout(250);
+      const seam = await page.evaluate((topAbs) => {
+        const term = globalThis.wosh.term;
+        const buf = term.buffer.active;
+        const layer = document.querySelector(".touch-select-layer");
+        const sheet = layer.querySelector(".touch-select-sheet");
+        if (typeof ClipboardEvent !== "function" || typeof DataTransfer !== "function") {
+          return { error: "this Chromium cannot construct ClipboardEvent/DataTransfer; leg 18i2 cannot run" };
+        }
+        // The marker line, in the sheet's buffer-row coordinates: the
+        // sheet's row 0 is `topAbs` minus however many rows were
+        // revealed above it.
+        const markerAbs = buf.baseY + buf.cursorY - 1;
+        const firstAbs = buf.viewportY; // the topmost revealed row
+        const idx = (abs) => abs - firstAbs;
+        const startDiv = sheet.children[0]; // a row that only exists because we scrolled
+        const endDiv = sheet.children[idx(markerAbs)];
+        const range = document.createRange();
+        range.setStart(startDiv.firstChild, 0);
+        range.setEnd(endDiv.firstChild, endDiv.textContent.length);
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        const ev = new ClipboardEvent("copy", {
+          clipboardData: new DataTransfer(),
+          bubbles: true,
+          cancelable: true,
+        });
+        layer.dispatchEvent(ev);
+        // What the BUFFER says those rows are -- computed from the
+        // terminal, not from the mirror, so this cannot pass by the
+        // mirror merely agreeing with itself.
+        const expected = [];
+        for (let abs = firstAbs; abs <= markerAbs; abs++) {
+          expected.push((buf.getLine(abs)?.translateToString(false) ?? "").trimEnd());
+        }
+        return {
+          text: ev.clipboardData.getData("text/plain"),
+          defaultPrevented: ev.defaultPrevented,
+          expected: expected.join("\n"),
+          spanned: markerAbs - firstAbs + 1,
+          revealedRows: topAbs - firstAbs,
+        };
+      }, topAbs);
+      if (seam.error) {
+        fail(seam.error);
+      } else if (ok(seam.revealedRows === 3, `leg 18i2 did not copy across a seam: ${seam.revealedRows} rows were revealed by the scroll, expected 3`) &&
+                 ok(seam.defaultPrevented, "the copy handler let the browser's default through for a selection spanning the seam") &&
+                 ok(seam.text === seam.expected,
+                    `the copy across the seam is not the buffer lines it covered:\n    got      ${JSON.stringify(seam.text)}\n    expected ${JSON.stringify(seam.expected)}`)) {
+        console.log(`[18i2] a selection spanning revealed scrollback copies all ${seam.spanned} buffer rows it covers`);
+      }
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+      await page.waitForTimeout(200);
+      await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+      await page.waitForTimeout(200);
+
+      // 18i3. THE EDGE RATCHET: dragging a handle onto the top visible
+      //       row scrolls the terminal, so a selection can be extended
+      //       past the edge of the screen. Native handle drags cannot
+      //       be synthesized in headless Chromium (the browser consumes
+      //       the drag's touch events itself), so Selection.extend()
+      //       stands in for the handle -- it produces the same
+      //       selectionchange stream, which is all the ratchet reads.
+      //
+      //       Keyed on the focus endpoint changing ROWS, not on it
+      //       sitting at the edge: a timer keyed on position would run
+      //       away on a finished selection whose end happens to rest
+      //       there, and there is no way to know a handle is still
+      //       down.
+      await page.evaluate(() => globalThis.wosh.term.scrollLines(-10));
+      await page.waitForTimeout(200);
+      const ratchetStart = await page.evaluate(() => {
+        const sheet = document.querySelector(".touch-select-sheet");
+        const div = sheet.children[2]; // view row 2: two rows clear of the edge
+        const range = document.createRange();
+        range.setStart(div.firstChild, 0);
+        range.setEnd(div.firstChild, Math.min(4, div.textContent.length));
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return globalThis.wosh.term.buffer.active.viewportY;
+      });
+      await page.waitForTimeout(150); // selectionchange is async: let the freeze land
+      // A handle dragged up one row: a transition, but not onto the
+      // edge row, so nothing should scroll yet.
+      await page.evaluate(() => {
+        const sheet = document.querySelector(".touch-select-sheet");
+        document.getSelection().extend(sheet.children[1].firstChild, 2);
+      });
+      await page.waitForTimeout(150);
+      const midRatchet = await page.evaluate(() => globalThis.wosh.term.buffer.active.viewportY);
+      // ...and onto the top visible row, which is the trigger.
+      await page.evaluate(() => {
+        const sheet = document.querySelector(".touch-select-sheet");
+        document.getSelection().extend(sheet.children[0].firstChild, 0);
+      });
+      await page.waitForTimeout(200); // longer than the 80ms rate cap
+      const afterRatchet = await page.evaluate(() => ({
+        viewportY: globalThis.wosh.term.buffer.active.viewportY,
+        selection: document.getSelection().toString(),
+      }));
+      if (ok(midRatchet === ratchetStart, `a handle moved onto a row that is not the edge scrolled the terminal (${ratchetStart} -> ${midRatchet})`) &&
+          ok(afterRatchet.viewportY === ratchetStart - 2,
+             `dragging a handle onto the top visible row did not ratchet the view by one step (${ratchetStart} -> ${afterRatchet.viewportY}, expected ${ratchetStart - 2})`) &&
+          ok(afterRatchet.selection !== "", "the ratchet dropped the selection it was supposed to be extending")) {
+        console.log(`[18i3] a handle dragged onto the top row ratchets the view (${ratchetStart} -> ${afterRatchet.viewportY}), and only on a row transition`);
+      }
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+      await page.waitForTimeout(200);
+
+      // ...and the NEGATIVE: a selection that is BORN on the edge row
+      // -- a long-press there -- must not scroll. There was no
+      // previous row for the handle to have come from, and a
+      // long-press that yanked the view out from under itself would be
+      // unusable.
+      const fresh = await page.evaluate(() => {
+        const before = globalThis.wosh.term.buffer.active.viewportY;
+        const sheet = document.querySelector(".touch-select-sheet");
+        const div = sheet.children[0];
+        const range = document.createRange();
+        range.setStart(div.firstChild, 0);
+        range.setEnd(div.firstChild, Math.min(4, div.textContent.length));
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return before;
+      });
+      await page.waitForTimeout(250);
+      const afterFresh = await page.evaluate(() => globalThis.wosh.term.buffer.active.viewportY);
+      if (ok(afterFresh === fresh, `a fresh selection on the top row scrolled the terminal on its own (${fresh} -> ${afterFresh})`)) {
+        console.log("[18i3] a fresh selection on the edge row does not ratchet: only a handle ARRIVING there does");
+      }
+
+      // 18i4. REFITS ARE DEFERRED while a selection is held. Starting a
+      //       native selection blurs xterm's hidden textarea (the
+      //       platform steals focus for selection on non-editable text,
+      //       and that is not cancellable), so the soft keyboard
+      //       closes, the visual viewport grows, and the page's
+      //       ResizeObserver refits -- reflowing the terminal under a
+      //       frozen mirror, which leaves the platform's drag handles
+      //       floating over content that moved. The refit is not
+      //       dropped, only held: it runs once on release, however many
+      //       were swallowed.
+      const deferred = await page.evaluate(() => {
+        const before = { refits: globalThis.wosh.refits, rows: globalThis.wosh.term.rows, cols: globalThis.wosh.term.cols };
+        globalThis.wosh.refit();
+        globalThis.wosh.refit();
+        return { before, after: { refits: globalThis.wosh.refits, rows: globalThis.wosh.term.rows, cols: globalThis.wosh.term.cols } };
+      });
+      await page.evaluate(() => document.getSelection().removeAllRanges());
+      await page.waitForTimeout(250);
+      const flushed = await page.evaluate(() => globalThis.wosh.refits);
+      const immediate = await page.evaluate(() => {
+        const before = globalThis.wosh.refits;
+        globalThis.wosh.refit();
+        return { before, after: globalThis.wosh.refits };
+      });
+      if (ok(deferred.after.refits === deferred.before.refits,
+             `a refit ran under a live selection (${deferred.before.refits} -> ${deferred.after.refits}): the terminal would reflow out from under the handles`) &&
+          ok(deferred.after.rows === deferred.before.rows && deferred.after.cols === deferred.before.cols,
+             `the terminal geometry changed under a live selection (${deferred.before.cols}x${deferred.before.rows} -> ${deferred.after.cols}x${deferred.after.rows})`) &&
+          ok(flushed === deferred.before.refits + 1,
+             `releasing the selection did not replay the deferred refit exactly once (${deferred.before.refits} -> ${flushed}, two calls were deferred)`) &&
+          ok(immediate.after === immediate.before + 1,
+             `a refit with no selection held did not run immediately (${immediate.before} -> ${immediate.after})`)) {
+        console.log("[18i4] refits are deferred while a selection is held and replayed once on release");
+      }
+      await page.evaluate(() => globalThis.wosh.term.scrollToBottom());
+      await page.waitForTimeout(200);
 
       // 18j. COPY: a soft wrap is not a line break. The mirror is one
       //      div per VISUAL row, so the browser's default copy puts a
@@ -1025,14 +1305,15 @@ try {
         const term = globalThis.wosh.term;
         const buf = term.buffer.active;
         const layer = document.querySelector(".touch-select-layer");
+        const sheet = layer.querySelector(".touch-select-sheet");
         // Cursor rests on the line after ZSHORT: the three visual rows
         // above it are the A-row, the B-row (its soft continuation) and
         // ZSHORT.
         const cursorAbs = buf.baseY + buf.cursorY;
         const rowOf = (abs) => abs - buf.viewportY;
-        const aRow = layer.children[rowOf(cursorAbs - 3)];
-        const bRow = layer.children[rowOf(cursorAbs - 2)];
-        const zRow = layer.children[rowOf(cursorAbs - 1)];
+        const aRow = sheet.children[rowOf(cursorAbs - 3)];
+        const bRow = sheet.children[rowOf(cursorAbs - 2)];
+        const zRow = sheet.children[rowOf(cursorAbs - 1)];
         if (typeof ClipboardEvent !== "function" || typeof DataTransfer !== "function") {
           return { error: "this Chromium cannot construct ClipboardEvent/DataTransfer; leg 18j cannot run" };
         }
