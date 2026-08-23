@@ -420,20 +420,70 @@
       width: 100%; height: 100%; max-width: none; max-height: none;
       background: var(--bg); color: var(--text);
     }
+    /* `[open]`-scoped, NOT on the bare selector: a `<dialog>` without
+       `[open]` is UA-default `display: none`, and an unconditional
+       `display: flex` here would override that default and leave the
+       (invisible-looking, since nothing paints without [open]'s own
+       layout box in some engines -- but NOT reliably nothing-clicking)
+       sheet sitting over the whole viewport, eating every click on the
+       page underneath it, including its own trigger button. Observed
+       live: `just browser-transfer` timing out clicking `#transfers-btn`
+       because `#transfers-sheet` (closed) intercepted the pointer event.
+       The fix for "sticky must work inside its scroll container": this
+       flex context is what makes `.panes{flex:1}` below actually work --
+       `.tx-head` is a non-scrolling flex sibling that never moves, and
+       `.panes` is the only element that scrolls -- the same visible
+       result as position:sticky, without the scroll-jank a sticky
+       header can show on some mobile browsers. */
+    #transfers-sheet[open] {
+      display: flex; flex-direction: column;
+    }
     #transfers-sheet::backdrop { background: rgba(0, 0, 0, 0.72); }
+    #transfers-sheet .tx-head {
+      flex: none; position: relative; /* anchors .tx-dropdown below it */
+      z-index: 2; background: var(--bg);
+    }
     #transfers-sheet .txbar {
       display: flex; align-items: center; gap: 8px; padding: 10px 12px;
       background: #0d0d0d; border-bottom: 1px solid var(--line);
     }
     #transfers-sheet .txbar h1 { font: 600 16px var(--sans); color: var(--bright); margin: 0; flex: 1; min-width: 0; }
     #transfers-sheet .txbar button { min-height: 40px; padding: 0 12px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 8px; color: var(--text); }
+    #transfers-sheet .txbar button:disabled { opacity: 0.45; }
     #transfers-sheet .crumbs {
       display: flex; align-items: center; gap: 4px; padding: 8px 12px;
       overflow-x: auto; white-space: nowrap; font: 13px var(--mono); color: var(--dim);
       border-bottom: 1px solid var(--line);
     }
-    #transfers-sheet .crumbs button { background: none; border: none; color: var(--dim); font: 13px var(--mono); padding: 4px 2px; min-height: 32px; }
-    #transfers-sheet .crumbs button.here { color: var(--bright); }
+    /* Crumbs read as navigation, not decoration (dispatch #3): the
+       site's other tappable text uses --accent-line for the "this
+       does something" color (button.primary's border, the resume
+       bar's fill) -- underlined here too, since a crumb has no
+       button-shaped background to lean on. The current-directory
+       crumb is a `<span>`, not a `<button>` (transfer-ui.mjs), so it
+       is non-interactive in fact, not just in color: plain text,
+       `--bright`, no underline, default cursor. */
+    #transfers-sheet .crumbs button.crumb {
+      background: none; border: none; padding: 4px 2px; min-height: 32px;
+      font: 13px var(--mono); color: var(--accent-line); text-decoration: underline;
+      text-underline-offset: 2px; cursor: pointer;
+    }
+    #transfers-sheet .crumbs button.crumb:active { color: var(--bright); background: var(--surface2); border-radius: 4px; }
+    #transfers-sheet .crumbs span.crumb.here { color: var(--bright); font: 13px var(--mono); padding: 4px 2px; cursor: default; }
+    /* The transfers dropdown: anchored to `.tx-head` (position:
+       relative above), `top:100%` drops it exactly below the header
+       block's own height -- no measurement of --bar-h-style custom
+       properties needed. It sits ABOVE `.panes` (z-index) so opening
+       it never reflows or obstructs the listing underneath; closing
+       it (the default, `[hidden]`) leaves the listing exactly as it
+       was. Works identically at phone widths since it is 100% of the
+       sheet's own width, not a fixed-size anchored popover. */
+    #transfers-sheet .tx-dropdown {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 3;
+      max-height: 60vh; overflow-y: auto;
+      background: var(--surface); border-bottom: 1px solid var(--line2);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
     #transfers-sheet .panes { flex: 1; overflow: hidden auto; display: flex; flex-direction: column; }
     #transfers-sheet .entry-row, #transfers-sheet .transfer-row {
       display: flex; align-items: center; gap: 10px; padding: 10px 12px;
@@ -461,6 +511,15 @@
       text-align: center; color: var(--dim); font: 13px var(--sans);
     }
     #transfers-sheet .upload-drop.over { border-color: var(--accent-line); color: var(--bright); }
+    /* The one upload affordance (dispatch #1): a link-styled button
+       inline in the drop-zone sentence, not a second button elsewhere
+       offering the same action. */
+    #transfers-sheet .upload-drop .link-btn {
+      background: none; border: none; padding: 0; margin: 0;
+      color: var(--accent-line); text-decoration: underline; text-underline-offset: 2px;
+      font: 13px var(--sans); cursor: pointer;
+    }
+    #transfers-sheet .upload-drop .link-btn:active { color: var(--bright); }
     #transfers-sheet .empty { padding: 16px 12px; color: var(--dim); font: 13px var(--sans); }
     #transfers-sheet .section-label { padding: 10px 12px 4px; font: 600 11px var(--sans); letter-spacing: 0.4px; color: var(--dim); text-transform: uppercase; }
   </style>
