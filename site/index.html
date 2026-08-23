@@ -452,9 +452,20 @@
     #transfers-sheet .txbar button:disabled { opacity: 0.45; }
     #transfers-sheet .crumbs {
       display: flex; align-items: center; gap: 4px; padding: 8px 12px;
-      overflow-x: auto; white-space: nowrap; font: 13px var(--mono); color: var(--dim);
       border-bottom: 1px solid var(--line);
     }
+    #transfers-sheet .crumb-list {
+      display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0;
+      overflow-x: auto; white-space: nowrap; font: 13px var(--mono); color: var(--dim);
+    }
+    /* The refresh button (dispatch #1) is a flex:none sibling of
+       `.crumb-list`, not part of the scrolling breadcrumb chain, so a
+       deep path never scrolls it out of reach. */
+    #transfers-sheet .refresh-btn {
+      flex: none; background: none; border: none; color: var(--dim);
+      font-size: 16px; min-width: 32px; min-height: 32px; cursor: pointer;
+    }
+    #transfers-sheet .refresh-btn:active { color: var(--bright); }
     /* Crumbs read as navigation, not decoration (dispatch #3): the
        site's other tappable text uses --accent-line for the "this
        does something" color (button.primary's border, the resume
@@ -485,6 +496,10 @@
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     }
     #transfers-sheet .panes { flex: 1; overflow: hidden auto; display: flex; flex-direction: column; }
+    /* Locked while the dropdown is open (dispatch #2): the dropdown
+       floats OVER the listing rather than replacing it, and letting
+       the listing keep scrolling underneath read as broken. */
+    #transfers-sheet .panes.locked { overflow: hidden; touch-action: none; }
     #transfers-sheet .entry-row, #transfers-sheet .transfer-row {
       display: flex; align-items: center; gap: 10px; padding: 10px 12px;
       border-bottom: 1px solid var(--line); min-height: 44px;
