@@ -21,7 +21,9 @@ client="$ROOT/target/components/wosh-ssh-client.wasm"
 # versioned peer of the @polyengine/runtime the bundle pins (deno.json), so
 # the two cannot skew. Fetched once from jsr, digest-pinned, cached
 # under .deps/. Bump TRANSLATOR_VERSION together with the deno.json pins.
-TRANSLATOR_VERSION=0.5.0
+# 0.5.1's translator_shim.wasm is byte-identical to 0.5.0, so the digest
+# below is unchanged across the bump.
+TRANSLATOR_VERSION=0.5.1
 TRANSLATOR_SHA256=034747e0bd2961b002174734f7d1f47b9c1e59f7864a3a0d566070940be873a0
 translator="$ROOT/.deps/translator_shim-$TRANSLATOR_VERSION.wasm"
 if ! sha256sum -c --status <<<"$TRANSLATOR_SHA256  $translator" 2>/dev/null; then
