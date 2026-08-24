@@ -80,6 +80,11 @@
       flex: none; min-width: 44px; min-height: 40px; border-radius: 8px;
       background: var(--surface2); border: 1px solid var(--line2);
       color: var(--text); font-size: 17px;
+      /* The folder/gear are emoji (for glyph coverage: Unicode's
+         text-presentation folders are tofu on phones), grayscaled to
+         sit in the monochrome chrome. Safe on the whole button: its
+         own colors are already neutral. */
+      filter: grayscale(1);
     }
     /* Esc-intercept hint (site/esc-watch.mjs): a slim row, not a modal
        -- the user may be running the extension deliberately, so this
@@ -425,6 +430,7 @@
       flex: none; min-width: 44px; min-height: 40px; border-radius: 8px;
       background: var(--surface2); border: 1px solid var(--line2);
       color: var(--text); font-size: 17px;
+      filter: grayscale(1); /* see #sessions-btn */
     }
     #transfers-sheet {
       position: fixed; inset: 0; margin: 0; padding: 0; border: none;
@@ -567,7 +573,7 @@
         <span id="status">idle</span>
       </span>
       <button id="transfers-btn" title="files" hidden>📁</button>
-      <button id="sessions-btn" title="sessions">⚙</button>
+      <button id="sessions-btn" title="sessions">⚙️</button>
     </div>
     <div id="escbanner" hidden>
       <span class="msg">⚠ detected a pattern of events consistent with a browser extension (such as Vimium) capturing the esc key — you might need to exclude this site in the extension's settings.</span>
