@@ -24,6 +24,19 @@
 // from site/node_modules -- `just web-deps` puts it there. Everything
 // else drives a stub terminal.
 //
+// The same fixture carries the FORWARDING legs (18m-18q). A finger
+// must not always move the scrollback: an app that has turned mouse
+// tracking on wants the wheel itself, and an alternate-screen program
+// (tmux, vim, less) has no scrollback to move at all -- which is why
+// touch scroll used to do nothing there. Those drags are turned into
+// wheel events on xterm's own screen element and left to xterm to
+// encode, so the legs assert on the REPORTS the terminal emits (SGR
+// wheel reports, or the cursor keys xterm substitutes when nothing is
+// tracking) rather than on a viewport that must now stay put. Leg 25h
+// closes the other half of the same path in the real app: a report
+// whose coordinate byte runs past 0x7f leaves xterm through onBinary,
+// not onData, and has to reach the session byte for byte.
+//
 // Usage: node host-test/browser-mobile.mjs [--keep]
 
 import { chromium } from "playwright-core";
@@ -134,6 +147,11 @@ const TERMINAL_FIXTURE = `<!doctype html>
   }));
   term.open(document.getElementById("term"));
   fit.fit();
+  // What the terminal SENDS: mouse reports (and the cursor keys xterm
+  // substitutes for a wheel on the alt screen) leave through onData,
+  // the same channel typing does. The forwarding legs read this.
+  const dataLog = [];
+  term.onData((s) => dataLog.push(s));
   for (let i = 1; i <= 300; i++) term.write("line " + i + "\\r\\n");
   // app.mjs's shape, verbatim in spirit: the mobile layer hands back a
   // gate, and every refit path goes through it. The counter is the only
@@ -142,6 +160,7 @@ const TERMINAL_FIXTURE = `<!doctype html>
   const refit = guardRefit(() => { globalThis.wosh.refits++; fit.fit(); });
   globalThis.wosh = {
     term,
+    data: () => dataLog.splice(0),
     refits: 0,
     refit,
     linkActivations,
@@ -240,6 +259,10 @@ export async function loadClient() {
   Session.prototype.writeInput = async (bytes) => {
     globalThis.__typedAtSession = (globalThis.__typedAtSession ?? "") +
       new TextDecoder().decode(bytes);
+    // ...and the bytes themselves, undecoded: leg 25h is about a byte
+    // that has no meaning as UTF-8 text, so the string capture above
+    // is exactly the lossy view it must not be judged through.
+    globalThis.__typedBytes = (globalThis.__typedBytes ?? []).concat([...bytes]);
   };
   Session.prototype.resize = async () => {};
   Session.prototype.detach = async () => {};
@@ -479,6 +502,28 @@ try {
     ok(afterCtrl === "\x1b[D", `Ctrl outlived its one key -- got ${JSON.stringify(afterCtrl)}`),
   ].every(Boolean);
   if (sticky) console.log("[6] Ctrl arms on a tap, not on a drag, and lands on exactly the next key");
+
+  // 6b. ...but a MOUSE REPORT is not "the next key". Once a finger
+  //     scroll is forwarded to a mouse-tracking app, the reports it
+  //     produces come back down the very same onData path a keystroke
+  //     takes -- so the naive "any chunk consumes the arming" rule
+  //     made an armed Ctrl evaporate the moment the user scrolled
+  //     before typing. The report must pass through byte for byte
+  //     (a modified mouse report is not a thing) and leave the arming
+  //     alone for the key that was actually meant to carry it.
+  await tap("ctrl");
+  const armedBeforeReport = await isArmed();
+  await page.evaluate(() => globalThis.wosh.term.input("\x1b[<65;3;4M"));
+  const reportChunk = (await sent()).at(-1);
+  await tap("←");
+  const afterReport = (await sent()).at(-1);
+  if (ok(armedBeforeReport, "tapping Ctrl did not arm it") &&
+      ok(reportChunk === "\x1b[<65;3;4M",
+         `an armed modifier rewrote a mouse report -- got ${JSON.stringify(reportChunk)}`) &&
+      ok(afterReport === "\x1b[1;5D",
+         `a mouse report consumed the armed Ctrl before the next key -- got ${JSON.stringify(afterReport)}`)) {
+    console.log("[6b] a mouse report passes through untouched and does not spend an armed Ctrl");
+  }
 
   // 7. The press highlight tracks the same rule, so the finger can see
   //    a drag has disarmed the key before it lifts.
@@ -1588,6 +1633,156 @@ try {
       }
       }
       await page.evaluate(() => globalThis.wosh.term.clearSelection());
+
+      // --- forwarding a finger to the application ---------------------
+      //
+      // scrollLines only ever moves the SCROLLBACK, and there are two
+      // states where that is the wrong sink. An app that turned mouse
+      // tracking on (tmux, less, a mouse-aware vim) wants the wheel
+      // itself; and any alternate-screen program has no scrollback at
+      // all -- baseY is pinned at 0, so the local path was a silent
+      // no-op and touch scrolling simply did nothing inside tmux. Both
+      // now forward: the drag becomes wheel events on xterm's screen
+      // element, and xterm encodes and sends whatever the active mode
+      // and encoding call for. So these legs read what the TERMINAL
+      // SENT, not where the viewport went.
+      //
+      // Drags are 3.5 cells rather than a flat 3: the synthetic touch
+      // points are rounded to whole pixels, so a drag of exactly 3
+      // cells can measure a pixel short and truncate to 2 -- a flake
+      // about the CDP coordinate rounding, not about the code.
+      await page.evaluate(() => { globalThis.wosh.term.scrollToBottom(); });
+      const drainData = () => page.evaluate(() => globalThis.wosh.data());
+      const cellH = (await tstate()).cellHeight;
+      const trackingIs = (mode) =>
+        page.waitForFunction((m) => globalThis.wosh.term.modes.mouseTrackingMode === m,
+          mode, { timeout: 5_000 }).then(() => true, () => false);
+
+      // 18m. A tracking app OWNS the wheel: dragging down sends it
+      //      wheel-up reports (SGR button 64) and the local scrollback
+      //      does not ALSO move -- double-handling a gesture is its own
+      //      bug, and the page must still stay where it is.
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1002h\x1b[?1006h"));
+      const tracking = await trackingIs("drag");
+      // Leg 18k left the terminal focused (it tapped a link), so the
+      // focus assertion below would be reading that, not this drag.
+      await page.evaluate(() => globalThis.wosh.term.blur());
+      await drainData();
+      const fwd0 = await tstate();
+      await dragAt(mid.x, mid.y, 0, Math.round(3.5 * cellH));
+      const fwdReports = await drainData();
+      const fwd1 = await tstate();
+      const wheelUp = fwdReports.filter((c) => /^\x1b\[<64;\d+;\d+M$/.test(c));
+      if (ok(tracking, "the fixture never entered mouse-tracking mode, so leg 18m proves nothing") &&
+          ok(fwdReports.length === 3 && wheelUp.length === 3,
+             `a forwarded 3-cell drag did not send exactly 3 wheel-up reports -- got ${JSON.stringify(fwdReports)}`) &&
+          ok(fwd1.viewportY === fwd0.viewportY,
+             `the forwarded drag ALSO scrolled the local scrollback (${fwd0.viewportY} -> ${fwd1.viewportY}): the app owns the wheel, nothing else may act on it`) &&
+          ok(fwd1.pageScrollY === 0, `the forwarded drag scrolled the PAGE (scrollY=${fwd1.pageScrollY})`) &&
+          ok(!(await page.evaluate(() => globalThis.wosh.focused())),
+             "a forwarded scroll focused the terminal: it is still a scroll, not a tap")) {
+        console.log("[18m] a drag under mouse tracking sends 3 wheel-up reports and moves nothing locally");
+      }
+
+      // 18n. ...and the other direction is the other button. Finger up
+      //      is wheel DOWN (65): the text follows the finger, exactly
+      //      as it does when the scrollback is the sink.
+      await drainData();
+      await dragAt(mid.x, mid.y, 0, -Math.round(3.5 * cellH));
+      const upReports = await drainData();
+      if (ok(upReports.length === 3 && upReports.every((c) => /^\x1b\[<65;\d+;\d+M$/.test(c)),
+             `dragging up did not send exactly 3 wheel-down reports -- got ${JSON.stringify(upReports)}`)) {
+        console.log("[18n] dragging the other way sends wheel-down reports");
+      }
+
+      // 18o. THE POSITION IS THE FINGER'S. A wheel report carries the
+      //      cell it happened over, and tmux routes it to the pane
+      //      there -- a report pinned to the middle of the screen, or
+      //      to where the gesture started, scrolls the wrong pane.
+      const posAt = { x: mid.x - 60, y: mid.y - 40 };
+      await drainData();
+      await dragAt(posAt.x, posAt.y, 0, Math.round(3.5 * cellH));
+      const posReports = await drainData();
+      const screenBox = await page.locator(".xterm-screen").boundingBox();
+      const cols = await page.evaluate(() => globalThis.wosh.term.cols);
+      const last = posReports.at(-1);
+      const m = /^\x1b\[<6[45];(\d+);(\d+)M$/.exec(last ?? "");
+      // Where the finger ENDED -- the last step's event is dispatched
+      // at the live position, which is the whole claim.
+      const endY = posAt.y + Math.round(3.5 * cellH);
+      const wantCol = Math.floor((posAt.x - screenBox.x) / (screenBox.width / cols)) + 1;
+      const wantRow = Math.floor((endY - screenBox.y) / cellH) + 1;
+      if (ok(Boolean(m), `leg 18o got no wheel report to read a position off -- ${JSON.stringify(posReports)}`) &&
+          ok(Math.abs(Number(m[1]) - wantCol) <= 1 && Math.abs(Number(m[2]) - wantRow) <= 1,
+             `the report is not at the finger: got col ${m[1]} row ${m[2]}, expected ~${wantCol},${wantRow}`)) {
+        console.log(`[18o] the report carries the cell under the finger (${m[1]},${m[2]} vs ~${wantCol},${wantRow})`);
+      }
+
+      // 18p. THE tmux/vim CASE WITH NO TRACKING AT ALL: an alternate
+      //      screen has no scrollback (baseY 0), so the local path was
+      //      a no-op -- this is the bug the forwarding exists for. With
+      //      nothing tracking, xterm answers a wheel with a CURSOR KEY,
+      //      exactly one per event however big its delta is, which is
+      //      why the forwarding sends one event per cell rather than
+      //      one fat event per pointermove.
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1002l\x1b[?1006l\x1b[?1049h"));
+      const onAlt = await page.waitForFunction(
+        () => globalThis.wosh.term.buffer.active.type === "alternate", null, { timeout: 5_000 },
+      ).then(() => true, () => false);
+      await drainData();
+      await dragAt(mid.x, mid.y, 0, Math.round(3.5 * cellH));
+      const altDown = await drainData();
+      await dragAt(mid.x, mid.y, 0, -Math.round(3.5 * cellH));
+      const altUp = await drainData();
+      // ...and DECCKM is honored, because xterm's own wheel path is
+      // what produced these and it reads the mode at send time.
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1h"));
+      await page.waitForTimeout(150);
+      await drainData();
+      await dragAt(mid.x, mid.y, 0, Math.round(1.5 * cellH));
+      const appMode = await drainData();
+      if (ok(onAlt, "the fixture never reached the alternate screen, so leg 18p proves nothing") &&
+          ok(altDown.join("") === "\x1b[A\x1b[A\x1b[A",
+             `a 3-cell drag down the alt screen did not send 3 up-arrows -- got ${JSON.stringify(altDown)}`) &&
+          ok(altUp.join("") === "\x1b[B\x1b[B\x1b[B",
+             `a 3-cell drag up the alt screen did not send 3 down-arrows -- got ${JSON.stringify(altUp)}`) &&
+          ok(appMode.join("") === "\x1bOA",
+             `application cursor mode was not honored -- got ${JSON.stringify(appMode)}`)) {
+        console.log("[18p] on an alt screen with nothing tracking, a finger becomes arrow keys (one per cell, DECCKM included)");
+      }
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1l\x1b[?1049l"));
+      await page.waitForTimeout(200);
+
+      // 18q. A TAP IS STILL A TAP. Forwarding takes the claimed SCROLL
+      //      gesture only: a touch that never travels stays xterm's,
+      //      which means the app gets a click report (through the
+      //      browser's compatibility mouse events) AND the keyboard is
+      //      still summoned -- leg 14's contract has to survive
+      //      reporting being on.
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1002h\x1b[?1006h"));
+      await trackingIs("drag");
+      await page.evaluate(() => globalThis.wosh.term.blur());
+      await drainData();
+      const tapPt = { x: mid.x + 40, y: mid.y + 30 };
+      await send("touchStart", points(tapPt.x, tapPt.y));
+      await page.waitForTimeout(60);
+      await send("touchEnd", []);
+      await page.waitForTimeout(300);
+      const tapReports = await drainData();
+      const press = /^\x1b\[<0;(\d+);(\d+)M$/.exec(tapReports[0] ?? "");
+      const release = /^\x1b\[<0;(\d+);(\d+)m$/.exec(tapReports[1] ?? "");
+      const tapCol = Math.floor((tapPt.x - screenBox.x) / (screenBox.width / cols)) + 1;
+      const tapRow = Math.floor((tapPt.y - screenBox.y) / cellH) + 1;
+      if (ok(Boolean(press) && Boolean(release),
+             `a tap under mouse tracking did not report a press then a release -- got ${JSON.stringify(tapReports)}`) &&
+          ok(Math.abs(Number(press[1]) - tapCol) <= 1 && Math.abs(Number(press[2]) - tapRow) <= 1,
+             `the click was reported at col ${press[1]} row ${press[2]}, expected ~${tapCol},${tapRow}`) &&
+          ok(await page.evaluate(() => globalThis.wosh.focused()),
+             "a tap under mouse tracking no longer focuses the terminal: the soft keyboard would be unreachable inside tmux")) {
+        console.log(`[18q] a tap still clicks (${press[1]},${press[2]}) and still summons the keyboard`);
+      }
+      await page.evaluate(() => globalThis.wosh.term.write("\x1b[?1002l\x1b[?1006l"));
+      await page.waitForTimeout(150);
     }
   }
 
@@ -1946,6 +2141,100 @@ try {
     await page.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
   }
 
+  // 25h. THE OTHER INPUT CHANNEL: a mouse report whose coordinate byte
+  //      runs past 0x7f leaves xterm through onBinary, not onData, and
+  //      has to reach the session BYTE FOR BYTE.
+  //
+  //      This is not a corner case. vim (not neovim) asks the terminal
+  //      for a version before it will use SGR mouse reports; xterm.js
+  //      answers 276 and vim wants >= 277, so it settles for the legacy
+  //      X10 encoding, where a coordinate is one byte of 32 + column.
+  //      Past column ~95 that byte is >= 0x80 -- which is exactly why
+  //      xterm hands those chunks over on a separate event instead of
+  //      as text: encode them as UTF-8 and every high byte becomes two,
+  //      and the remote app is told about a column that does not exist.
+  //      With onBinary unwired they were dropped outright, so clicks
+  //      past column ~95 in a desktop vim went nowhere at all.
+  //
+  //      A desktop context, because a phone viewport has no column 101
+  //      to click on. It drives the REAL app (index.html + app.mjs)
+  //      with only the wasm component stubbed, and reads the bytes the
+  //      stub session was handed -- not the decoded string, which is
+  //      precisely the lossy view this leg exists to rule out.
+  {
+    const wide = await browser.newContext({ viewport: { width: 1600, height: 900 } });
+    const widePage = await wide.newPage();
+    widePage.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+    widePage.on("pageerror", (e) => consoleErrors.push(String(e)));
+    await widePage.goto(`http://127.0.0.1:${PORT}/panel`, { waitUntil: "load" });
+    await widePage.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+    await widePage.evaluate(() => {
+      localStorage.setItem("wosh.history.v1", JSON.stringify([{
+        id: "c0ffee".padEnd(64, "0"),
+        relay: "https://use1-1.relay.n0.iroh.link",
+        user: "lann", name: "ivy", at: new Date().toISOString(),
+      }]));
+      localStorage.setItem("wosh.hostkeys.v1", JSON.stringify({
+        ["c0ffee".padEnd(64, "0")]: { fp: "SHA256:synthetic-fingerprint-for-the-gate", at: "2026-08-01" },
+      }));
+    });
+    await widePage.reload({ waitUntil: "load" });
+    await widePage.waitForFunction(() => window.__woshBoot?.ui, null, { timeout: 15_000 });
+    await widePage.click("#home .histrow");
+    const liveWide = await widePage.waitForFunction(
+      () => document.body.classList.contains("live"), null, { timeout: 15_000 },
+    ).then(() => true, () => false);
+    if (!ok(liveWide, "the pinned card did not reach a live session on a desktop viewport")) {
+      // nothing to click a report out of
+    } else {
+      // X10 tracking, DELIBERATELY without 1006: the SGR encoding is
+      // all-ASCII and would never exercise onBinary.
+      await widePage.evaluate(() => window.__wosh.term.write("\x1b[?1000h"));
+      const x10 = await widePage.waitForFunction(
+        () => window.__wosh.term.modes.mouseTrackingMode === "vt200", null, { timeout: 5_000 },
+      ).then(() => true, () => false);
+      await widePage.evaluate(() => { globalThis.__typedBytes = []; });
+      const geom = await widePage.evaluate(() => {
+        const box = document.querySelector(".xterm-screen").getBoundingClientRect();
+        return { x: box.x, y: box.y, w: box.width, h: box.height,
+                 cols: window.__wosh.term.cols, rows: window.__wosh.term.rows };
+      });
+      // 0-based column 100 => 1-based 101 => coordinate byte 133.
+      const col0 = 100;
+      const row0 = 2;
+      const clickPt = {
+        x: geom.x + (geom.w / geom.cols) * (col0 + 0.5),
+        y: geom.y + (geom.h / geom.rows) * (row0 + 0.5),
+      };
+      if (!ok(x10, "the app never entered X10 mouse tracking, so leg 25h proves nothing") ||
+          !ok(geom.cols > col0 + 1, `the desktop terminal is only ${geom.cols} columns wide: leg 25h needs a column past 95 to click`)) {
+        // the click below would land somewhere else entirely
+      } else {
+        await widePage.mouse.click(clickPt.x, clickPt.y);
+        await widePage.waitForTimeout(300);
+        const bytes = await widePage.evaluate(() => (globalThis.__typedBytes ?? []).slice());
+        // CSI M Cb Cx Cy: find the frame and read its column byte.
+        let colByte = null;
+        for (let i = 0; i + 4 < bytes.length; i++) {
+          if (bytes[i] === 0x1b && bytes[i + 1] === 0x5b && bytes[i + 2] === 0x4d) {
+            colByte = bytes[i + 4];
+            break;
+          }
+        }
+        const wantByte = 32 + col0 + 1;
+        if (ok(colByte !== null,
+               `no CSI M mouse frame reached the session: the report was dropped on the way out of xterm -- bytes ${JSON.stringify(bytes)}`) &&
+            ok(colByte > 0x7f,
+               `leg 25h clicked a column whose coordinate byte (${colByte}) still fits in ASCII: it would pass even with onBinary unwired`) &&
+            ok(Math.abs(colByte - wantByte) <= 1,
+               `the column byte arrived mangled: got ${colByte}, expected ~${wantByte} (a UTF-8 encode of the same report would have split it in two)`)) {
+          console.log(`[25h] a legacy mouse report crosses onBinary byte-exact: column byte ${colByte} (> 0x7f) intact`);
+        }
+      }
+    }
+    await wide.close();
+  }
+
   // 26-28. The passkey ceremony ask must be VISIBLE wherever it
   //     arrives: the sheet is top-layer, so it renders over the home
   //     screen AND over a bare terminal (chrome hidden) alike -- the
@@ -2025,7 +2314,9 @@ try {
   if (!process.exitCode) {
     console.log(
       "\nMOBILE GATE PASS: keys fire on a tap not a drag, the keyboard is " +
-        "reachable on open, and a finger scrolls the terminal instead of the page",
+        "reachable on open, a finger scrolls the terminal instead of the page, " +
+        "and where an app owns the wheel that finger is forwarded to it as " +
+        "mouse reports -- high coordinate bytes included",
     );
   }
 } finally {
