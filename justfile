@@ -254,12 +254,29 @@ e2e: compose hosts
 #    torn out from under it mid-flight must ride the outage out and
 #    still land byte-perfect.
 #
-# That last leg RESTARTS THE RELAY, exactly as browser-resume does, so
-# it is the last native leg in `check` -- it must not destabilize the
-# listeners the earlier ones stand up. The kill lives in a generated
-# script rather than on smoke-test's `bash -c` command line: a
-# `pkill -f 'iroh-rela[y]'` sharing a command line with the restart
-# that follows matches, and kills, its own shell.
+# That last leg used to RESTART THE RELAY, exactly as browser-resume
+# does -- but as of polymorph-iroh 0.5.1 a relay restart is a redial
+# with backoff, not endpoint death (the very bug this release fixes),
+# so a 2s relay blip no longer severs anything: it is designed to be
+# invisible to the session above it. To keep T7 an honest tear, the
+# kill instead SIGSTOPs the listener process itself for 40s -- past
+# both the client's tunnel-ping liveness window (10s idle + 5s probe)
+# and the QUIC max idle timeout (30s) -- so the client's own liveness
+# check, not the relay's, is what declares the connection dead. SIGCONT afterwards
+# lets the listener discover its old connection is gone and park the
+# session; the client's resume machine (600s window) redials into that
+# park. The pid comes from gate-proc's pidfile, not a pattern match:
+# other worktrees run this same gate concurrently, and a
+# `pkill -f wosh-listene[r]`-style match would reach their listener too.
+#
+# The STOP/sleep/CONT runs in the background (`& disown`) rather than
+# blocking the kill script's own exit: smoke-test awaits the kill
+# command synchronously from inside its progress-polling loop, so a
+# script that did not return until the freeze was over would also
+# freeze the harness's own link-state polling for the same 40s --
+# backgrounding it lets the harness keep polling (and keep watching
+# `--mid-transfer-cmd`'s effects) for the whole outage instead of
+# checking once at the end.
 e2e-transfer: compose hosts
     #!/usr/bin/env bash
     set -euo pipefail
@@ -269,14 +286,17 @@ e2e-transfer: compose hosts
     trap 'scripts/gate-proc.sh stop e2e-transfer' EXIT
     trap 'exit 130' INT TERM
     mkdir -p .deps/run
-    kill_relay=.deps/run/transfer-kill-relay.sh
-    cat > "$kill_relay" <<'EOS'
+    kill_listener=.deps/run/transfer-freeze-listener.sh
+    cat > "$kill_listener" <<EOS
     #!/usr/bin/env bash
-    pkill -f 'iroh-rela[y]' || true
-    sleep 2
+    pid=\$(awk '{print \$1}' "$PWD/.deps/run/e2e-transfer.pid")
+    (
+      kill -STOP "\$pid" 2>/dev/null || true
+      sleep 40
+      kill -CONT "\$pid" 2>/dev/null || true
+    ) & disown
     EOS
-    echo "nohup {{RELAY}} --dev >/dev/null 2>&1 &" >> "$kill_relay"
-    chmod +x "$kill_relay"
+    chmod +x "$kill_listener"
     scripts/gate-proc.sh start e2e-transfer target/release/wosh-listener --ephemeral-identity \
         --relay http://127.0.0.1:3340 \
         --target 127.0.0.1:$(scripts/test-sshd.sh port) --no-qr
@@ -290,7 +310,7 @@ e2e-transfer: compose hosts
         --expect-host-key "$(scripts/test-sshd.sh fingerprint)" \
         --transfer-dir "$PWD/.deps/transfer-gate" \
         --transfer-stage "$PWD/.deps/run/transfer-stage" \
-        --mid-transfer-cmd "$PWD/$kill_relay"
+        --mid-transfer-cmd "$PWD/$kill_listener"
 
 # The legibility gate for a passkey a server will not take.
 #
