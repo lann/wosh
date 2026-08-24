@@ -32,6 +32,13 @@
 //    does with any unclaimed gesture and pans the page instead.
 //    initTouchScroll drives it from pointer events, and the CSS says
 //    (touch-action) that vertical drags in the terminal are ours.
+//    Where the SCROLLBACK is not what a drag should move -- an app
+//    tracking the mouse, or any alternate-screen program (tmux, vim,
+//    less) whose buffer has no history to show -- the same gesture is
+//    forwarded instead, as synthetic wheel events on xterm's screen
+//    element, so the finger reaches the remote application through
+//    xterm's own mouse machinery. Dragging the scrollbar thumb always
+//    stays local: it is the escape hatch back to real history.
 //
 //  - touch selection: the screen is a webgl canvas under
 //    `user-select: none` and xterm's selection answers only to a
@@ -89,6 +96,11 @@ const disarm = () => {
 // alt(2)+ctrl(4).
 const ARROW = /^\x1b(?:\[|O)([A-D])$/;
 
+// Chunks that come out of xterm's own reporting rather than out of a
+// keystroke: SGR mouse reports (CSI < ...), legacy mouse reports
+// (CSI M ...), and focus in/out (CSI I / CSI O, exactly).
+const REPORT = /^\x1b\[(?:[<M]|[IO]$)/;
+
 /**
  * Apply armed one-shot modifiers to one onData chunk. Identity when
  * nothing is armed (the desktop / gate path). Called by app.mjs on
@@ -97,6 +109,12 @@ const ARROW = /^\x1b(?:\[|O)([A-D])$/;
  */
 export const transformInput = (s) => {
   if (!armed.ctrl && !armed.alt) return s;
+  // An armed modifier belongs to the user's NEXT KEY, and these chunks
+  // are not keys -- the terminal emits them itself while a
+  // mouse-tracking app is up. Consuming the arming on one is how "arm
+  // Ctrl, scroll, type c" quietly lost its Ctrl: the scroll's own
+  // reports flow down this same onData path and ate it.
+  if (REPORT.test(s)) return s;
   const { ctrl, alt } = armed;
   disarm(); // one-shot: any input consumes the arming, transformed or not
 
@@ -233,9 +251,22 @@ const SCROLL_SLOP = 8;
  * nobody claimed, pans the page: "drag the scrollbar a little and it
  * scrolls the viewport instead".
  *
- * Both gestures move through the SAME public API the wheel uses
+ * Both LOCAL gestures move through the SAME public API the wheel uses
  * (scrollLines), so the renderer, the scrollbar's own position and the
  * alt-buffer rules stay consistent.
+ *
+ * A content drag has a second possible sink. scrollLines only ever
+ * moves the scrollback, and there are two situations where that is not
+ * what the finger meant: an application that has turned on mouse
+ * tracking wants the wheel itself (tmux's pane scroll, less, a mouse-
+ * aware vim), and any alternate-screen program has no scrollback to
+ * move at all (baseY is pinned at 0, so the local path was a silent
+ * no-op -- "touch scroll does nothing in tmux"). In both, the drag is
+ * FORWARDED: turned back into wheel events on xterm's screen element
+ * and left to xterm to encode and send. The thumb drag is never
+ * forwarded -- the scrollbar is only there to be grabbed when a
+ * scrollback exists, and dragging it is how you still read local
+ * history while an app owns the wheel.
  */
 const initTouchScroll = (term) => {
   const host = document.getElementById("term");
@@ -248,6 +279,69 @@ const initTouchScroll = (term) => {
   let onThumb = false; // grabbed the scrollbar, not the content
   let applied = 0; // lines this gesture has scrolled so far
   let travel = 0; // usable thumb travel, for a scrollbar drag
+  let forward = false; // this gesture goes to the app, not the scrollback
+  let cellPx = 0; // cell height at claim time, for the forwarded sink
+  let emitted = 0; // signed cell-steps already sent as wheel events
+
+  const screenEl = () => host.querySelector(".xterm-screen");
+
+  // One wheel event, on the element xterm listens on, at the finger.
+  //
+  // Synthetic rather than a hand-encoded CSI on purpose: xterm's
+  // CoreMouseService owns the whole protocol -- which encoding was
+  // negotiated (X10 vs SGR vs URXVT), which events the active mode
+  // reports (1000 vs 1002 vs 1003), the alt-screen fallback that turns
+  // a wheel into cursor keys when nothing is tracking, and whether
+  // DECCKM makes those keys CSI or SS3. Dispatching UPSTREAM of that
+  // machinery means a finger and a real wheel are the same input, and
+  // the report it produces rides the same onData -> transformInput ->
+  // writeInput path as typing does.
+  //
+  // The coordinates are the finger's, clamped into the screen's box:
+  // the report carries the cell under the pointer (tmux routes the
+  // wheel to the pane it lands in), and clamping keeps a drag that
+  // overshoots the terminal still reporting instead of going quiet.
+  const wheel = (step, clientX, clientY) => {
+    const el = screenEl();
+    if (!el) return;
+    const box = el.getBoundingClientRect();
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    el.dispatchEvent(new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      // ONE LINE per event, said in lines rather than in pixels.
+      // xterm's CoreMouseService.consumeWheelEvent treats a PIXEL delta
+      // as an estimate: it divides by the cell height, damps anything
+      // under 50px to 30% ("this is a trackpad, not a wheel"), and
+      // carries the remainder in an accumulator -- so a cell's worth of
+      // pixels is 0.3 of a line and three of them scroll nothing at
+      // all. DOM_DELTA_LINE is passed through untouched, which is the
+      // exact, undamped step this wants. (@xterm/xterm 6.0,
+      // CoreMouseService#consumeWheelEvent.)
+      deltaMode: 1, // WheelEvent.DOM_DELTA_LINE
+      // Finger DOWN reveals earlier content, which is a wheel UP, which
+      // is a negative deltaY.
+      deltaY: -step,
+      clientX: clamp(clientX, box.left + 1, box.right - 1),
+      clientY: clamp(clientY, box.top + 1, box.bottom - 1),
+    }));
+  };
+
+  // Finger travel -> wheel events, one per cell of travel. The count
+  // matters: with no tracking active on an alt screen xterm answers a
+  // wheel with exactly ONE arrow key regardless of how big its deltaY
+  // is, so the only way finger distance and lines stay proportional is
+  // to send one event per cell rather than one fat event per move.
+  // Measured from the gesture's start (like scrollBy) so rounding
+  // cannot accumulate across a slow drag.
+  const forwardBy = (dy, x, y) => {
+    const target = Math.trunc(dy / cellPx);
+    while (emitted !== target) {
+      const step = target > emitted ? 1 : -1;
+      emitted += step;
+      wheel(step, x, y);
+    }
+  };
 
   // Lines per CSS pixel of finger movement. Content drags move the
   // text with the finger (down = back into history, so viewportY
@@ -316,14 +410,24 @@ const initTouchScroll = (term) => {
         return;
       }
       scrolling = true;
+      // Which sink this gesture has, decided once, at the moment it
+      // becomes ours. A thumb drag is always local (see the doc
+      // comment); a content drag goes to the app when one is tracking
+      // the mouse, or when the alt screen means there is no scrollback
+      // for the local path to move.
+      emitted = 0;
+      cellPx = (screenEl()?.getBoundingClientRect().height ?? 0) / (term.rows || 1);
+      forward = !onThumb && cellPx > 0 &&
+        (term.modes.mouseTrackingMode !== "none" || term.buffer.active.type === "alternate");
     }
-    scrollBy(dy);
+    if (forward) forwardBy(dy, ev.clientX, ev.clientY);
+    else scrollBy(dy);
   });
 
   const end = (ev) => {
     if (ev.pointerId !== held) return;
     held = null;
-    scrolling = declined = false;
+    scrolling = declined = forward = false;
   };
   host.addEventListener("pointerup", end);
   host.addEventListener("pointercancel", end);
@@ -335,6 +439,11 @@ const initTouchScroll = (term) => {
   // a scroll is what suppresses them, for THIS sequence only: a timer
   // around the tap would eventually eat a real one (asked for by the
   // gate, which taps a fraction of a second after scrolling).
+  //
+  // It matters a second time now that a claimed drag can be forwarded
+  // to a mouse-tracking app: the compat events those reports would come
+  // from are exactly what would tack a spurious click report onto the
+  // end of every scroll.
   //
   // Guaranteed by the spec only when the FIRST touchmove is cancelled,
   // and the slop phase means ours is not; Chromium honors it mid-stream
