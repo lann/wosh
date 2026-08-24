@@ -471,7 +471,13 @@ pub async fn run(
         // under a live upload; the session must ride it out (tunnel
         // replay, or -- if the SFTP channel itself dies -- the engine's
         // own re-anchor), and the bytes that land on the target must be
-        // the bytes we sent, byte for byte.
+        // the bytes we sent, byte for byte. `cmd` freezes the listener
+        // process itself (SIGSTOP/sleep/SIGCONT) rather than bouncing
+        // the relay: as of polymorph-iroh 0.5.1 a relay restart is a
+        // redial with backoff, invisible to the session above it, so
+        // it no longer tears anything -- a frozen listener stops
+        // ACKing instead, which is what actually starves the client's
+        // own liveness check into declaring the link dead.
         let big2 = payload(16 * 1024 * 1024 + 9001, 0x5a);
         let hash2 = sha256_hex(&big2);
         let remote2 = format!("{dir}/resumed.bin");

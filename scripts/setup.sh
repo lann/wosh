@@ -23,8 +23,8 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # must stay content-identical (Rust + WIT) to the revs polymorph-iroh's
 # own Cargo.toml pins, since the native hosts link those crates directly
 # against the endpoint guest fetched here -- re-verify when bumping.
-PIROH_VERSION=v0.5.0
-ENDPOINT_SHA256=ab4361073be0fbbf2a0512d041103d757656794dceb6f1edd199173047247aa7
+PIROH_VERSION=v0.5.1
+ENDPOINT_SHA256=b656296fafe63ac73c081ef32d0876cb4def3df4de6595f8462ad5bf781ab668
 # The relay binary version pairs with the iroh line the endpoint is
 # built against (polymorph-iroh pins the same 1.0.3).
 IROH_RELAY_VERSION=1.0.3
