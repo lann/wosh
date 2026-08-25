@@ -543,39 +543,6 @@ export async function probeSession(command) {
 }
 
 /**
- * Type a session manager's detach keys into the pty and wait, briefly,
- * to see whether the session actually goes away -- a clean manager
- * detach closes the SSH channel, which is the only observable
- * difference between "the tool understood the keys" and "the tool has
- * them remapped and just received junk". Returns whether the session
- * ended within `graceMs`; a false means the caller should fall back to
- * a hard detach.
- */
-export async function sendDetachKeys(keys, graceMs = 2000) {
-  const s = currentSession;
-  if (!s || typeof s.writeInput !== "function") return false;
-  try {
-    await s.writeInput(new TextEncoder().encode(keys));
-  } catch {
-    return false;
-  }
-  const deadline = Date.now() + graceMs;
-  for (;;) {
-    // Identity guard: a supersession (or an end the pump already
-    // noticed) replaces currentSession, and polling the session we no
-    // longer own would answer a question about somebody else's.
-    if (currentSession !== s) return true;
-    try {
-      if (await s.exited()) return true;
-    } catch {
-      return false; // cannot tell: let the hard detach be sure
-    }
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
-
-/**
  * This browser's SSH identity as an `authorized_keys` line. The private
  * half is a non-extractable WebCrypto key: the component can sign with
  * it, nothing can export it. It persists -- the pair lives in IndexedDB
@@ -960,7 +927,7 @@ export async function connect({ connstring, user, command, ui, persistKey, resto
     // stopped painting the moment `currentSession` moved on, so the
     // timeline would otherwise show its output running straight into
     // the new session's opening rule.
-    await markSessionEnd(term, "detached");
+    await markSessionEnd(term, "disconnected");
   }
 
   let st = await settle(session);
@@ -1282,9 +1249,9 @@ export async function detach() {
   try {
     await s.detach();
   } finally {
-    status("detached");
-    // A deliberate detach is a confirmed end like any other; the
+    status("disconnected");
+    // A deliberate disconnect is a confirmed end like any other; the
     // timeline says so.
-    await markSessionEnd(term, "detached").catch(() => {});
+    await markSessionEnd(term, "disconnected").catch(() => {});
   }
 }

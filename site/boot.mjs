@@ -42,7 +42,6 @@ import {
   installPasskeyCeremonyGate,
   note,
   probeSession,
-  sendDetachKeys,
 } from "./app.mjs";
 import {
   PRESETS,
@@ -821,11 +820,6 @@ export async function initBoot(chrome, { onConnect }) {
   // a session that keeps dying gets a human decision instead of
   // silently churning fresh shells.
   let lastAutoAt = 0;
-  // When the session sheet last asked a manager to park the session
-  // with its own keystroke; the pump notices the channel closing a
-  // moment later and fires an ordinary `ended` event, which must not
-  // turn into the reattach offer.
-  let politeDetachAt = 0;
   // A transient line for #home (errors, "host key rejected…"),
   // re-rendered with the screen.
   let homeNotice = "";
@@ -865,7 +859,7 @@ export async function initBoot(chrome, { onConnect }) {
   };
 
   /// Back to #home with a line explaining why (a failed dial, a
-  /// rejected host key, "detached"). The single idle-state funnel:
+  /// rejected host key, "disconnected"). The single idle-state funnel:
   /// every way a session ends and every way an attempt fails lands
   /// here, so the page can never strand a dead screen.
   const idleHome = (msg) => {
@@ -949,14 +943,6 @@ export async function initBoot(chrome, { onConnect }) {
 
     const pad = el("div", { className: "pad", style: "padding-top: 0" });
     homeEl.append(pad);
-
-    if (live) {
-      // Reached mid-session (session sheet → "new connection…"): the
-      // way back must be as plain as the way here.
-      const back = el("button", { className: "secondary", textContent: "back to the session" });
-      back.addEventListener("click", () => hideChrome());
-      pad.append(back);
-    }
 
     // The scan/paste pair: how a machine is added. Scan is the primary
     // -- the QR is the product's bootstrap -- and paste is the fallback
@@ -1751,7 +1737,7 @@ export async function initBoot(chrome, { onConnect }) {
   }
 
   /// Mid-session actions, in thumb reach: what is running on this host
-  /// (the picker), detach, and the way to the home screen.
+  /// (the picker), disconnect, and settings.
   async function sessionSheet() {
     const lc = lastConnected;
     if (!lc) return;
@@ -1824,20 +1810,18 @@ export async function initBoot(chrome, { onConnect }) {
           rowsHost.append(el("div", { className: "newrow" }, newName, newBtn));
         })();
       }
-      const det = el("button", {
+      const disc = el("button", {
         className: "secondary",
-        textContent: m ? `detach — keep it running on ${label}` : "detach",
+        textContent: m ? `disconnect — keep it running on ${label}` : "disconnect",
       });
-      det.addEventListener("click", () => done({ kind: "detach" }));
+      disc.addEventListener("click", () => done({ kind: "disconnect" }));
       // Settings, reachable WITHOUT ending or leaving the session --
       // installing this browser's key on the machine you are already
       // logged into is a thing you do from inside a session, not
       // before one.
       const set = el("button", { className: "quiet", textContent: "settings & keys" });
       set.addEventListener("click", () => done({ kind: "settings" }));
-      const nc = el("button", { className: "quiet", textContent: "new connection…" });
-      nc.addEventListener("click", () => done({ kind: "home" }));
-      append(el("div", { className: "stack" }, det, set, nc));
+      append(el("div", { className: "stack" }, disc, set));
     });
     if (!action) return;
     if (action.kind === "attach") {
@@ -1850,36 +1834,20 @@ export async function initBoot(chrome, { onConnect }) {
         method: lc.method ?? "auto",
         command: m.preset.command(action.name),
       });
-    } else if (action.kind === "detach") {
-      politeDetach();
+    } else if (action.kind === "disconnect") {
+      disconnect();
     } else if (action.kind === "settings") {
       prefsReturn = "session";
       showChrome("prefs");
-    } else if (action.kind === "home") {
-      showChrome("home");
     }
   }
 
-  /// Detach, the polite way first: send the session manager's DEFAULT
-  /// detach keys and see whether the session actually parks (the
-  /// binding is remappable in all four tools, and a remapped target
-  /// just receives junk -- so the hard detach stays as the fallback and
-  /// is what makes trying this safe).
-  async function politeDetach() {
-    const m = matchCommand(lastConnected?.command ?? "");
-    if (m) {
-      politeDetachAt = Date.now();
-      let parked = false;
-      try {
-        parked = await sendDetachKeys(m.preset.detachKeys, 2000);
-      } catch {
-        parked = false;
-      }
-      if (parked) return void idleHome("detached");
-      politeDetachAt = 0;
-    }
+  /// Disconnect: close the channel and go home. A session manager
+  /// parks its session on any disconnect -- that is what it is for
+  /// -- and without one this is simply hanging up.
+  async function disconnect() {
     await detach();
-    idleHome("detached");
+    idleHome("disconnected");
   }
 
   // --- connecting -------------------------------------------------------------
@@ -1893,9 +1861,6 @@ export async function initBoot(chrome, { onConnect }) {
   async function doConnect({ connstring, user, method = "auto", command = "", quiet = false }) {
     if (dialing) return {};
     dialing = true;
-    // A new connect supersedes any pending polite-detach context: the
-    // latch exists to translate ONE deliberate detach's ended event.
-    politeDetachAt = 0;
     withdrawSheet();
     hideChrome();
     attemptMethod = method;
@@ -2247,12 +2212,6 @@ export async function initBoot(chrome, { onConnect }) {
   // carried on the event so nothing parses reason strings).
   window.addEventListener("wosh:session-ended", async (e) => {
     const { why, kind, code, uptimeMs } = e.detail ?? {};
-    // A detach the user just performed, arriving as the session end it
-    // is: already told, already handled.
-    if (Date.now() - politeDetachAt < 10_000) {
-      politeDetachAt = 0;
-      return void idleHome("detached");
-    }
     if (kind === "lost") {
       try {
         if (await autoReconnect(why ?? "connection lost")) return;

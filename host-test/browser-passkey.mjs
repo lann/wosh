@@ -325,7 +325,7 @@ try {
   );
   console.log("[6] shell round-trip through the tunnel painted in xterm");
   await page.click("#sessions-btn");
-  await page.click("#sheet button:has-text('detach')");
+  await page.click("#sheet button:has-text('disconnect')");
 
   // --- recovery: the credential survives an evicted browser store ----
   //
@@ -459,7 +459,7 @@ try {
   );
   console.log("[12] shell round-trip through the recovered identity painted in xterm");
   await page.click("#sessions-btn");
-  await page.click("#sheet button:has-text('detach')");
+  await page.click("#sheet button:has-text('disconnect')");
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

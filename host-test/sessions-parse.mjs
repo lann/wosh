@@ -199,9 +199,6 @@ for (const p of PRESETS) {
     eq(`${p.id}: command(${name}) round-trips`, named(p.command(name)),
       { preset: p.id, name });
   }
-  if (typeof p.detachKeys !== "string" || !p.detachKeys.length) {
-    fail(`${p.id}: detachKeys`, `not a keystroke: ${JSON.stringify(p.detachKeys)}`);
-  }
   if (!/2>\/dev\/null \|\| true$/.test(p.listCommand)) {
     fail(`${p.id}: listCommand`,
       `must swallow its own failure so a missing tool parses as zero sessions: ${p.listCommand}`);
