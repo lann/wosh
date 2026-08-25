@@ -122,7 +122,7 @@ try {
   console.log("[4] post-restart round trip: the session survived");
 
   await page.click("#sessions-btn");
-  await page.click("#sheet button:has-text('detach')");
+  await page.click("#sheet button:has-text('disconnect')");
   if (pageErrors.length) fail(`page errors:\n  ${pageErrors.join("\n  ")}`);
   if (!failed) {
     console.log("\nBROWSER RESUME PASS: a live session rode out a relay restart" +

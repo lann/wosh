@@ -7,8 +7,8 @@
 // when it opens (first session included -- the timeline starts at the
 // top), and an end rule the moment the client knows the session is
 // over for good (terminal.wit's close-kind arriving, or a deliberate
-// detach). A resumable outage draws nothing: the session is not over,
-// and an end mark that might be taken back would be a lie.
+// disconnect). A resumable outage draws nothing: the session is not
+// over, and an end mark that might be taken back would be a lie.
 //
 // Each rule is an xterm MARKER (a handle that tracks one buffer line
 // through scrolling, reflow and trimming) carrying a DECORATION (an
@@ -69,6 +69,6 @@ export const markSessionStart = (term, user) =>
   draw(term, "start", `session start — ${user}`);
 
 /// The closing bookend: `what` names how it ended ("session lost",
-/// "session ended", "detached"), because a timeline of connects and
+/// "session ended", "disconnected"), because a timeline of connects and
 /// disconnects is only as good as its disconnect labels.
 export const markSessionEnd = (term, what) => draw(term, "end", what);

@@ -193,10 +193,10 @@ try {
     await page.waitForSelector("#home button.scan", { timeout: 15_000 });
   };
 
-  // Detach lives in the session sheet: open it from the header, tap.
-  const detachViaSheet = async () => {
+  // Disconnect lives in the session sheet: open it from the header, tap.
+  const disconnectViaSheet = async () => {
     await page.click("#sessions-btn");
-    await page.click("#sheet button:has-text('detach')");
+    await page.click("#sheet button:has-text('disconnect')");
   };
 
   // The QR scan path, stubbed at its two edges: headless Chromium has
@@ -326,7 +326,7 @@ try {
     { timeout: 30_000 },
   );
   console.log("[A] shell round-trip through the tunnel painted in xterm");
-  await detachViaSheet();
+  await disconnectViaSheet();
 
   // --- leg B: no opt-in, no persistence; rejecting sends nothing -----
   await reload();
@@ -356,7 +356,7 @@ try {
   await page.click("#sheet button:has-text('it matches')");
   await waitConnected();
   console.log("[C] approved with 'remember this key' checked");
-  await detachViaSheet();
+  await disconnectViaSheet();
 
   // --- leg D: the pin skips the prompt --------------------------------
   await reload();
@@ -379,7 +379,7 @@ try {
   }
   const pinNote = await page.evaluate(() => document.querySelector("#home .notice")?.textContent);
   console.log(`[D] pinned fingerprint connected with NO prompt (${pinNote})`);
-  await detachViaSheet();
+  await disconnectViaSheet();
 
   // --- leg E: a changed host key warns loudly -------------------------
   // Overwrite the pin for this listener's endpoint id with a bogus
@@ -441,7 +441,7 @@ try {
   await page.click("#sheet button:has-text('really connect?')");
   await waitConnected();
   console.log("[F] card reconnected with a tokenless connstring (enrollment vouched)");
-  await detachViaSheet();
+  await disconnectViaSheet();
 
   // --- leg G: unchecked remember records nothing (and forgets nothing);
   // forgetting is the row's own two-step affordance ------------------
@@ -455,7 +455,7 @@ try {
   await page.click("#sheet button:has-text('connect anyway')");
   await page.click("#sheet button:has-text('really connect?')");
   await waitConnected();
-  await detachViaSheet();
+  await disconnectViaSheet();
   await page.waitForSelector("#home .histrow", { timeout: 15_000 });
   let rowsAfter = await page.locator("#home .histrow").count();
   if (rowsAfter !== 1) {
@@ -601,9 +601,9 @@ try {
       console.log("[L] a 300k-line flood with typing on top ends in a working shell (same or reborn)");
     }
   }
-  // Detach lives in the session sheet: open from the header, tap.
+  // Disconnect lives in the session sheet: open from the header, tap.
   await page.click("#sessions-btn").catch(() => {});
-  await page.click("#sheet button:has-text('detach')").catch(() => {});
+  await page.click("#sheet button:has-text('disconnect')").catch(() => {});
 
   if (consoleErrors.length) {
     fail(`console errors:\n  ${consoleErrors.join("\n  ")}`);

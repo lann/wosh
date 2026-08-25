@@ -207,7 +207,7 @@ const LIFECYCLE_FIXTURE = `<!doctype html>
     painted: () => painted,
     reset: () => { calls.length = 0; painted = 0; },
     // Sessions come and go under the handlers; and both of these are
-    // states the page really reaches (before connect, after detach).
+    // states the page really reaches (before connect, after disconnect).
     clearSession: () => { session = null; },
     breakSession: () => {
       session = {

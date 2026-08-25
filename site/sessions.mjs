@@ -27,25 +27,11 @@ export function validName(s) {
   return /^[A-Za-z0-9_-]{1,32}$/.test(s ?? "");
 }
 
-// The DEFAULT detach keybinding of each tool -- and only the default.
-// Every one of these is remappable (dtach -e, abduco -e, tmux's
-// prefix, screen's escape), and a remapped target simply receives the
-// sequence as ordinary input: inert junk typed into whatever is running
-// inside. There is no way to ask the target which binding is in force,
-// which is why every use of these falls back to a hard detach when the
-// session does not actually close (see app.sendDetachKeys).
-//
-//   dtach   ^\      (the literal detach character, not a prefix)
-//   abduco  ^\      (same)
-//   tmux    ^B d    (prefix, then d)
-//   screen  ^A d    (escape, then d)
-
 /**
  * The session managers this page knows how to drive, in the order the
  * select offers them. Each entry owns everything that differs between
- * the tools: the create-or-attach command line, the default detach
- * keys, the command that lists sessions, and the parser for whatever
- * that command prints.
+ * the tools: the create-or-attach command line, the command that lists
+ * sessions, and the parser for whatever that command prints.
  *
  * `command(name)` assumes a name that already passed `validName`.
  */
@@ -60,7 +46,6 @@ export const PRESETS = [
     // to screen state.
     command: (name) =>
       `mkdir -p "$HOME/.wosh" && exec dtach -A "$HOME/.wosh/${name}.dtach" -r winch "$SHELL"`,
-    detachKeys: "\x1c",
     // A socket per session, in one directory we own. `|| true` so a
     // host that has never run this reads as zero sessions instead of an
     // error the picker would have to explain.
@@ -71,7 +56,6 @@ export const PRESETS = [
     id: "abduco",
     label: "abduco",
     command: (name) => `exec abduco -A ${name} "$SHELL"`,
-    detachKeys: "\x1c",
     listCommand: "abduco 2>/dev/null || true",
     parseList: (text) => parseAbducoList(text),
   },
@@ -79,7 +63,6 @@ export const PRESETS = [
     id: "tmux",
     label: "tmux",
     command: (name) => `exec tmux new-session -A -D -s ${name}`,
-    detachKeys: "\x02d",
     // The one tool with a machine-readable format; use it. \t is a
     // separator no session name can contain.
     listCommand:
@@ -90,7 +73,6 @@ export const PRESETS = [
     id: "screen",
     label: "screen",
     command: (name) => `exec screen -D -R -S ${name}`,
-    detachKeys: "\x01d",
     listCommand: "screen -ls 2>/dev/null || true",
     parseList: (text) => parseScreenList(text),
   },
