@@ -14,10 +14,9 @@
   },
   "imports": {
     "@polyengine/protocol": "jsr:@polyengine/protocol@0.3.1",
-    "@polyengine/runtime/embedder": "jsr:@polyengine/runtime@0.6.4/embedder",
-    "@polyengine/runtime/shim": "jsr:@polyengine/runtime@0.6.4/shim",
-    "@polyengine/wasi": "jsr:@polyengine/wasi@0.6.4",
-    "@polyengine/wasi/io": "jsr:@polyengine/wasi@0.6.4/io",
+    "@polyengine/runtime/embedder": "jsr:@polyengine/runtime@0.6.5/embedder",
+    "@polyengine/runtime/shim": "jsr:@polyengine/runtime@0.6.5/shim",
+    "@polyengine/wasi": "jsr:@polyengine/wasi@0.6.5",
     "@polymorph/webcrypto": "jsr:@polymorph/webcrypto@0.6.1",
     "@polymorph/websocket": "jsr:@polymorph/websocket@0.6.1",
     "@polymorph/webrtc-datachannels": "jsr:@polymorph/webrtc-datachannels@0.6.2",

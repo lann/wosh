@@ -3,12 +3,12 @@
   "specifiers": {
     "jsr:@polyengine/protocol@0.3.1": "0.3.1",
     "jsr:@polyengine/protocol@~0.3.1": "0.3.1",
-    "jsr:@polyengine/runtime@0.6.4": "0.6.4",
-    "jsr:@polyengine/runtime@~0.6.3": "0.6.4",
-    "jsr:@polyengine/runtime@~0.6.4": "0.6.4",
-    "jsr:@polyengine/translator@~0.6.3": "0.6.4",
-    "jsr:@polyengine/wasi@0.6.4": "0.6.4",
-    "jsr:@polyengine/wasi@~0.6.3": "0.6.4",
+    "jsr:@polyengine/runtime@0.6.5": "0.6.5",
+    "jsr:@polyengine/runtime@~0.6.3": "0.6.5",
+    "jsr:@polyengine/runtime@~0.6.5": "0.6.5",
+    "jsr:@polyengine/translator@~0.6.3": "0.6.5",
+    "jsr:@polyengine/wasi@0.6.5": "0.6.5",
+    "jsr:@polyengine/wasi@~0.6.3": "0.6.5",
     "jsr:@polymorph/iroh@0.6.1": "0.6.1",
     "jsr:@polymorph/webcrypto@0.6": "0.6.1",
     "jsr:@polymorph/webcrypto@0.6.1": "0.6.1",
@@ -23,20 +23,20 @@
     "@polyengine/protocol@0.3.1": {
       "integrity": "3cba0ded857c5cc911fcf9c0782c7566c79af89ddc8e0ec4e48ece60c807a518"
     },
-    "@polyengine/runtime@0.6.4": {
-      "integrity": "e33a1bc82ffb128b0bfd2d0830b5d278396f96459b28ba49a07b8ed2669480fd",
+    "@polyengine/runtime@0.6.5": {
+      "integrity": "83029c000c2b07a41dcfa09d53f98388e14872533828c59cf9a56b5aafaaea0c",
       "dependencies": [
         "jsr:@polyengine/protocol@~0.3.1"
       ]
     },
-    "@polyengine/translator@0.6.4": {
-      "integrity": "87c667f254ae93738ed1cdad0e62295814d211df5be0cbfe30e8545b40156193",
+    "@polyengine/translator@0.6.5": {
+      "integrity": "94fb23fed398f96a420f644abd847ac64d45652d5207441fb8eb045dc6785ffa",
       "dependencies": [
-        "jsr:@polyengine/runtime@~0.6.4"
+        "jsr:@polyengine/runtime@~0.6.5"
       ]
     },
-    "@polyengine/wasi@0.6.4": {
-      "integrity": "3402d542ede9126ec62102f51f7c6463c52d3183fb0539a63e3b00c58eb30d22",
+    "@polyengine/wasi@0.6.5": {
+      "integrity": "9ae0ebf23368f55615fca7b08f236fc7f5db4030545ff7c39ee9bdbd6a5524b5",
       "dependencies": [
         "jsr:@polyengine/protocol@~0.3.1"
       ]
@@ -532,8 +532,8 @@
   "workspace": {
     "dependencies": [
       "jsr:@polyengine/protocol@0.3.1",
-      "jsr:@polyengine/runtime@0.6.4",
-      "jsr:@polyengine/wasi@0.6.4",
+      "jsr:@polyengine/runtime@0.6.5",
+      "jsr:@polyengine/wasi@0.6.5",
       "jsr:@polymorph/iroh@0.6.1",
       "jsr:@polymorph/webcrypto@0.6.1",
       "jsr:@polymorph/webrtc-datachannels@0.6.2",
