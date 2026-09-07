@@ -61,7 +61,7 @@ jobs:
       # together is the point of the spike.
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,wasm-tools,cargo-binstall,wasmtime@47.0.3
+          tool: just,wasm-tools,cargo-binstall,wasmtime@47.0.4
 
       - name: wac
         # binstall resolves release artifacts through api.github.com,

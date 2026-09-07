@@ -37,6 +37,7 @@ import {
   isComponentException,
 } from "@polyengine/protocol";
 import { wasi } from "@polyengine/wasi";
+import { OutputStream } from "@polyengine/wasi/io";
 import { webcryptoImports } from "@polymorph/webcrypto";
 import { websocketImports } from "@polymorph/websocket";
 import { webrtcImports } from "@polymorph/webrtc-datachannels";
@@ -89,13 +90,19 @@ async function translate(wasmUrl: string, translatorUrl: string) {
 // deno-lint-ignore no-explicit-any
 export async function loadClient(wasmUrl: string, translatorUrl: string): Promise<any> {
   const artifacts = await translate(wasmUrl, translatorUrl);
+  // The component's stderr is its only diagnostic channel (the resume
+  // machine narrates transport deaths and rebinds there), and a buffered
+  // stderr nobody reads is a black box exactly when the network is
+  // misbehaving. polyengine 0.6 dropped the capture impl's passthrough
+  // option, so route it to the console ourselves: override the single
+  // wasi:cli/stderr interface with one shared OutputStream that mirrors
+  // every write to console.error (never backpressures, matching the old
+  // capture impl's behavior).
+  const decoder = new TextDecoder();
+  const stderr = new OutputStream((chunk: Uint8Array) => console.error(decoder.decode(chunk)));
   const imports = {
-    // passthrough: the component's stderr is its only diagnostic
-    // channel (the resume machine narrates transport deaths and
-    // rebinds there), and a buffered stderr nobody reads is a black
-    // box exactly when the network is misbehaving. Routed to the
-    // console, it costs nothing until something prints.
-    ...wasi({ cli: { args: ["wosh-client"], env: {}, passthrough: true } }),
+    ...wasi({ cli: { args: ["wosh-client"], env: {} } }),
+    "wasi:cli/stderr@0.2": { getStderr: () => stderr },
     ...webcryptoImports(),
     ...websocketImports(),
     ...webrtcImports(),

@@ -21,9 +21,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "proce
 # Carries driver reactor isolation (their #158/#159, found by the
 # freeze drill here): a wedged webrtc driver costs a pool thread, not
 # the embedding component.
-wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", tag = "v0.5.0" }
-polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", tag = "v0.5.0" }
-wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", tag = "v0.5.0" }
+wasmtime-webrtc-datachannels = { git = "https://github.com/polymorph-components/polymorph-webrtc-datachannels", tag = "v0.6.0" }
+polymorph-webcrypto-wasmtime = { git = "https://github.com/polymorph-components/polymorph-webcrypto", tag = "v0.6.0" }
+wasmtime-websocket = { git = "https://github.com/polymorph-components/polymorph-websocket", tag = "v0.6.0" }
 
 [[bin]]
 name = "wosh-smoke-test"
