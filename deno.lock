@@ -1,76 +1,76 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@polyengine/protocol@0.2.3": "0.2.3",
-    "jsr:@polyengine/protocol@~0.2.2": "0.2.3",
-    "jsr:@polyengine/protocol@~0.2.3": "0.2.3",
-    "jsr:@polyengine/runtime@0.5.1": "0.5.1",
-    "jsr:@polyengine/runtime@~0.5.1": "0.5.1",
-    "jsr:@polyengine/translator@~0.5.1": "0.5.1",
-    "jsr:@polyengine/wasi@0.5.1": "0.5.1",
-    "jsr:@polyengine/wasi@~0.5.1": "0.5.1",
-    "jsr:@polymorph/iroh@0.5.1": "0.5.1",
-    "jsr:@polymorph/webcrypto@0.5": "0.5.0",
-    "jsr:@polymorph/webcrypto@0.5.0": "0.5.0",
-    "jsr:@polymorph/webrtc-datachannels@0.5": "0.5.0",
-    "jsr:@polymorph/webrtc-datachannels@0.5.0": "0.5.0",
-    "jsr:@polymorph/websocket@0.5": "0.5.0",
-    "jsr:@polymorph/websocket@0.5.0": "0.5.0",
+    "jsr:@polyengine/protocol@0.3.1": "0.3.1",
+    "jsr:@polyengine/protocol@~0.3.1": "0.3.1",
+    "jsr:@polyengine/runtime@0.6.4": "0.6.4",
+    "jsr:@polyengine/runtime@~0.6.3": "0.6.4",
+    "jsr:@polyengine/runtime@~0.6.4": "0.6.4",
+    "jsr:@polyengine/translator@~0.6.3": "0.6.4",
+    "jsr:@polyengine/wasi@0.6.4": "0.6.4",
+    "jsr:@polyengine/wasi@~0.6.3": "0.6.4",
+    "jsr:@polymorph/iroh@0.6.0": "0.6.0",
+    "jsr:@polymorph/webcrypto@0.6": "0.6.0",
+    "jsr:@polymorph/webcrypto@0.6.0": "0.6.0",
+    "jsr:@polymorph/webrtc-datachannels@0.6": "0.6.2",
+    "jsr:@polymorph/webrtc-datachannels@0.6.2": "0.6.2",
+    "jsr:@polymorph/websocket@0.6": "0.6.0",
+    "jsr:@polymorph/websocket@0.6.0": "0.6.0",
     "npm:node-datachannel@0.32.3": "0.32.3",
-    "npm:werift@0.22.2": "0.22.2"
+    "npm:werift@0.24.4": "0.24.4"
   },
   "jsr": {
-    "@polyengine/protocol@0.2.3": {
-      "integrity": "e3f0ac4165eb691d7231164ce28cf75e275c99496aa538e032297febdc52b371"
+    "@polyengine/protocol@0.3.1": {
+      "integrity": "3cba0ded857c5cc911fcf9c0782c7566c79af89ddc8e0ec4e48ece60c807a518"
     },
-    "@polyengine/runtime@0.5.1": {
-      "integrity": "6337c94d623bc2013fdeb324a5206860a916b8897b39cf4bec65b1bf87c287d0",
+    "@polyengine/runtime@0.6.4": {
+      "integrity": "e33a1bc82ffb128b0bfd2d0830b5d278396f96459b28ba49a07b8ed2669480fd",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.3"
+        "jsr:@polyengine/protocol@~0.3.1"
       ]
     },
-    "@polyengine/translator@0.5.1": {
-      "integrity": "16d7ac88997f89f10145cc109737b749bfebd37c9ea1aefe0a41b44c01b75586",
+    "@polyengine/translator@0.6.4": {
+      "integrity": "87c667f254ae93738ed1cdad0e62295814d211df5be0cbfe30e8545b40156193",
       "dependencies": [
-        "jsr:@polyengine/runtime@~0.5.1"
+        "jsr:@polyengine/runtime@~0.6.4"
       ]
     },
-    "@polyengine/wasi@0.5.1": {
-      "integrity": "1cb71ff91c24415d85a3b15bbb35462757586fa1478febba605cab4c1b2dbe72",
+    "@polyengine/wasi@0.6.4": {
+      "integrity": "3402d542ede9126ec62102f51f7c6463c52d3183fb0539a63e3b00c58eb30d22",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.3"
+        "jsr:@polyengine/protocol@~0.3.1"
       ]
     },
-    "@polymorph/iroh@0.5.1": {
-      "integrity": "dd90b32c187ec7eb27d4c37f62da56ab953fedac44c74093df382ac51d43ef9b",
+    "@polymorph/iroh@0.6.0": {
+      "integrity": "66608ff41b7de97bf1659003f25a91c6ac06cd20e2511c7be13400cb3ba32143",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.2",
-        "jsr:@polyengine/runtime@~0.5.1",
+        "jsr:@polyengine/protocol@~0.3.1",
+        "jsr:@polyengine/runtime@~0.6.3",
         "jsr:@polyengine/translator",
-        "jsr:@polyengine/wasi@~0.5.1",
-        "jsr:@polymorph/webcrypto@0.5",
-        "jsr:@polymorph/webrtc-datachannels@0.5",
-        "jsr:@polymorph/websocket@0.5"
+        "jsr:@polyengine/wasi@~0.6.3",
+        "jsr:@polymorph/webcrypto@0.6",
+        "jsr:@polymorph/webrtc-datachannels@0.6",
+        "jsr:@polymorph/websocket@0.6"
       ]
     },
-    "@polymorph/webcrypto@0.5.0": {
-      "integrity": "b9b03e2855a83f8817bb9d6f6a0cb5ec261a4dd3c09c957b741eeb7eba639ef9",
+    "@polymorph/webcrypto@0.6.0": {
+      "integrity": "3157cf069c2d3591d215e07b617870c81f88ae9eebe737c74ec5daeddc44b8b5",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.2"
+        "jsr:@polyengine/protocol@~0.3.1"
       ]
     },
-    "@polymorph/webrtc-datachannels@0.5.0": {
-      "integrity": "fef8803ef87826ce8c5cc6545460ce2e41ef63d5c31d10f63e9fb0666a752734",
+    "@polymorph/webrtc-datachannels@0.6.2": {
+      "integrity": "42f46aaf2f2d25f689b69210d8ddaf634835699fb4a3b67d981e20140aadaed4",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.2",
+        "jsr:@polyengine/protocol@~0.3.1",
         "npm:node-datachannel",
         "npm:werift"
       ]
     },
-    "@polymorph/websocket@0.5.0": {
-      "integrity": "84a7862e9bdeaedca92f7b57b12f5ee1348878734906feebb4d37634ac6659ae",
+    "@polymorph/websocket@0.6.0": {
+      "integrity": "8e27a2603479d76edcc8c9a3bbfd22d05663da34e9bbdf4ad1326cf18d610c6c",
       "dependencies": [
-        "jsr:@polyengine/protocol@~0.2.2"
+        "jsr:@polyengine/protocol@~0.3.1"
       ]
     }
   },
@@ -87,9 +87,6 @@
     },
     "@leichtgewicht/ip-codec@2.0.5": {
       "integrity": "sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw=="
-    },
-    "@minhducsun2002/leb128@1.0.0": {
-      "integrity": "sha512-eFrYUPDVHeuwWHluTG1kwNQUEUcFjVKYwPkU8z9DR1JH3AW7JtJsG9cRVGmwz809kKtGfwGJj58juCZxEvnI/g=="
     },
     "@noble/curves@1.9.7": {
       "integrity": "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw==",
@@ -225,9 +222,6 @@
         "is-plain-object"
       ]
     },
-    "@shinyoshiaki/jspack@0.0.6": {
-      "integrity": "sha512-SdsNhLjQh4onBlyPrn4ia1Pdx5bXT88G/LIEpOYAjx2u4xeY/m/HB5yHqlkJB1uQR3Zw4R3hBWLj46STRAN0rg=="
-    },
     "@types/dom-mediacapture-transform@0.1.12": {
       "integrity": "sha512-d7/QsLRwF864A5mgIM/YrfiglHoYn7zgCcAoJgW404r+2DwnNr7EBbLnCWpmOMgH8y0te73L1AV6H1bmauaWFw==",
       "dependencies": [
@@ -236,9 +230,6 @@
     },
     "@types/dom-webcodecs@0.1.13": {
       "integrity": "sha512-O5hkiFIcjjszPIYyUSyvScyvrBoV3NOEEZx/pMlsu44TKzWNkLVBBxnxJz42in5n3QIolYOcBYFCPZZ0h8SkwQ=="
-    },
-    "aes-js@3.1.2": {
-      "integrity": "sha512-e5pEa2kBnBOgR4Y/p20pskXI74UEz7de8ZGVo58asOtvSVG5YAbJeELPZxOmt+Bnz3rX753YKhfIn4X4l1PPRQ=="
     },
     "asn1js@3.0.10": {
       "integrity": "sha512-S2s3aOytiKdFRdulw2qPE51MzjzVOisppcVv7jVFR+Kw0kxwvFrDcYA0h7Ndqbmj0HkMIXYWaoj7fli8kgx1eg==",
@@ -251,9 +242,6 @@
     "base64-js@1.5.1": {
       "integrity": "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA=="
     },
-    "big-integer@1.6.52": {
-      "integrity": "sha512-QxD8cf2eVqJOOz63z6JIN9BzvVs/dlySa5HGSBH5xtR8dPteIRQnBxxKqkNTiT6jbDTF6jAfrd4oMcND9RGbQg=="
-    },
     "bl@4.1.0": {
       "integrity": "sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==",
       "dependencies": [
@@ -261,9 +249,6 @@
         "inherits",
         "readable-stream"
       ]
-    },
-    "buffer-crc32@1.0.0": {
-      "integrity": "sha512-Db1SbgBS/fg/392AblrMJk97KggmvYhr4pB5ZIMTWtaivCPMWLkmb7m21cJvpvgK+J3nsU2CmmixNBZx4vFj/w=="
     },
     "buffer@5.7.1": {
       "integrity": "sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==",
@@ -281,9 +266,6 @@
     },
     "chownr@1.1.4": {
       "integrity": "sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg=="
-    },
-    "date-fns@4.4.0": {
-      "integrity": "sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w=="
     },
     "debug@4.4.0": {
       "integrity": "sha512-6WTZ/IxCY/T6BALoZHaE4ctp9xm+Z5kY/pzYaCHRFeyVhojxlrm+46y68HA6hr0TcwEssoxNiDEUJQjfPZ/RYA==",
@@ -339,12 +321,6 @@
     "ini@1.3.8": {
       "integrity": "sha512-JV/yugV2uzW5iMRSiZAyDtQd+nxtUnjeLt0acNdw98kKLrvuRVyB80tsREOE7yvGVgalhZ6RNXCmEHkUKBKxew=="
     },
-    "int64-buffer@1.1.0": {
-      "integrity": "sha512-94smTCQOvigN4d/2R/YDjz8YVG0Sufvv2aAh8P5m42gwhCsDAJqnbNOrxJsrADuAFAA69Q/ptGzxvNcNuIJcvw=="
-    },
-    "ip@2.0.1": {
-      "integrity": "sha512-lJUL9imLTNi1ZfXT+DU6rBBdbiKGBuay9B6xGSPVjUeQwaH1RIGqef8RZkUtHioLmSNpPR5M4HVKJGm1j8FWVQ=="
-    },
     "is-plain-object@2.0.4": {
       "integrity": "sha512-h5PpgXkWitc38BBMYawTYMWJHFZJVnBquFE57xFpjB8pJFiF6gZ+bU+WyI/yqXiFR5mdLsgYNaPe8uao6Uv9Og==",
       "dependencies": [
@@ -356,9 +332,6 @@
     },
     "isobject@3.0.1": {
       "integrity": "sha512-WhB9zCku7EGTj/HQQRz5aUQEUeoQZH2bWcltRErOpymJ4boYE6wL9Tbr23krRPSZ+C5zqNSrSw+Cc7sZZ4b7vg=="
-    },
-    "lodash@4.18.1": {
-      "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="
     },
     "mediabunny@1.55.2": {
       "integrity": "sha512-EEx4O6qYddAdCyWPMZNDwI7uc5hewNHrPAf9jLcVhIbXoPsiqNQ+D9i1pfadmGkjN2V318jSrZljkpoziYm6Lg==",
@@ -376,9 +349,6 @@
     "mkdirp-classic@0.5.3": {
       "integrity": "sha512-gKLcREMhtuZRwRAfqP3RFW+TK4JqApVBtOIftVgjuABpAtpxhPGaDcfvbhNvD0B8iD1oUr/txX35NjcaY6Ns/A=="
     },
-    "mp4box@0.5.4": {
-      "integrity": "sha512-GcCH0fySxBurJtvr0dfhz0IxHZjc1RP+F+I8xw+LIwkU1a+7HJx8NCDiww1I5u4Hz6g4eR1JlGADEGJ9r4lSfA=="
-    },
     "ms@2.1.3": {
       "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="
     },
@@ -389,12 +359,6 @@
         "thunky"
       ],
       "bin": true
-    },
-    "nano-time@1.0.0": {
-      "integrity": "sha512-flnngywOoQ0lLQOTRNexn2gGSNuM9bKj9RZAWSzhQ+UJYaAFG9bac4DW9VHjUAzrOaIcajHybCTHe/bkvozQqA==",
-      "dependencies": [
-        "big-integer"
-      ]
     },
     "napi-build-utils@2.0.0": {
       "integrity": "sha512-GEbrYkbfF7MoNaoh2iGG84Mnf/WZfB0GdGEsM8wz7Expx/LlWf5U8t9nvJKXSp3qr5IsEbK04cBGhol/KwOsWA=="
@@ -541,86 +505,24 @@
         "safe-buffer"
       ]
     },
-    "turbo-crc32@1.0.1": {
-      "integrity": "sha512-8yyRd1ZdNp+AQLGqi3lTaA2k81JjlIZOyFQEsi7GQWBgirnQOxjqVtDEbYHM2Z4yFdJ5AQw0fxBLLnDCl6RXoQ=="
-    },
     "tweetnacl@1.0.3": {
       "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
     },
     "util-deprecate@1.0.2": {
       "integrity": "sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw=="
     },
-    "uuid@11.1.1": {
-      "integrity": "sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==",
-      "bin": true
-    },
-    "werift-common@0.0.3": {
-      "integrity": "sha512-ma3E4BqKTyZVLhrdfTVs2T1tg9seeUtKMRn5e64LwgrogWa62+3LAUoLBUSl1yPWhgSkXId7GmcHuWDen9IJeQ==",
-      "dependencies": [
-        "@shinyoshiaki/jspack",
-        "debug"
-      ]
-    },
-    "werift-dtls@0.5.8": {
-      "integrity": "sha512-oH39cdCpVLqKcPZRMGQLcN+tIBixvMGqjCB9qCrH39Tu9Mmu8u2+zTzyl0Fod87EK6PNPgoNqMJt64xlSMfLnw==",
+    "werift@0.24.4": {
+      "integrity": "sha512-NoROZ11L/ZqAB5ombCB4VBuVNdIZfwI493zlxlIX7BlwfWRy55eDJdtWMC2VX35yBXFaWwA8NtYbmJ8qWtVk9Q==",
       "dependencies": [
         "@fidm/x509",
         "@noble/curves",
         "@peculiar/x509",
         "@shinyoshiaki/binary-data",
-        "debug",
-        "tweetnacl"
-      ]
-    },
-    "werift-ice@0.2.3": {
-      "integrity": "sha512-k000fIaw8w2D4Xv5EvW6b5h4faJx8p4D8HPuDzRiGTx6UrLv2BuvUkC60LNqxlDf9o3zh90Hx1WZoHbhuw9keA==",
-      "dependencies": [
-        "debug",
-        "multicast-dns"
-      ]
-    },
-    "werift-rtp@0.8.9": {
-      "integrity": "sha512-uLFOawIXw8FblIp1akfIVYFuRNtNo7csRxYypLz0t++sUNCN7sPeghVqET/c3Mq7Tg2QA3oAb15fXIIuJEp2AA==",
-      "dependencies": [
         "buffer@6.0.3",
         "debug",
-        "mediabunny"
-      ]
-    },
-    "werift-sctp@0.0.11": {
-      "integrity": "sha512-7109yuI5U7NTEHjqjn0A8VeynytkgVaxM6lRr1Ziv0D8bPcaB8A7U/P88M7WaCpWDoELHoXiRUjQycMWStIgjQ==",
-      "dependencies": [
-        "@shinyoshiaki/jspack"
-      ]
-    },
-    "werift@0.22.2": {
-      "integrity": "sha512-R+dfzOknUiGH8EcxGjWfN4404+Npj4tT1L5HpqZLjw0ARCO0B19i9gAQOo6ESzzTE+L8L1wxb1KIspOeoko+TQ==",
-      "dependencies": [
-        "@fidm/x509",
-        "@minhducsun2002/leb128",
-        "@noble/curves",
-        "@peculiar/x509",
-        "@shinyoshiaki/binary-data",
-        "@shinyoshiaki/jspack",
-        "aes-js",
-        "buffer@6.0.3",
-        "buffer-crc32",
-        "date-fns",
-        "debug",
-        "int64-buffer",
-        "ip",
-        "lodash",
-        "mp4box",
+        "mediabunny",
         "multicast-dns",
-        "nano-time",
-        "turbo-crc32",
-        "tweetnacl",
-        "uuid",
-        "werift-common",
-        "werift-dtls",
-        "werift-ice",
-        "werift-rtp",
-        "werift-sctp"
+        "tweetnacl"
       ]
     },
     "wrappy@1.0.2": {
@@ -629,13 +531,13 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@polyengine/protocol@0.2.3",
-      "jsr:@polyengine/runtime@0.5.1",
-      "jsr:@polyengine/wasi@0.5.1",
-      "jsr:@polymorph/iroh@0.5.1",
-      "jsr:@polymorph/webcrypto@0.5.0",
-      "jsr:@polymorph/webrtc-datachannels@0.5.0",
-      "jsr:@polymorph/websocket@0.5.0"
+      "jsr:@polyengine/protocol@0.3.1",
+      "jsr:@polyengine/runtime@0.6.4",
+      "jsr:@polyengine/wasi@0.6.4",
+      "jsr:@polymorph/iroh@0.6.0",
+      "jsr:@polymorph/webcrypto@0.6.0",
+      "jsr:@polymorph/webrtc-datachannels@0.6.2",
+      "jsr:@polymorph/websocket@0.6.0"
     ]
   }
 }

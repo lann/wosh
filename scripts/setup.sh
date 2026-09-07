@@ -20,10 +20,13 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # GitHub release carries -- built there at the release tag, on the
 # pinned toolchain, by its release-assets workflow. The sibling
 # host-crate tags in listener-host/Cargo.toml and smoke-test/Cargo.toml
-# must stay content-identical (Rust + WIT) to the revs polymorph-iroh's
-# own Cargo.toml pins, since the native hosts link those crates directly
-# against the endpoint guest fetched here -- re-verify when bumping.
-PIROH_VERSION=v0.5.1
+# must stay WIT-identical (and Rust-compatible) with the revs
+# polymorph-iroh's own Cargo.toml pins, since the native hosts link those
+# crates directly against the endpoint guest fetched here -- re-verify
+# when bumping; listener-host/Cargo.toml records the current audit.
+PIROH_VERSION=v0.6.0
+# v0.6.0's artifact is byte-identical to v0.5.1's: the release moved the
+# JS host, not the guest, so the digest below is unchanged across the bump.
 ENDPOINT_SHA256=b656296fafe63ac73c081ef32d0876cb4def3df4de6595f8462ad5bf781ab668
 # The relay binary version pairs with the iroh line the endpoint is
 # built against (polymorph-iroh pins the same 1.0.3).
@@ -37,7 +40,8 @@ IROH_RELAY_VERSION=1.0.3
 # --- required tools ---------------------------------------------------
 # componentize-go installs to GOBIN, and componentize-go itself needs a
 # Go newer than most distributions ship (it builds the guest with its
-# own patched toolchain for async worlds, but the driver needs >=1.25).
+# own patched toolchain for async worlds, but the driver needs >=1.25,
+# and the Go modules here declare 1.26 -- x/crypto 0.56's floor).
 # Prefer a locally-installed Go over /usr/bin/go.
 export PATH="$HOME/.local/go/bin:$HOME/go/bin:$PATH"
 
