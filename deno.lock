@@ -9,13 +9,13 @@
     "jsr:@polyengine/translator@~0.6.3": "0.6.4",
     "jsr:@polyengine/wasi@0.6.4": "0.6.4",
     "jsr:@polyengine/wasi@~0.6.3": "0.6.4",
-    "jsr:@polymorph/iroh@0.6.0": "0.6.0",
-    "jsr:@polymorph/webcrypto@0.6": "0.6.0",
-    "jsr:@polymorph/webcrypto@0.6.0": "0.6.0",
+    "jsr:@polymorph/iroh@0.6.1": "0.6.1",
+    "jsr:@polymorph/webcrypto@0.6": "0.6.1",
+    "jsr:@polymorph/webcrypto@0.6.1": "0.6.1",
     "jsr:@polymorph/webrtc-datachannels@0.6": "0.6.2",
     "jsr:@polymorph/webrtc-datachannels@0.6.2": "0.6.2",
-    "jsr:@polymorph/websocket@0.6": "0.6.0",
-    "jsr:@polymorph/websocket@0.6.0": "0.6.0",
+    "jsr:@polymorph/websocket@0.6": "0.6.1",
+    "jsr:@polymorph/websocket@0.6.1": "0.6.1",
     "npm:node-datachannel@0.32.3": "0.32.3",
     "npm:werift@0.24.4": "0.24.4"
   },
@@ -41,8 +41,8 @@
         "jsr:@polyengine/protocol@~0.3.1"
       ]
     },
-    "@polymorph/iroh@0.6.0": {
-      "integrity": "66608ff41b7de97bf1659003f25a91c6ac06cd20e2511c7be13400cb3ba32143",
+    "@polymorph/iroh@0.6.1": {
+      "integrity": "5a6007af90a84ef0b9a69c5dc74ecd51faeaed3d016d274cb21877ce5bf89605",
       "dependencies": [
         "jsr:@polyengine/protocol@~0.3.1",
         "jsr:@polyengine/runtime@~0.6.3",
@@ -53,8 +53,8 @@
         "jsr:@polymorph/websocket@0.6"
       ]
     },
-    "@polymorph/webcrypto@0.6.0": {
-      "integrity": "3157cf069c2d3591d215e07b617870c81f88ae9eebe737c74ec5daeddc44b8b5",
+    "@polymorph/webcrypto@0.6.1": {
+      "integrity": "b21fdb9ee9ef0904db4161c8e393b9d3d7503cf147c6ad54da6de2da24dd8194",
       "dependencies": [
         "jsr:@polyengine/protocol@~0.3.1"
       ]
@@ -67,8 +67,8 @@
         "npm:werift"
       ]
     },
-    "@polymorph/websocket@0.6.0": {
-      "integrity": "8e27a2603479d76edcc8c9a3bbfd22d05663da34e9bbdf4ad1326cf18d610c6c",
+    "@polymorph/websocket@0.6.1": {
+      "integrity": "e40c3143e53e919f23385b36c673918aa24b9e59627bc9b37328df5c4b0e4b4f",
       "dependencies": [
         "jsr:@polyengine/protocol@~0.3.1"
       ]
@@ -534,10 +534,10 @@
       "jsr:@polyengine/protocol@0.3.1",
       "jsr:@polyengine/runtime@0.6.4",
       "jsr:@polyengine/wasi@0.6.4",
-      "jsr:@polymorph/iroh@0.6.0",
-      "jsr:@polymorph/webcrypto@0.6.0",
+      "jsr:@polymorph/iroh@0.6.1",
+      "jsr:@polymorph/webcrypto@0.6.1",
       "jsr:@polymorph/webrtc-datachannels@0.6.2",
-      "jsr:@polymorph/websocket@0.6.0"
+      "jsr:@polymorph/websocket@0.6.1"
     ]
   }
 }

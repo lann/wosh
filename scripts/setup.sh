@@ -24,13 +24,11 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # polymorph-iroh's own Cargo.toml pins, since the native hosts link those
 # crates directly against the endpoint guest fetched here -- re-verify
 # when bumping; listener-host/Cargo.toml records the current audit.
-PIROH_VERSION=v0.6.0
-# v0.6.0's artifact is byte-identical to v0.5.1's: the release moved the
-# JS host, not the guest, so the digest below is unchanged across the bump.
-ENDPOINT_SHA256=b656296fafe63ac73c081ef32d0876cb4def3df4de6595f8462ad5bf781ab668
+PIROH_VERSION=v0.6.1
+ENDPOINT_SHA256=6e37236a3617740903323608ac335fd22735f73b1d7679d478a92fb694ee41ff
 # The relay binary version pairs with the iroh line the endpoint is
-# built against (polymorph-iroh pins the same 1.0.3).
-IROH_RELAY_VERSION=1.0.3
+# built against (polymorph-iroh pins the same 1.1.0).
+IROH_RELAY_VERSION=1.1.0
 
 # polyengine (the JS component host) arrives as published jsr releases:
 # the root deno.json pins @polyengine/* and @polymorph/* there, and
