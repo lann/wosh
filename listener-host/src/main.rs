@@ -25,7 +25,7 @@ use anyhow::Result;
 use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView};
 use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 
@@ -194,6 +194,10 @@ async fn main() -> Result<()> {
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_env().inherit_network().args(&guest_args);
+    // wasmtime 48: inherit_network() no longer implies any protocol; UDP is
+    // iroh's direct path, TCP is the proxy leg to the sshd target
+    // (listener-core/src/tcp.rs) over wasi:sockets.
+    wasi.allow_udp(true).allow_tcp(true);
 
     // The operator's known_hosts, handed to the guest as CONTENT.
     //
@@ -253,7 +257,8 @@ async fn main() -> Result<()> {
             )
         })?;
         _identity_lock = Some(lock);
-        wasi.preopened_dir(&dir, "wosh-data", DirPerms::all(), FilePerms::all())
+        // wasmtime 48: DirPerms/FilePerms merged into one FsPerms.
+        wasi.preopened_dir(&dir, "wosh-data", FsPerms::ReadWrite)
             .map_err(|e| anyhow::anyhow!("mounting {}: {e}", dir.display()))?;
         // The guest can only name its mount ("wosh-data/…"), which
         // exists nowhere on the operator's disk; say where that really

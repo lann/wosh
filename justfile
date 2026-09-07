@@ -6,7 +6,7 @@ export PATH := env_var('HOME') + "/.local/go/bin:" + env_var('HOME') + "/go/bin:
 
 # The endpoint is the digest-pinned artifact from polymorph-iroh's
 # GitHub release, fetched by scripts/setup.sh into .deps/. iroh-relay is
-# the prebuilt, pinned binary (1.0.3) scripts/setup.sh installs onto
+# the prebuilt, pinned binary (1.1.0) scripts/setup.sh installs onto
 # PATH via cargo-binstall.
 ENDPOINT := ".deps/iroh_endpoint.wasm"
 RELAY    := "iroh-relay"

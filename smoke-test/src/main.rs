@@ -405,6 +405,8 @@ async fn main() -> Result<()> {
 
     let mut wasi = WasiCtx::builder();
     wasi.inherit_stdio().inherit_network();
+    // wasmtime 48: inherit_network() alone no longer permits UDP (iroh's direct path).
+    wasi.allow_udp(true);
     let mut store = Store::new(
         &engine,
         Ctx {
